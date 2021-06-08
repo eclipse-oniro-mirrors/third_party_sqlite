@@ -16,7 +16,6 @@ config("sqlite3_private_config") {
   visibility = [ ":*" ]
   include_dirs = [
     "include",
-    "//third_party/openssl/include/",
   ]
 }
 
@@ -68,6 +67,7 @@ ohos_shared_library("sqlite") {
   cflags_c = [
     "-fvisibility=hidden",
   ]
+  ldflags = [ "-Wl,--exclude-libs,ALL" ]
   deps = [
     "//utils/native/base:utils",
     "//third_party/openssl:libcrypto_static",
