@@ -59,7 +59,7 @@ ohos_shared_library("sqlite") {
     "SQLITE_DIRECT_OVERFLOW_READ",
     "SQLITE_HAS_CODEC",
     "SQLITE3_HW_EXPORT_SYMBOLS",
-    "SQLITE_HW_SHARED_BLOCK_OPTIMIZATION",
+    "SQLITE_SHARED_BLOCK_OPTIMIZATION",
     "SQLITE_CODEC_ATTACH_CHANGED",
   ]
   cflags_c = [ "-fvisibility=hidden" ]
@@ -70,6 +70,7 @@ ohos_shared_library("sqlite") {
   ]
   public_configs = [ ":sqlite_config" ]
   configs = [ ":sqlite3_private_config" ]
+  part_name = "distributeddatamgr"
 }
 
 ohos_executable("sqlite3") {
@@ -100,7 +101,7 @@ ohos_executable("sqlite3") {
     "USE_PREAD64",
     "fdatasync=fdatasync",
     "SQLITE_DIRECT_OVERFLOW_READ",
-    "SQLITE_HW_SHARED_BLOCK_OPTIMIZATION",
+    "SQLITE_SHARED_BLOCK_OPTIMIZATION",
   ]
 
   cflags = [ "-Wno-error=implicit-function-declaration" ]
