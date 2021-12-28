@@ -14,9 +14,7 @@ config("sqlite_config") {
 # It should not be needed outside of this library.
 config("sqlite3_private_config") {
   visibility = [ ":*" ]
-  include_dirs = [
-    "include",
-  ]
+  include_dirs = [ "include" ]
 }
 
 group("libsqlite") {
@@ -26,15 +24,15 @@ group("libsqlite") {
 ohos_shared_library("sqlite") {
   visibility = [ "//foundation/distributeddatamgr/*" ]
   visibility += [ "//foundation/multimodalinput/*" ]
-  visibility += [ "//hit/fuzzing_test/projects/multimodal_InputService_fuzzer/*" ]
+  visibility +=
+      [ "//hit/fuzzing_test/projects/multimodal_InputService_fuzzer/*" ]
   visibility += [ "//foundation/communication/*" ]
   visibility += [ "//build/common/*" ]
   visibility += [ ":*" ]
   visibility += [ "//base/security/permission/*" ]
+  visibility += [ "//third_party/libsoup/*" ]
 
-  sources = [
-    "src/sqlite3.c",
-  ]
+  sources = [ "src/sqlite3.c" ]
 
   defines = [
     "NDEBUG=1",
@@ -61,28 +59,25 @@ ohos_shared_library("sqlite") {
     "SQLITE_DIRECT_OVERFLOW_READ",
     "SQLITE_HAS_CODEC",
     "SQLITE3_HW_EXPORT_SYMBOLS",
-    "SQLITE_HW_SHARED_BLOCK_OPTIMIZATION",
+    "SQLITE_SHARED_BLOCK_OPTIMIZATION",
     "SQLITE_CODEC_ATTACH_CHANGED",
   ]
-  cflags_c = [
-    "-fvisibility=hidden",
-  ]
+  cflags_c = [ "-fvisibility=hidden" ]
   ldflags = [ "-Wl,--exclude-libs,ALL" ]
   deps = [
-    "//utils/native/base:utils",
     "//third_party/openssl:libcrypto_static",
+    "//utils/native/base:utils",
   ]
   public_configs = [ ":sqlite_config" ]
   configs = [ ":sqlite3_private_config" ]
+  part_name = "distributeddatamgr"
 }
 
 ohos_executable("sqlite3") {
-  include_dirs = [
-    "include",
-  ]
+  include_dirs = [ "include" ]
   sources = [
-    "src/sqlite3.c",
     "src/shell.c",
+    "src/sqlite3.c",
   ]
 
   defines = [
@@ -106,10 +101,8 @@ ohos_executable("sqlite3") {
     "USE_PREAD64",
     "fdatasync=fdatasync",
     "SQLITE_DIRECT_OVERFLOW_READ",
-    "SQLITE_HW_SHARED_BLOCK_OPTIMIZATION",
+    "SQLITE_SHARED_BLOCK_OPTIMIZATION",
   ]
 
-  cflags = [
-    "-Wno-error=implicit-function-declaration"
-  ]
+  cflags = [ "-Wno-error=implicit-function-declaration" ]
 }
