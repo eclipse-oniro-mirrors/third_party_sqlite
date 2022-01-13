@@ -1,0 +1,39 @@
+{
+    "name": "@ohos/sqlite",
+    "version": "",
+    "description": "Third-party open-source software sqlite | 三方开源软件sqlite",
+    "homePage": "https://gitee.com/openharmony",
+    "license": "Public Domain",
+    "repository": "https://gitee.com/openharmony/third_party_sqlite",
+    "domain": "os",
+    "language": "",
+    "publishAs": "code-segment",
+    "private": false,
+    "scripts": {},
+    "tags": [
+        "third_party"
+    ],
+    "keywords": [
+        "third-party",
+        "sqlite"
+    ],
+    "envs": {},
+    "dirs": {},
+    "segment": {
+        "destPath": "third_party/sqlite"
+    },
+    "component": {
+        "name": "thirdparty_sqlite",
+        "subsystem": "",
+        "syscap": [],
+        "features": [],
+        "adapted_system_type": [],
+        "rom": "",
+        "ram": "",
+        "build": {
+            "sub_component": [],
+            "inner_kits": [],
+            "test": []
+        }
+    }
+}
