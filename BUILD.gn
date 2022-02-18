@@ -82,7 +82,7 @@ ohos_shared_library("sqlite") {
   ]
   public_configs = [ ":sqlite_config" ]
   configs = [ ":sqlite3_private_config" ]
-  part_name = "distributeddatamgr"
+  part_name = "common"
 }
 
 ohos_executable("sqlite3") {
