@@ -77,7 +77,7 @@ ohos_shared_library("sqlite") {
   cflags_c = [ "-fvisibility=hidden" ]
   ldflags = [ "-Wl,--exclude-libs,ALL" ]
   deps = [
-    "//third_party/openssl:libcrypto_static",
+    "//third_party/openssl:libcrypto_shared",
     "//utils/native/base:utils",
   ]
   public_configs = [ ":sqlite_config" ]
