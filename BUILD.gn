@@ -70,11 +70,14 @@ ohos_shared_library("sqlite") {
     "HAVE_MALLOC_USABLE_SIZE",
     "SQLITE_DIRECT_OVERFLOW_READ",
     "SQLITE_HAS_CODEC",
-    "SQLITE3_HW_EXPORT_SYMBOLS",
+    "SQLITE_EXPORT_SYMBOLS",
     "SQLITE_SHARED_BLOCK_OPTIMIZATION",
     "SQLITE_CODEC_ATTACH_CHANGED",
   ]
-  cflags_c = [ "-fvisibility=hidden" ]
+  cflags_c = [
+    "-fvisibility=hidden",
+    "-Wno-implicit-fallthrough",
+  ]
   ldflags = [ "-Wl,--exclude-libs,ALL" ]
   deps = [
     "//third_party/openssl:libcrypto_shared",
@@ -116,5 +119,8 @@ ohos_executable("sqlite3") {
     "SQLITE_SHARED_BLOCK_OPTIMIZATION",
   ]
 
-  cflags = [ "-Wno-error=implicit-function-declaration" ]
+  cflags = [
+    "-Wno-error=implicit-function-declaration",
+    "-Wno-implicit-fallthrough",
+  ]
 }

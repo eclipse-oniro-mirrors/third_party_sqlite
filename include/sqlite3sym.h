@@ -16,7 +16,7 @@
 #ifndef SQLITE3SYM_H
 #define SQLITE3SYM_H
 
-#define SQLITE3_HW_EXPORT_SYMBOLS
+#define SQLITE3_EXPORT_SYMBOLS
 #define SQLITE_OMIT_LOAD_EXTENSION
 
 // We extend the original purpose of the "sqlite3ext.h".
