@@ -87,6 +87,8 @@ ohos_shared_library("sqlite") {
   public_configs = [ ":sqlite_config" ]
   configs = [ ":sqlite3_private_config" ]
   part_name = "common"
+  install_images = [ system_base_dir ]
+  relative_install_dir = "platformsdk"
 }
 
 ohos_executable("sqlite3") {
