@@ -17,7 +17,7 @@ import("//build/ohos.gni")
 config("sqlite_config") {
   include_dirs = [
     "include",
-    "//utils/native/base/include",
+    "//commonlibrary/c_utils/base/include",
   ]
 }
 
@@ -80,15 +80,13 @@ ohos_shared_library("sqlite") {
     "-Wno-implicit-fallthrough",
   ]
   ldflags = [ "-Wl,--exclude-libs,ALL" ]
-  deps = [
-    "//third_party/openssl:libcrypto_shared",
-    "//utils/native/base:utils",
-  ]
+  deps = [ "//third_party/openssl:libcrypto_shared" ]
   public_configs = [ ":sqlite_config" ]
   configs = [ ":sqlite3_private_config" ]
   part_name = "common"
   install_images = [ system_base_dir ]
   relative_install_dir = "platformsdk"
+  external_deps = [ "c_utils:utils" ]
 }
 
 ohos_executable("sqlite3") {
