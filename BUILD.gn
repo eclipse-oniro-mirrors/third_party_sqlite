@@ -43,6 +43,7 @@ ohos_shared_library("sqlite") {
   visibility += [ "//base/security/permission/*" ]
   visibility += [ "//third_party/libsoup/*" ]
   visibility += [ "//base/security/access_token/*" ]
+  visibility += [ "//foundation/resourceschedule/resource_schedule_service/*" ]
 
   sources = [ "src/sqlite3.c" ]
 
