@@ -163,10 +163,12 @@ ohos_shared_library("sqlite_sdk") {
     "SQLITE_SHARED_BLOCK_OPTIMIZATION",
   ]
   remove_configs = [ "//build/config/compiler:chromium_code" ]
-  deps = [ "//third_party/bounds_checking_function:libsec_shared" ]
+  deps = [
+    "//third_party/bounds_checking_function:libsec_shared",
+    "//third_party/openssl:libcrypto_static",
+  ]
   if (is_mingw) {
     libs = [ "//prebuilts/mingw-w64/ohos/linux-x86_64/clang-mingw/x86_64-w64-mingw32/lib/libws2_32.a" ]
-    deps += [ "//third_party/openssl:libcrypto_static(//build/toolchain/mingw:mingw_x86_64)" ]
   }
   cflags = [
     "-Wno-error=implicit-function-declaration",
