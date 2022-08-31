@@ -128,48 +128,52 @@ ohos_executable("sqlite3") {
   ]
 }
 
-ohos_shared_library("sqlite_sdk") {
-  include_dirs = [
-    "include",
-    "//third_party/bounds_checking_function/include",
-    "//third_party/openssl/include",
-  ]
+if (is_mingw || is_mac) {
+  ohos_shared_library("sqlite_sdk") {
+    include_dirs = [
+      "include",
+      "//third_party/bounds_checking_function/include",
+      "//third_party/openssl/include",
+    ]
 
-  sources = [ "src/sqlite3.c" ]
+    sources = [ "src/sqlite3.c" ]
 
-  defines = [
-    "NDEBUG=1",
-    "HAVE_USLEEP=1",
-    "SQLITE_HAVE_ISNAN",
-    "SQLITE_DEFAULT_JOURNAL_SIZE_LIMIT=1048576",
-    "SQLITE_THREADSAFE=2",
-    "SQLITE_TEMP_STORE=3",
-    "SQLITE_POWERSAFE_OVERWRITE=1",
-    "SQLITE_DEFAULT_FILE_FORMAT=4",
-    "SQLITE_DEFAULT_AUTOVACUUM=1",
-    "SQLITE_ENABLE_MEMORY_MANAGEMENT=1",
-    "SQLITE_ENABLE_FTS3",
-    "SQLITE_ENABLE_FTS4",
-    "SQLITE_OMIT_COMPILEOPTION_DIAGS",
-    "SQLITE_OMIT_LOAD_EXTENSION",
-    "SQLITE_DEFAULT_FILE_PERMISSIONS=0600",
-    "SQLITE_SECURE_DELETE",
-    "SQLITE_ENABLE_BATCH_ATOMIC_WRITE",
-    "USE_PREAD64",
-    "fdatasync=fdatasync",
-    "SQLITE_DIRECT_OVERFLOW_READ",
-    "SQLITE_HAS_CODEC",
-    "SQLITE_EXPORT_SYMBOLS",
-    "SQLITE_SHARED_BLOCK_OPTIMIZATION",
-  ]
-  remove_configs = [ "//build/config/compiler:chromium_code" ]
-  deps = [ "//third_party/bounds_checking_function:libsec_shared" ]
-  if (is_mingw) {
-    libs = [ "//prebuilts/mingw-w64/ohos/linux-x86_64/clang-mingw/x86_64-w64-mingw32/lib/libws2_32.a" ]
-    deps += [ "//third_party/openssl:libcrypto_static(//build/toolchain/mingw:mingw_x86_64)" ]
+    defines = [
+      "NDEBUG=1",
+      "HAVE_USLEEP=1",
+      "SQLITE_HAVE_ISNAN",
+      "SQLITE_DEFAULT_JOURNAL_SIZE_LIMIT=1048576",
+      "SQLITE_THREADSAFE=2",
+      "SQLITE_TEMP_STORE=3",
+      "SQLITE_POWERSAFE_OVERWRITE=1",
+      "SQLITE_DEFAULT_FILE_FORMAT=4",
+      "SQLITE_DEFAULT_AUTOVACUUM=1",
+      "SQLITE_ENABLE_MEMORY_MANAGEMENT=1",
+      "SQLITE_ENABLE_FTS3",
+      "SQLITE_ENABLE_FTS4",
+      "SQLITE_OMIT_COMPILEOPTION_DIAGS",
+      "SQLITE_OMIT_LOAD_EXTENSION",
+      "SQLITE_DEFAULT_FILE_PERMISSIONS=0600",
+      "SQLITE_SECURE_DELETE",
+      "SQLITE_ENABLE_BATCH_ATOMIC_WRITE",
+      "USE_PREAD64",
+      "fdatasync=fdatasync",
+      "SQLITE_DIRECT_OVERFLOW_READ",
+      "SQLITE_HAS_CODEC",
+      "SQLITE_EXPORT_SYMBOLS",
+      "SQLITE_SHARED_BLOCK_OPTIMIZATION",
+    ]
+    remove_configs = [ "//build/config/compiler:chromium_code" ]
+    deps = [
+      "//third_party/bounds_checking_function:libsec_shared",
+      "//third_party/openssl:libcrypto_static",
+    ]
+    if (is_mingw) {
+      libs = [ "//prebuilts/mingw-w64/ohos/linux-x86_64/clang-mingw/x86_64-w64-mingw32/lib/libws2_32.a" ]
+    }
+    cflags = [
+      "-Wno-error=implicit-function-declaration",
+      "-Wno-implicit-fallthrough",
+    ]
   }
-  cflags = [
-    "-Wno-error=implicit-function-declaration",
-    "-Wno-implicit-fallthrough",
-  ]
 }
