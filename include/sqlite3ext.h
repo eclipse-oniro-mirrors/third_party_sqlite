@@ -344,7 +344,9 @@ struct sqlite3_api_routines {
   int (*autovacuum_pages)(sqlite3*,
      unsigned int(*)(void*,const char*,unsigned int,unsigned int,unsigned int),
      void*, void(*)(void*));
+#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
   int (*set_droptable_handle)(sqlite3*,void(*)(sqlite3*,const char*,const char*));
+#endif
 };
 
 /*
@@ -661,7 +663,9 @@ extern const sqlite3_api_routines *sqlite3_export_symbols;
 /* Version 3.37.0 and later */
 #define sqlite3_autovacuum_pages       sqlite3_api->autovacuum_pages
 
+#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
 #define sqlite3_set_droptable_handle       sqlite3_api->set_droptable_handle
+#endif
 #endif /* !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION) */
 
 #if !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION)

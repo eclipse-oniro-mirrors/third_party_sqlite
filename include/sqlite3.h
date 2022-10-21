@@ -3113,10 +3113,12 @@ SQLITE_API int sqlite3_set_authorizer(
   void *pUserData
 );
 
+#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
 SQLITE_API int sqlite3_set_droptable_handle(
   sqlite3 *db,
   void (*xFunc)(sqlite3*,const char*,const char*)
 );
+#endif
 
 /*
 ** CAPI3REF: Authorizer Return Codes
