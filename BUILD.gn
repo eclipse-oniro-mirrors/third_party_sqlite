@@ -13,6 +13,9 @@
 
 import("//build/ohos.gni")
 
+is_cross_platform_build =
+    defined(build_cross_platform_version) && build_cross_platform_version
+
 # Lets callers do '#include <sqlite3.h>'
 config("sqlite_config") {
   include_dirs = [
@@ -82,14 +85,24 @@ ohos_shared_library("sqlite") {
     "-fvisibility=hidden",
     "-Wno-implicit-fallthrough",
   ]
-  ldflags = [ "-Wl,--exclude-libs,ALL" ]
+  if (target_os != "ios") {
+    ldflags = [ "-Wl,--exclude-libs,ALL" ]
+  }
   deps = [ "//third_party/openssl:libcrypto_shared" ]
   public_configs = [ ":sqlite_config" ]
   configs = [ ":sqlite3_private_config" ]
   part_name = "common"
   install_images = [ system_base_dir ]
   relative_install_dir = "platformsdk"
-  external_deps = [ "c_utils:utils" ]
+  if (is_cross_platform_build) {
+    if (target_os == "ios") {
+      deps += [ "//third_party/bounds_checking_function:libsec_shared" ]
+    } else {
+      deps += [ "//commonlibrary/c_utils/base:utils" ]
+    }
+  } else {
+    external_deps = [ "c_utils:utils" ]
+  }
 }
 
 ohos_executable("sqlite3") {
