@@ -80,6 +80,7 @@ ohos_shared_library("sqlite") {
     "SQLITE_SHARED_BLOCK_OPTIMIZATION",
     "SQLITE_CODEC_ATTACH_CHANGED",
     "SQLITE_ENABLE_DROPTABLE_CALLBACK",
+    "OPENSSL_SUPPRESS_DEPRECATED",
   ]
   cflags_c = [
     "-fvisibility=hidden",
@@ -134,6 +135,7 @@ ohos_executable("sqlite3") {
     "fdatasync=fdatasync",
     "SQLITE_DIRECT_OVERFLOW_READ",
     "SQLITE_SHARED_BLOCK_OPTIMIZATION",
+    "OPENSSL_SUPPRESS_DEPRECATED",
   ]
 
   cflags = [
@@ -176,6 +178,7 @@ if (is_mingw || is_mac) {
       "SQLITE_HAS_CODEC",
       "SQLITE_EXPORT_SYMBOLS",
       "SQLITE_SHARED_BLOCK_OPTIMIZATION",
+      "OPENSSL_SUPPRESS_DEPRECATED",
     ]
     remove_configs = [ "//build/config/compiler:chromium_code" ]
     deps = [
