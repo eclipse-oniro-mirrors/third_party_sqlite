@@ -194,3 +194,68 @@ if (is_mingw || is_mac) {
     ]
   }
 }
+
+if (is_cross_platform_build && target_os == "ios") {
+  ohos_static_library("sqlite_static") {
+    visibility = [ "//foundation/distributeddatamgr/*" ]
+    visibility += [ "//foundation/multimodalinput/*" ]
+    visibility +=
+        [ "//hit/fuzzing_test/projects/multimodal_InputService_fuzzer/*" ]
+    visibility += [ "//foundation/communication/*" ]
+    visibility += [ "//build/common/*" ]
+    visibility += [ ":*" ]
+    visibility += [ "//base/security/permission/*" ]
+    visibility += [ "//third_party/libsoup/*" ]
+    visibility += [ "//base/security/access_token/*" ]
+    visibility +=
+        [ "//foundation/resourceschedule/resource_schedule_service/*" ]
+    visibility += [ "//base/update/dupdate_engine/services/engine/*" ]
+
+    sources = [ "src/sqlite3.c" ]
+
+    defines = [
+      "NDEBUG=1",
+      "HAVE_USLEEP=1",
+      "SQLITE_HAVE_ISNAN",
+      "SQLITE_DEFAULT_JOURNAL_SIZE_LIMIT=1048576",
+      "SQLITE_THREADSAFE=2",
+      "SQLITE_TEMP_STORE=3",
+      "SQLITE_POWERSAFE_OVERWRITE=1",
+      "SQLITE_DEFAULT_FILE_FORMAT=4",
+      "SQLITE_DEFAULT_AUTOVACUUM=1",
+      "SQLITE_ENABLE_MEMORY_MANAGEMENT=1",
+      "SQLITE_ENABLE_FTS3",
+      "SQLITE_ENABLE_FTS4",
+      "SQLITE_ENABLE_FTS5",
+      "SQLITE_OMIT_COMPILEOPTION_DIAGS",
+      "SQLITE_OMIT_LOAD_EXTENSION",
+      "SQLITE_DEFAULT_FILE_PERMISSIONS=0660",
+      "SQLITE_SECURE_DELETE",
+      "SQLITE_ENABLE_BATCH_ATOMIC_WRITE",
+      "USE_PREAD64",
+      "fdatasync=fdatasync",
+      "HAVE_MALLOC_H=1",
+      "HAVE_MALLOC_USABLE_SIZE",
+      "SQLITE_DIRECT_OVERFLOW_READ",
+      "SQLITE_HAS_CODEC",
+      "SQLITE_EXPORT_SYMBOLS",
+      "SQLITE_SHARED_BLOCK_OPTIMIZATION",
+      "SQLITE_CODEC_ATTACH_CHANGED",
+      "SQLITE_ENABLE_DROPTABLE_CALLBACK",
+      "OPENSSL_SUPPRESS_DEPRECATED",
+    ]
+
+    cflags_c = [
+      "-fvisibility=hidden",
+      "-Wno-implicit-fallthrough",
+    ]
+
+    deps = [
+      "//third_party/bounds_checking_function:libsec_static",
+      "//third_party/openssl:libcrypto_static",
+    ]
+    public_configs = [ ":sqlite_config" ]
+    configs = [ ":sqlite3_private_config" ]
+    part_name = "common"
+  }
+}
