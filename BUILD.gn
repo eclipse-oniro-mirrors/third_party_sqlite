@@ -195,7 +195,7 @@ if (is_mingw || is_mac) {
   }
 }
 
-if (is_cross_platform_build && target_os == "ios") {
+if (is_cross_platform_build) {
   ohos_static_library("sqlite_static") {
     visibility = [ "//foundation/distributeddatamgr/*" ]
     visibility += [ "//foundation/multimodalinput/*" ]
