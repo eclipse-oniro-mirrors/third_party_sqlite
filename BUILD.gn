@@ -208,7 +208,6 @@ if (is_cross_platform_build) {
     visibility += [ "//base/security/access_token/*" ]
     visibility +=
         [ "//foundation/resourceschedule/resource_schedule_service/*" ]
-    visibility += [ "//base/update/dupdate_engine/services/engine/*" ]
 
     sources = [ "src/sqlite3.c" ]
 
