@@ -10,7 +10,7 @@
     "dirs": {},
     "scripts": {},
     "component": {
-        "name": "sqlite",
+        "name": "thirdparty_sqlite",
         "subsystem": "thirdparty",
         "syscap": [],
         "features": [],
@@ -18,12 +18,8 @@
         "rom": "",
         "ram": "",
         "deps": {
-            "components": [
-                "c_utils"
-            ],
-            "third_party": [
-                "openssl"
-            ]
+            "components": [],
+            "third_party": []
         },
         "build": {
             "sub_component": [],
