@@ -91,7 +91,8 @@ ohos_shared_library("sqlite") {
   deps = [ "//third_party/openssl:libcrypto_shared" ]
   public_configs = [ ":sqlite_config" ]
   configs = [ ":sqlite3_private_config" ]
-  part_name = "common"
+  part_name = "sqlite"
+  subsystem_name = "thirdparty"
   install_images = [ system_base_dir ]
   relative_install_dir = "platformsdk"
   if (is_cross_platform_build) {
@@ -191,6 +192,8 @@ if (is_mingw || is_mac) {
       "-Wno-error=implicit-function-declaration",
       "-Wno-implicit-fallthrough",
     ]
+    part_name = "sqlite"
+    subsystem_name = "thirdparty"
   }
 }
 
@@ -254,6 +257,7 @@ if (is_cross_platform_build) {
     ]
     public_configs = [ ":sqlite_config" ]
     configs = [ ":sqlite3_private_config" ]
-    part_name = "common"
+    part_name = "sqlite"
+    subsystem_name = "thirdparty"
   }
 }
