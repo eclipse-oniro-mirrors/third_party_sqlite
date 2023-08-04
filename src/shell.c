@@ -22527,8 +22527,12 @@ int SQLITE_CDECL wmain(int argc, wchar_t **wargv){
     }else if( strcmp(z,"-bail")==0 ){
       bail_on_error = 1;
     }else if( strcmp(z,"-nonce")==0 ){
-      free(data.zNonce);
-      data.zNonce = strdup(argv[++i]);
+      if( data.zNonce ) free(data.zNonce);
+        if( i+1 < argc ) data.zNonce = strdup(argv[++i]);
+        else{
+          data.zNonce = 0;
+            break;
+        }
     }else if( strcmp(z,"-safe")==0 ){
       /* no-op - catch this on the second pass */
     }
