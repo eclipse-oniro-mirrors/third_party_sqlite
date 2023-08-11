@@ -193,6 +193,8 @@ if (is_mingw || is_mac) {
       "-Wno-error=implicit-function-declaration",
       "-Wno-implicit-fallthrough",
     ]
+    part_name = "sqlite"
+    subsystem_name = "thirdparty"
   }
 }
 
