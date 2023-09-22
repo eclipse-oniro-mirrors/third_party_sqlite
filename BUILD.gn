@@ -47,6 +47,7 @@ ohos_shared_library("sqlite") {
   visibility += [ "//third_party/libsoup/*" ]
   visibility += [ "//base/security/access_token/*" ]
   visibility += [ "//foundation/resourceschedule/resource_schedule_service/*" ]
+  visibility += [ "//foundation/bundlemanager/ecological_rule_mgr/*" ]
 
   sources = [ "src/sqlite3.c" ]
 
@@ -212,6 +213,7 @@ if (is_cross_platform_build) {
     visibility += [ "//base/security/access_token/*" ]
     visibility +=
         [ "//foundation/resourceschedule/resource_schedule_service/*" ]
+    visibility += [ "//foundation/bundlemanager/ecological_rule_mgr/*" ]
 
     sources = [ "src/sqlite3.c" ]
 
