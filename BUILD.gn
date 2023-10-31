@@ -43,9 +43,8 @@ ohos_shared_library("sqlite") {
   visibility += [ "//foundation/communication/*" ]
   visibility += [ "//build/common/*" ]
   visibility += [ ":*" ]
-  visibility += [ "//base/security/permission/*" ]
+  visibility += [ "//base/security/*" ]
   visibility += [ "//third_party/libsoup/*" ]
-  visibility += [ "//base/security/access_token/*" ]
   visibility += [ "//foundation/resourceschedule/resource_schedule_service/*" ]
   visibility += [ "//foundation/bundlemanager/ecological_rule_mgr/*" ]
 
@@ -208,9 +207,8 @@ if (is_cross_platform_build) {
     visibility += [ "//foundation/communication/*" ]
     visibility += [ "//build/common/*" ]
     visibility += [ ":*" ]
-    visibility += [ "//base/security/permission/*" ]
+    visibility += [ "//base/security/*" ]
     visibility += [ "//third_party/libsoup/*" ]
-    visibility += [ "//base/security/access_token/*" ]
     visibility +=
         [ "//foundation/resourceschedule/resource_schedule_service/*" ]
     visibility += [ "//foundation/bundlemanager/ecological_rule_mgr/*" ]
