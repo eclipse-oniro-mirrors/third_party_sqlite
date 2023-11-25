@@ -47,6 +47,7 @@ ohos_shared_library("sqlite") {
   visibility += [ "//foundation/resourceschedule/resource_schedule_service/*" ]
   visibility += [ "//foundation/bundlemanager/ecological_rule_mgr/*" ]
   visibility += [ "//vendor/*" ]
+  visibility += [ "//base/accesscontrol/sandbox_manager/*" ]
 
   sources = [ "src/sqlite3.c" ]
 
