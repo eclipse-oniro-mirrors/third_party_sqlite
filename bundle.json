@@ -28,15 +28,7 @@
         },
         "build": {
             "sub_component": [],
-            "inner_kits": [
-                {
-                    "name": "//third_party/sqlite:sqlite",
-                    "header": {
-                        "header_files": [],
-                        "header_base": []
-                    }
-                }
-            ],
+            "inner_kits": [],
             "test": []
         }
     }
