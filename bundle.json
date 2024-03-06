@@ -32,8 +32,11 @@
                 {
                     "name": "//third_party/sqlite:sqlite",
                     "header": {
-                        "header_files": [],
-                        "header_base": []
+                        "header_files": [
+                            "sqlite3ext.h",
+                            "sqlite3sym.h"
+                        ],
+                        "header_base": "//third_party/sqlite/include"
                     }
                 }
             ],
