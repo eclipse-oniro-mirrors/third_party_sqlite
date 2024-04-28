@@ -17,10 +17,7 @@ is_cross_platform_build = defined(is_arkui_x) && is_arkui_x
 
 # Lets callers do '#include <sqlite3.h>'
 config("sqlite_config") {
-  include_dirs = [
-    "include",
-    "//commonlibrary/c_utils/base/include",
-  ]
+  include_dirs = [ "include" ]
 }
 
 # This is the configuration used to build sqlite itself.
@@ -90,8 +87,9 @@ ohos_shared_library("sqlite") {
   if (target_os != "ios") {
     ldflags = [ "-Wl,--exclude-libs,ALL" ]
   }
-  deps = [ "//third_party/openssl:libcrypto_shared" ]
+  deps = []
   public_configs = [ ":sqlite_config" ]
+  public_external_deps = [ "c_utils:utilsbase" ]
   configs = [ ":sqlite3_private_config" ]
   innerapi_tags = [ "platformsdk_indirect" ]
   part_name = "sqlite"
@@ -105,7 +103,10 @@ ohos_shared_library("sqlite") {
       deps += [ "//commonlibrary/c_utils/base:utils" ]
     }
   } else {
-    external_deps = [ "c_utils:utils" ]
+    external_deps = [
+      "c_utils:utils",
+      "openssl:libcrypto_shared",
+    ]
   }
 }
 
