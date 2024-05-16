@@ -32,21 +32,6 @@ group("libsqlite") {
 }
 
 ohos_shared_library("sqlite") {
-  visibility = [ "//foundation/distributeddatamgr/*" ]
-  visibility += [ "//foundation/multimodalinput/*" ]
-  visibility +=
-      [ "//hit/fuzzing_test/projects/multimodal_InputService_fuzzer/*" ]
-  visibility += [ "//foundation/communication/*" ]
-  visibility += [ "//build/common/*" ]
-  visibility += [ ":*" ]
-  visibility += [ "//base/security/*" ]
-  visibility += [ "//third_party/libsoup/*" ]
-  visibility += [ "//foundation/resourceschedule/resource_schedule_service/*" ]
-  visibility += [ "//foundation/bundlemanager/ecological_rule_mgr/*" ]
-  visibility += [ "//vendor/*" ]
-  visibility += [ "//base/accesscontrol/sandbox_manager/*" ]
-  visibility += [ "//out/rk3568/build_configs/thirdparty/sqlite/*" ]
-
   sources = [ "src/sqlite3.c" ]
 
   defines = [
