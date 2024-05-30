@@ -74,7 +74,7 @@ ohos_shared_library("sqlite") {
   }
   deps = []
   public_configs = [ ":sqlite_config" ]
-  public_external_deps = [ "c_utils:utilsbase" ]
+  public_external_deps = [ "c_utils:utils" ]
   configs = [ ":sqlite3_private_config" ]
   innerapi_tags = [ "platformsdk_indirect" ]
   part_name = "sqlite"
