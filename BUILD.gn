@@ -63,6 +63,8 @@ ohos_shared_library("sqlite") {
     "SQLITE_CODEC_ATTACH_CHANGED",
     "SQLITE_ENABLE_DROPTABLE_CALLBACK",
     "OPENSSL_SUPPRESS_DEPRECATED",
+    "LOG_DUMP",
+    "FDSAN_ENABLE",
   ]
   cflags_c = [
     "-fvisibility=hidden",
@@ -123,6 +125,8 @@ ohos_executable("sqlite3") {
     "SQLITE_DIRECT_OVERFLOW_READ",
     "SQLITE_SHARED_BLOCK_OPTIMIZATION",
     "OPENSSL_SUPPRESS_DEPRECATED",
+    "LOG_DUMP",
+    "FDSAN_ENABLE",
   ]
 
   cflags = [
