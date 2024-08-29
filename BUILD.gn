@@ -65,6 +65,7 @@ ohos_shared_library("sqlite") {
     "OPENSSL_SUPPRESS_DEPRECATED",
     "LOG_DUMP",
     "FDSAN_ENABLE",
+    "HARMONY_OS",
   ]
   cflags_c = [
     "-fvisibility=hidden",
@@ -127,6 +128,7 @@ ohos_executable("sqlite3") {
     "OPENSSL_SUPPRESS_DEPRECATED",
     "LOG_DUMP",
     "FDSAN_ENABLE",
+    "HARMONY_OS",
   ]
 
   cflags = [
