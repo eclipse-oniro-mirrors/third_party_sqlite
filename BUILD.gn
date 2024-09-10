@@ -32,6 +32,7 @@ group("libsqlite") {
 }
 
 ohos_shared_library("sqlite") {
+  branch_protector_ret = "pac_ret"
   sources = [ "src/sqlite3.c" ]
 
   defines = [
