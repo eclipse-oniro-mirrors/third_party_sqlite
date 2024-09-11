@@ -17,7 +17,10 @@ is_cross_platform_build = defined(is_arkui_x) && is_arkui_x
 
 # Lets callers do '#include <sqlite3.h>'
 config("sqlite_config") {
-  include_dirs = [ "include" ]
+  include_dirs = [
+    "include",
+    "//commonlibrary/c_utils/base/include",
+  ]
 }
 
 # This is the configuration used to build sqlite itself.
@@ -32,6 +35,20 @@ group("libsqlite") {
 }
 
 ohos_shared_library("sqlite") {
+  visibility = [ "//foundation/distributeddatamgr/*" ]
+  visibility += [ "//foundation/multimodalinput/*" ]
+  visibility +=
+      [ "//hit/fuzzing_test/projects/multimodal_InputService_fuzzer/*" ]
+  visibility += [ "//foundation/communication/*" ]
+  visibility += [ "//build/common/*" ]
+  visibility += [ ":*" ]
+  visibility += [ "//base/security/*" ]
+  visibility += [ "//third_party/libsoup/*" ]
+  visibility += [ "//foundation/resourceschedule/resource_schedule_service/*" ]
+  visibility += [ "//foundation/bundlemanager/ecological_rule_mgr/*" ]
+  visibility += [ "//vendor/*" ]
+  visibility += [ "//base/accesscontrol/sandbox_manager/*" ]
+
   sources = [ "src/sqlite3.c" ]
 
   defines = [
@@ -63,6 +80,8 @@ ohos_shared_library("sqlite") {
     "SQLITE_CODEC_ATTACH_CHANGED",
     "SQLITE_ENABLE_DROPTABLE_CALLBACK",
     "OPENSSL_SUPPRESS_DEPRECATED",
+    "LOG_DUMP",
+    "FDSAN_ENABLE",
   ]
   cflags_c = [
     "-fvisibility=hidden",
@@ -71,9 +90,8 @@ ohos_shared_library("sqlite") {
   if (target_os != "ios") {
     ldflags = [ "-Wl,--exclude-libs,ALL" ]
   }
-  deps = []
+  deps = [ "//third_party/openssl:libcrypto_shared" ]
   public_configs = [ ":sqlite_config" ]
-  public_external_deps = [ "c_utils:utils" ]
   configs = [ ":sqlite3_private_config" ]
   innerapi_tags = [ "platformsdk_indirect" ]
   part_name = "sqlite"
@@ -87,10 +105,7 @@ ohos_shared_library("sqlite") {
       deps += [ "//commonlibrary/c_utils/base:utils" ]
     }
   } else {
-    external_deps = [
-      "c_utils:utils",
-      "openssl:libcrypto_shared",
-    ]
+    external_deps = [ "c_utils:utils" ]
   }
 }
 
@@ -123,6 +138,8 @@ ohos_executable("sqlite3") {
     "SQLITE_DIRECT_OVERFLOW_READ",
     "SQLITE_SHARED_BLOCK_OPTIMIZATION",
     "OPENSSL_SUPPRESS_DEPRECATED",
+    "LOG_DUMP",
+    "FDSAN_ENABLE",
   ]
 
   cflags = [
