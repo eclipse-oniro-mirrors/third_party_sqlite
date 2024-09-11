@@ -20,7 +20,8 @@
         "ram": "1024KB",
         "deps": {
             "components": [
-                "c_utils"
+                "c_utils",
+                "openssl"
             ],
             "third_party": [
                 "openssl"
