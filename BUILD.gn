@@ -32,6 +32,20 @@ group("libsqlite") {
 }
 
 ohos_shared_library("sqlite") {
+  visibility = [ "//foundation/distributeddatamgr/*" ]
+  visibility += [ "//foundation/multimodalinput/*" ]
+  visibility +=
+      [ "//hit/fuzzing_test/projects/multimodal_InputService_fuzzer/*" ]
+  visibility += [ "//foundation/communication/*" ]
+  visibility += [ "//build/common/*" ]
+  visibility += [ ":*" ]
+  visibility += [ "//base/security/*" ]
+  visibility += [ "//third_party/libsoup/*" ]
+  visibility += [ "//foundation/resourceschedule/resource_schedule_service/*" ]
+  visibility += [ "//foundation/bundlemanager/ecological_rule_mgr/*" ]
+  visibility += [ "//vendor/*" ]
+  visibility += [ "//base/accesscontrol/sandbox_manager/*" ]
+
   sources = [ "src/sqlite3.c" ]
 
   defines = [
@@ -63,6 +77,9 @@ ohos_shared_library("sqlite") {
     "SQLITE_CODEC_ATTACH_CHANGED",
     "SQLITE_ENABLE_DROPTABLE_CALLBACK",
     "OPENSSL_SUPPRESS_DEPRECATED",
+    "LOG_DUMP",
+    "FDSAN_ENABLE",
+    "HARMONY_OS",
   ]
   cflags_c = [
     "-fvisibility=hidden",
@@ -73,7 +90,7 @@ ohos_shared_library("sqlite") {
   }
   deps = []
   public_configs = [ ":sqlite_config" ]
-  public_external_deps = [ "c_utils:utils" ]
+  public_external_deps = [ "c_utils:utilsbase" ]
   configs = [ ":sqlite3_private_config" ]
   innerapi_tags = [ "platformsdk_indirect" ]
   part_name = "sqlite"
@@ -123,6 +140,9 @@ ohos_executable("sqlite3") {
     "SQLITE_DIRECT_OVERFLOW_READ",
     "SQLITE_SHARED_BLOCK_OPTIMIZATION",
     "OPENSSL_SUPPRESS_DEPRECATED",
+    "LOG_DUMP",
+    "FDSAN_ENABLE",
+    "HARMONY_OS",
   ]
 
   cflags = [

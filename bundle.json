@@ -22,9 +22,6 @@
             "components": [
                 "c_utils",
                 "openssl"
-            ],
-            "third_party": [
-                "openssl"
             ]
         },
         "build": {
