@@ -14,13 +14,14 @@
         "name": "sqlite",
         "subsystem": "thirdparty",
         "syscap": [],
-        "features": [],
+        "features": ["sqlite_support_icu"],
         "adapted_system_type": [ "standard" ],
         "rom": "2200KB",
         "ram": "1024KB",
         "deps": {
             "components": [
                 "c_utils",
+                "icu",
                 "openssl"
             ],
             "third_party": [
