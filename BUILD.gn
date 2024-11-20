@@ -12,6 +12,7 @@
 # limitations under the License.
 
 import("//build/ohos.gni")
+import("//third_party/sqlite/sqlite.gni")
 
 is_cross_platform_build = defined(is_arkui_x) && is_arkui_x
 
@@ -46,9 +47,11 @@ ohos_shared_library("sqlite") {
     "SQLITE_DEFAULT_FILE_FORMAT=4",
     "SQLITE_DEFAULT_AUTOVACUUM=1",
     "SQLITE_ENABLE_MEMORY_MANAGEMENT=1",
+    "SQLITE_ENABLE_LOAD_EXTENSION",
     "SQLITE_ENABLE_FTS3",
     "SQLITE_ENABLE_FTS4",
     "SQLITE_ENABLE_FTS5",
+    "SQLITE_ENABLE_FTS3_TOKENIZER",
     "SQLITE_OMIT_COMPILEOPTION_DIAGS",
     "SQLITE_DEFAULT_FILE_PERMISSIONS=0660",
     "SQLITE_SECURE_DELETE",
@@ -68,6 +71,9 @@ ohos_shared_library("sqlite") {
     "FDSAN_ENABLE",
     "HARMONY_OS",
   ]
+  if (os_level == "standard" && sqlite_support_icu) {
+    defines += [ "SQLITE_ENABLE_ICU" ]
+  }
   cflags_c = [
     "-fvisibility=hidden",
     "-Wno-implicit-fallthrough",
@@ -95,6 +101,12 @@ ohos_shared_library("sqlite") {
       "c_utils:utils",
       "openssl:libcrypto_shared",
     ]
+    if (os_level == "standard" && sqlite_support_icu) {
+      external_deps += [
+        "icu:shared_icui18n",
+        "icu:shared_icuuc",
+      ]
+    }
   }
 }
 
