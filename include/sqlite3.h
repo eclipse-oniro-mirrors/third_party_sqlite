@@ -2120,6 +2120,21 @@ struct sqlite3_mem_methods {
 ** configuration setting is never used, then the default maximum is determined
 ** by the [SQLITE_MEMDB_DEFAULT_MAXSIZE] compile-time option.  If that
 ** compile-time option is not set, then the default maximum is 1073741824.
+**
+** [[SQLITE_CONFIG_CORRUPTION]] <dt>SQLITE_CONFIG_CORRUPTION</dt>
+** <dd> The SQLITE_CONFIG_CORRUPTION option is used to configure the SQLite
+** global [ corruption error].
+** (^The SQLITE_CONFIG_CORRUPTION option takes two arguments: a pointer to a
+** function with a call signature of void(*)(void*,const void*),
+** and a pointer to void. ^If the function pointer is not NULL, it is
+** invoked to process each data corruption event.  ^If the
+** function pointer is NULL, no=op will do when corruption detect.
+** ^The void pointer that is the second argument to SQLITE_CONFIG_CORRUPTION is
+** passed through as the first parameter to the application-defined corruption
+** function whenever that function is invoked.  ^The second parameter to
+** the corruption function is a corruption message after formatting via [sqlite3_snprintf()].
+** In a multi-threaded application, the application-defined corruption
+** function must be threadsafe. </dd>
 ** </dl>
 */
 #define SQLITE_CONFIG_SINGLETHREAD  1  /* nil */
@@ -2151,6 +2166,7 @@ struct sqlite3_mem_methods {
 #define SQLITE_CONFIG_SMALL_MALLOC        27  /* boolean */
 #define SQLITE_CONFIG_SORTERREF_SIZE      28  /* int nByte */
 #define SQLITE_CONFIG_MEMDB_MAXSIZE       29  /* sqlite3_int64 */
+#define SQLITE_CONFIG_CORRUPTION          30  /* xCorruption */
 
 /*
 ** CAPI3REF: Database Connection Configuration Options
