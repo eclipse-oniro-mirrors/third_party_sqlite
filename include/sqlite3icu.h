@@ -31,15 +31,11 @@
 #include "sqlite3sym.h"
 #include "sqlite3tokenizer.h"
 
-#if 0
+#ifdef __cplusplus
 extern "C" {
-#endif  /* __cplusplus */
+#endif
 
 SQLITE_API int sqlite3IcuInit(sqlite3 *db);
-
-#if 0
-}  /* extern "C" */
-#endif  /* __cplusplus */
 
 /************** End of sqliteicu.h *******************************************/
 /************** Continuing where we left off in main.c ***********************/
@@ -47,4 +43,8 @@ SQLITE_API int sqlite3IcuInit(sqlite3 *db);
 
 #ifdef SQLITE_ENABLE_ICU
 SQLITE_API void sqlite3Fts3IcuTokenizerModule(sqlite3_tokenizer_module const**ppModule);
+#endif
+
+#ifdef __cplusplus
+}  /* end of the 'extern "C"' block */
 #endif
