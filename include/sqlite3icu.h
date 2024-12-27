@@ -28,7 +28,7 @@
 ** This header file is used by programs that want to link against the
 ** ICU extension.  All it does is declare the sqlite3IcuInit() interface.
 */
-#include "sqlite3.h"
+#include "sqlite3sym.h"
 #include "sqlite3tokenizer.h"
 
 #if 0
