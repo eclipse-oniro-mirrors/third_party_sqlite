@@ -12,7 +12,6 @@
 # limitations under the License.
 
 import("//build/ohos.gni")
-import("//third_party/sqlite/sqlite.gni")
 
 is_cross_platform_build = defined(is_arkui_x) && is_arkui_x
 
@@ -29,7 +28,51 @@ config("sqlite3_private_config") {
 }
 
 group("libsqlite") {
-  public_deps = [ ":sqlite" ]
+  public_deps = [
+    ":sqlite",
+    ":sqliteicu",
+  ]
+}
+
+ohos_shared_library("sqliteicu") {
+  branch_protector_ret = "pac_ret"
+  sources = [ "src/sqlite3icu.c" ]
+
+  defines = [
+    "NDEBUG=1",
+    "SQLITE_EXPORT_SYMBOLS",
+    "SQLITE_ENABLE_FTS3",
+    "HARMONY_OS",
+    "SQLITE_ENABLE_ICU",
+  ]
+  cflags_c = [
+    "-fvisibility=hidden",
+    "-Wno-implicit-fallthrough",
+  ]
+  if (target_os != "ios") {
+    ldflags = [ "-Wl,--exclude-libs,ALL" ]
+  }
+  deps = [ ":sqlite" ]
+  public_configs = [ ":sqlite_config" ]
+  configs = [ ":sqlite3_private_config" ]
+  innerapi_tags = [ "platformsdk_indirect" ]
+  part_name = "sqlite"
+  subsystem_name = "thirdparty"
+  install_images = [ system_base_dir ]
+  relative_install_dir = "platformsdk"
+  if (is_cross_platform_build) {
+    if (target_os == "ios") {
+      deps += [ "//third_party/bounds_checking_function:libsec_shared" ]
+    } else {
+      deps += [ "//commonlibrary/c_utils/base:utils" ]
+    }
+  } else {
+    external_deps = [ "c_utils:utils" ]
+  }
+  external_deps += [
+    "icu:shared_icui18n",
+    "icu:shared_icuuc",
+  ]
 }
 
 ohos_shared_library("sqlite") {
@@ -49,9 +92,9 @@ ohos_shared_library("sqlite") {
     "SQLITE_ENABLE_MEMORY_MANAGEMENT=1",
     "SQLITE_ENABLE_LOAD_EXTENSION",
     "SQLITE_ENABLE_FTS3",
+    "SQLITE_ENABLE_FTS3_TOKENIZER",
     "SQLITE_ENABLE_FTS4",
     "SQLITE_ENABLE_FTS5",
-    "SQLITE_ENABLE_FTS3_TOKENIZER",
     "SQLITE_OMIT_COMPILEOPTION_DIAGS",
     "SQLITE_DEFAULT_FILE_PERMISSIONS=0660",
     "SQLITE_SECURE_DELETE",
@@ -70,10 +113,8 @@ ohos_shared_library("sqlite") {
     "LOG_DUMP",
     "FDSAN_ENABLE",
     "HARMONY_OS",
+    "SQLITE_ENABLE_ICU",
   ]
-  if (os_level == "standard" && sqlite_support_icu) {
-    defines += [ "SQLITE_ENABLE_ICU" ]
-  }
   cflags_c = [
     "-fvisibility=hidden",
     "-Wno-implicit-fallthrough",
@@ -101,12 +142,6 @@ ohos_shared_library("sqlite") {
       "c_utils:utils",
       "openssl:libcrypto_shared",
     ]
-    if (os_level == "standard" && sqlite_support_icu) {
-      external_deps += [
-        "icu:shared_icui18n",
-        "icu:shared_icuuc",
-      ]
-    }
   }
 }
 
