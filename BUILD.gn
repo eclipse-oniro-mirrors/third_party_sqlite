@@ -60,6 +60,7 @@ ohos_shared_library("sqliteicu") {
   subsystem_name = "thirdparty"
   install_images = [ system_base_dir ]
   relative_install_dir = "platformsdk"
+  external_deps = []
   if (is_cross_platform_build) {
     if (target_os == "ios") {
       deps += [ "//third_party/bounds_checking_function:libsec_shared" ]
@@ -67,7 +68,7 @@ ohos_shared_library("sqliteicu") {
       deps += [ "//commonlibrary/c_utils/base:utils" ]
     }
   } else {
-    external_deps = [ "c_utils:utils" ]
+    external_deps += [ "c_utils:utils" ]
   }
   external_deps += [
     "icu:shared_icui18n",
