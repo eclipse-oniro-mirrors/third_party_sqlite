@@ -29,7 +29,10 @@
             ]
         },
         "build": {
-            "sub_component": [],
+            "sub_component": [
+                "//third_party/sqlite:sqlite",
+                "//third_party/sqlite:sqliteicu"
+            ],
             "inner_kits": [
                 {
                     "name": "//third_party/sqlite:sqlite",
