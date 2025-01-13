@@ -1,7 +1,7 @@
 [
     {
-        "Name": "sqlite",
-        "License": "Public Domain",
+        "Name": "SQLite",
+        "License": "Public Domain,Apache License 2.0",
         "License File": "LICENSE",
         "Version Number": "3.40.1",
         "Owner": "wangbingquan@huawei.com",
