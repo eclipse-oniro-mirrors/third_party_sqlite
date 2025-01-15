@@ -30,8 +30,7 @@
         },
         "build": {
             "sub_component": [
-                "//third_party/sqlite:sqlite",
-                "//third_party/sqlite:sqliteicu"
+                "//third_party/sqlite:libsqlite"
             ],
             "inner_kits": [
                 {
@@ -43,9 +42,6 @@
                         ],
                         "header_base": "//third_party/sqlite/include"
                     }
-                },
-                {
-                    "name": "//third_party/sqlite:sqliteicu"
                 }
             ],
             "test": []
