@@ -43,6 +43,9 @@
                         ],
                         "header_base": "//third_party/sqlite/include"
                     }
+                },
+                {
+                    "name": "//third_party/sqlite:sqliteicu"
                 }
             ],
             "test": []
