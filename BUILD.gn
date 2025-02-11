@@ -193,7 +193,6 @@ if (is_mingw || is_mac) {
     include_dirs = [
       "include",
       "//third_party/bounds_checking_function/include",
-      "//third_party/openssl/include",
     ]
 
     sources = [ "src/sqlite3.c" ]
@@ -224,10 +223,8 @@ if (is_mingw || is_mac) {
       "OPENSSL_SUPPRESS_DEPRECATED",
     ]
     remove_configs = [ "//build/config/compiler:chromium_code" ]
-    deps = [
-      "//third_party/bounds_checking_function:libsec_shared",
-      "//third_party/openssl:libcrypto_restool",
-    ]
+    deps = [ "//third_party/bounds_checking_function:libsec_shared" ]
+    external_deps = [ "openssl:libcrypto_restool" ]
     if (is_mingw) {
       libs = [ "//prebuilts/mingw-w64/ohos/linux-x86_64/clang-mingw/x86_64-w64-mingw32/lib/libws2_32.a" ]
     }
@@ -293,10 +290,8 @@ if (is_cross_platform_build) {
       "-Wno-implicit-fallthrough",
     ]
 
-    deps = [
-      "//third_party/bounds_checking_function:libsec_static",
-      "//third_party/openssl:libcrypto_static",
-    ]
+    deps = [ "//third_party/bounds_checking_function:libsec_static" ]
+    external_deps = [ "openssl:libcrypto_static" ]
     public_configs = [ ":sqlite_config" ]
     configs = [ ":sqlite3_private_config" ]
     part_name = "sqlite"
