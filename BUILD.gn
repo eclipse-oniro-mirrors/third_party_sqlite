@@ -290,8 +290,10 @@ if (is_cross_platform_build) {
       "-Wno-implicit-fallthrough",
     ]
 
-    deps = [ "//third_party/bounds_checking_function:libsec_static" ]
-    external_deps = [ "openssl:libcrypto_static" ]
+    deps = [
+      "//third_party/bounds_checking_function:libsec_static",
+      "//third_party/openssl:libcrypto_static",
+    ]
     public_configs = [ ":sqlite_config" ]
     configs = [ ":sqlite3_private_config" ]
     part_name = "sqlite"
