@@ -138,7 +138,7 @@ ohos_shared_library("sqlite") {
     if (target_os == "ios") {
       deps += [ "//third_party/bounds_checking_function:libsec_shared" ]
     } else {
-      deps += [ "//commonlibrary/c_utils/base:utils" ]
+      external_deps = [ "c_utils:utils" ]
     }
   } else {
     external_deps = [
