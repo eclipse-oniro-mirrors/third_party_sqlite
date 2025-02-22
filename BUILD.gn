@@ -14,17 +14,18 @@
 import("//build/ohos.gni")
 
 is_cross_platform_build = defined(is_arkui_x) && is_arkui_x
+sqlite_patched_dir = root_out_dir + "/patched_sqlite"
 
 # Lets callers do '#include <sqlite3.h>'
 config("sqlite_config") {
-  include_dirs = [ "include" ]
+  include_dirs = [ "$sqlite_patched_dir/include" ]
 }
 
 # This is the configuration used to build sqlite itself.
 # It should not be needed outside of this library.
 config("sqlite3_private_config") {
   visibility = [ ":*" ]
-  include_dirs = [ "include" ]
+  include_dirs = [ "$sqlite_patched_dir/include" ]
 }
 
 group("libsqlite") {
@@ -36,7 +37,7 @@ group("libsqlite") {
 
 ohos_shared_library("sqliteicu") {
   branch_protector_ret = "pac_ret"
-  sources = [ "src/sqlite3icu.c" ]
+  sources = [ "$sqlite_patched_dir/src/sqlite3icu.c" ]
 
   defines = [
     "NDEBUG=1",
@@ -78,7 +79,7 @@ ohos_shared_library("sqliteicu") {
 
 ohos_shared_library("sqlite") {
   branch_protector_ret = "pac_ret"
-  sources = [ "src/sqlite3.c" ]
+  sources = [ "$sqlite_patched_dir/src/sqlite3.c" ]
 
   defines = [
     "NDEBUG=1",
@@ -114,6 +115,7 @@ ohos_shared_library("sqlite") {
     "LOG_DUMP",
     "FDSAN_ENABLE",
     "HARMONY_OS",
+    "SQLITE_HDR_CHECK",
     "SQLITE_ENABLE_ICU",
     "SQLITE_META_DWR",
     "SQLITE_CHECK_PAGES",
@@ -125,7 +127,7 @@ ohos_shared_library("sqlite") {
   if (target_os != "ios") {
     ldflags = [ "-Wl,--exclude-libs,ALL" ]
   }
-  deps = []
+  deps = [ "//third_party/sqlite/patch:apply_patch" ]
   public_configs = [ ":sqlite_config" ]
   public_external_deps = [ "c_utils:utils" ]
   configs = [ ":sqlite3_private_config" ]
@@ -149,10 +151,10 @@ ohos_shared_library("sqlite") {
 }
 
 ohos_executable("sqlite3") {
-  include_dirs = [ "include" ]
+  include_dirs = [ "$sqlite_patched_dir/include" ]
   sources = [
-    "src/shell.c",
-    "src/sqlite3.c",
+    "$sqlite_patched_dir/src/shell.c",
+    "$sqlite_patched_dir/src/sqlite3.c",
   ]
 
   defines = [
@@ -186,16 +188,18 @@ ohos_executable("sqlite3") {
     "-Wno-error=implicit-function-declaration",
     "-Wno-implicit-fallthrough",
   ]
+
+  deps = [ "//third_party/sqlite/patch:apply_patch" ]
 }
 
 if (is_mingw || is_mac) {
   ohos_shared_library("sqlite_sdk") {
     include_dirs = [
-      "include",
+      "$sqlite_patched_dir/include",
       "//third_party/bounds_checking_function/include",
     ]
 
-    sources = [ "src/sqlite3.c" ]
+    sources = [ "$sqlite_patched_dir/src/sqlite3.c" ]
 
     defines = [
       "NDEBUG=1",
@@ -223,7 +227,10 @@ if (is_mingw || is_mac) {
       "OPENSSL_SUPPRESS_DEPRECATED",
     ]
     remove_configs = [ "//build/config/compiler:chromium_code" ]
-    deps = [ "//third_party/bounds_checking_function:libsec_shared" ]
+    deps = [ 
+      "//third_party/sqlite/patch:apply_patch",
+      "//third_party/bounds_checking_function:libsec_shared",
+    ]
     external_deps = [ "openssl:libcrypto_restool" ]
     if (is_mingw) {
       libs = [ "//prebuilts/mingw-w64/ohos/linux-x86_64/clang-mingw/x86_64-w64-mingw32/lib/libws2_32.a" ]
@@ -291,6 +298,7 @@ if (is_cross_platform_build) {
     ]
 
     deps = [
+      "//third_party/sqlite/patch:apply_patch",
       "//third_party/bounds_checking_function:libsec_static",
       "//third_party/openssl:libcrypto_static",
     ]
