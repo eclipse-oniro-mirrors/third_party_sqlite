@@ -366,10 +366,8 @@ struct sqlite3_api_routines {
   /* Version 3.44.0 and later */
   void *(*get_clientdata)(sqlite3*,const char*);
   int (*set_clientdata)(sqlite3*, const char*, void*, void(*)(void*));
-#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
   /* handle after drop table done */
   int (*set_droptable_handle)(sqlite3*,void(*)(sqlite3*,const char*,const char*));
-#endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
 };
 
 /*
@@ -707,10 +705,8 @@ extern const sqlite3_api_routines *sqlite3_export_symbols;
 /* Version 3.44.0 and later */
 #define sqlite3_get_clientdata         sqlite3_api->get_clientdata
 #define sqlite3_set_clientdata         sqlite3_api->set_clientdata
-#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
 /* handle after drop table done */
 #define sqlite3_set_droptable_handle   sqlite3_api->set_droptable_handle
-#endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
 #endif /* !defined(SQLITE_CORE) && (!defined(SQLITE_OMIT_LOAD_EXTENSION) || defined(SQLITE3_EXPORT_SYMBOLS)) */
 
 #if !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION)
