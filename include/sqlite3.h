@@ -2191,6 +2191,7 @@ struct sqlite3_mem_methods {
 #define SQLITE_CONFIG_SORTERREF_SIZE      28  /* int nByte */
 #define SQLITE_CONFIG_MEMDB_MAXSIZE       29  /* sqlite3_int64 */
 #define SQLITE_CONFIG_ROWID_IN_VIEW       30  /* int* */
+#define SQLITE_CONFIG_ENABLE_ICU          31  /* boolean */
 
 /*
 ** CAPI3REF: Database Connection Configuration Options
