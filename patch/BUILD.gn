@@ -24,9 +24,12 @@ action("apply_patch") {
     outputs = [
       "$sqlite_dst_dir/src/shell.c",
       "$sqlite_dst_dir/src/sqlite3.c",
+      "$sqlite_dst_dir/src/sqlite3icu.c",
       "$sqlite_dst_dir/include/sqlite3ext.h",
       "$sqlite_dst_dir/include/sqlite3.h",
       "$sqlite_dst_dir/include/sqlite3sym.h",
+      "$sqlite_dst_dir/include/sqlite3icu.h",
+      "$sqlite_dst_dir/include/sqlite3tokenizer.h",
     ]
 
     args = [
