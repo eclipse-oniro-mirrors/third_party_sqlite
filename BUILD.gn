@@ -55,7 +55,7 @@ ohos_shared_library("sqliteicu") {
   }
   deps = [
     ":sqlite",
-    "//third_party/sqlite/patch:apply_patch"
+    "//third_party/sqlite/patch:apply_patch",
   ]
   public_configs = [ ":sqlite_config" ]
   configs = [ ":sqlite3_private_config" ]
@@ -230,9 +230,9 @@ if (is_mingw || is_mac) {
       "OPENSSL_SUPPRESS_DEPRECATED",
     ]
     remove_configs = [ "//build/config/compiler:chromium_code" ]
-    deps = [ 
-      "//third_party/sqlite/patch:apply_patch",
+    deps = [
       "//third_party/bounds_checking_function:libsec_shared",
+      "//third_party/sqlite/patch:apply_patch",
     ]
     external_deps = [ "openssl:libcrypto_restool" ]
     if (is_mingw) {
@@ -301,9 +301,9 @@ if (is_cross_platform_build) {
     ]
 
     deps = [
-      "//third_party/sqlite/patch:apply_patch",
       "//third_party/bounds_checking_function:libsec_static",
       "//third_party/openssl:libcrypto_static",
+      "//third_party/sqlite/patch:apply_patch",
     ]
     public_configs = [ ":sqlite_config" ]
     configs = [ ":sqlite3_private_config" ]
