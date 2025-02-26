@@ -121,6 +121,7 @@ ohos_shared_library("sqlite") {
     "SQLITE_HDR_CHECK",
     "SQLITE_ENABLE_ICU",
     "SQLITE_META_DWR",
+    "SQLITE_CHECK_PAGES",
   ]
   cflags_c = [
     "-fvisibility=hidden",
