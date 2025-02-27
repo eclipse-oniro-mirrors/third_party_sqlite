@@ -61,7 +61,6 @@ Note:If the text contains special characters, please escape them according to th
 			<policy name="projectPolicy" desc="">
 				<policyitem type="compatibility" name="Public Domain" path=".*" desc="兼容license"/>
 				<policyitem type="compatibility" name="blessing" path=".*" desc=""/>
-				<policyitem type="compatibility" name="Apache-2.0" path=".*" desc=""/>
 				<policyitem type="license" name="*" path=".*" rule="may" group="defaultGroup" filefilter="defaultPolicyFilter" desc=""/>
 				<policyitem type="copyright" name="*" path=".*" rule="may" group="defaultGroup" filefilter="defaultPolicyFilter" desc=""/>
 			</policy>

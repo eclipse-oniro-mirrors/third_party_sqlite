@@ -47,4 +47,4 @@ SQLITE_API void sqlite3Fts3IcuTokenizerModule(sqlite3_tokenizer_module const**pp
 
 #ifdef __cplusplus
 }  /* end of the 'extern "C"' block */
-#endif
+#endif
