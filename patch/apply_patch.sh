@@ -39,7 +39,7 @@ echo "create patched_sqlite_dir: $dst_dir"
 mkdir -p $dst_dir
 
 echo "copy $src_dir/* to $dst_dir/"
-cp -fra $src_dir/* $dst_dir
+cp -fa $src_dir/* $dst_dir
 
 ls -l $patch_dir/*.patch
 if [ $? -ne 0 ]; then
