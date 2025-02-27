@@ -14,7 +14,7 @@
         "name": "sqlite",
         "subsystem": "thirdparty",
         "syscap": [],
-        "features": [],
+        "features": [ "sqlite_support_check_pages" ],
         "adapted_system_type": [ "standard" ],
         "rom": "2200KB",
         "ram": "1024KB",
