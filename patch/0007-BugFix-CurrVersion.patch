@@ -1,20 +1,40 @@
-From 5dd4cd181892660bbf665994c42d2fd18e8846a5 Mon Sep 17 00:00:00 2001
-From: linzhuobin1 <linzhuobin1@huawei.com>
-Date: Sat, 1 Mar 2025 16:29:16 +0800
-Subject: [PATCH] IssueNo:#IBPWV3 Description: fix a potential uaf in fts3.
- Sig: SIG_DataManagement Feature or Bugfix:Bugfix Binary Source:No/Yes
- TDD:Pass XTS:Pass Pretest:Pass
+From 7493bd4e617b445df85794279c8bb9f335100efa Mon Sep 17 00:00:00 2001
+From: wuyichen <664334617@qq.com>
+Date: Wed, 5 Mar 2025 15:03:48 +0800
+Subject: [PATCH] base-7
 
-Signed-off-by: linzhuobin1 <linzhuobin1@huawei.com>
+Signed-off-by: wuyichen <664334617@qq.com>
 ---
- src/sqlite3.c | 39 +++++++++++++++++++++++++++++++++++++++
- 1 file changed, 39 insertions(+)
+ src/sqlite3.c | 81 +++++++++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 65 insertions(+), 16 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 7e9dcbf..2084441 100644
+index 7e9dcbf..dcb45f6 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
-@@ -205751,6 +205751,39 @@ static int fts3ExprTermOffsetInit(Fts3Expr *pExpr, int iPhrase, void *ctx){
+@@ -70082,6 +70082,7 @@ SQLITE_PRIVATE int sqlite3WalFrames(
+ ** If parameter xBusy is not NULL, it is a pointer to a busy-handler
+ ** callback. In this case this function runs a blocking checkpoint.
+ */
++static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime);
+ SQLITE_PRIVATE int sqlite3WalCheckpoint(
+   Wal *pWal,                      /* Wal connection */
+   sqlite3 *db,                    /* Check this handle's interrupt flag */
+@@ -70177,7 +70178,12 @@ SQLITE_PRIVATE int sqlite3WalCheckpoint(
+           -1, 0, zMsg, NULL);
+         rc = SQLITE_CORRUPT_REPORT(&context);
+       }else{
+-        rc = walCheckpoint(pWal, db, eMode2, xBusy2, pBusyArg, sync_flags,zBuf);
++        sqlite3_int64 startTime;
++        sqlite3OsCurrentTimeInt64(db->pVfs, &startTime);
++        rc = walCheckpoint(pWal, db, eMode2, xBusy2, pBusyArg, sync_flags, zBuf);
++        if (rc == SQLITE_OK){
++          walLogCheckpointInfo(pWal, db, startTime);
++        }
+       }
+ 
+       /* If no error occurred, set the output variables. */
+@@ -205751,6 +205757,39 @@ static int fts3ExprTermOffsetInit(Fts3Expr *pExpr, int iPhrase, void *ctx){
    return rc;
  }
  
@@ -54,7 +74,7 @@ index 7e9dcbf..2084441 100644
  /*
  ** Implementation of offsets() function.
  */
-@@ -205787,6 +205820,12 @@ SQLITE_PRIVATE void sqlite3Fts3Offsets(
+@@ -205787,6 +205826,12 @@ SQLITE_PRIVATE void sqlite3Fts3Offsets(
    sCtx.iDocid = pCsr->iPrevId;
    sCtx.pCsr = pCsr;
  
@@ -67,6 +87,77 @@ index 7e9dcbf..2084441 100644
    /* Loop through the table columns, appending offset information to
    ** string-buffer res for each column.
    */
+@@ -261425,16 +261470,6 @@ static inline void MarkLockStatusByRc(int rc, u32 lockIdx, u32 lockLen, u8 lockT
+   }
+ }
+ 
+-static inline const char *TrxLockName(int eLock)
+-{
+-  return eLock == NO_LOCK ? "NO_LOCK" :
+-    eLock == RESERVED_LOCK ? "RESERVED" :
+-    eLock == EXCLUSIVE_LOCK ? "EXCLUSIVE" :
+-    eLock == SHARED_LOCK ? "SHARED" :
+-    eLock == PENDING_LOCK ? "PENDING":
+-    eLock == UNKNOWN_LOCK ? "UNKNOWN" : "UNKNOWN_LOCK";
+-}
+-
+ static inline const char *IdxToLockName(u32 idx)
+ {
+   const char *lockName[MAX_LOCK_NUM] = {"write", "ckpt", "recover", "read0",
+@@ -261451,7 +261486,7 @@ static void DumpHandleLock(char *dumpBuf, int dumpBufLen)
+   for (int i = 0; i < MAX_LOCK_NUM && availLen > DUMP_MAX_STR_LEN; i++) {
+     if (lockStatus[i] != NO_LOCK) {
+       tmp[0] = '\0';
+-      sqlite3_snprintf(availLen, tmp, "<%s, %s>", IdxToLockName((u32)i), TrxLockName(lockStatus[i]));
++      sqlite3_snprintf(availLen, tmp, "<%s, %d>", IdxToLockName((u32)i), lockStatus[i]);
+       int len = strlen(tmp);
+       tmp += len;
+       availLen -= len;
+@@ -261490,8 +261525,8 @@ static void DumpTrxProcessLocks(unixFile *file, char *dumpBuf, int dumpBufLen)
+     sqlite3_log(SQLITE_ERROR, "[SQLite]Inode is null!");
+     return;
+   }
+-  sqlite3_log(SQLITE_WARNING_DUMP, "[SQLite]acqLock:%s, dbRef:%d, lockCnt:%d, curLock:%s, processLock:%d",
+-    TrxLockName(file->eFileLock), inode->nRef, inode->nLock, TrxLockName(inode->eFileLock), inode->bProcessLock);
++  sqlite3_log(SQLITE_WARNING_DUMP, "[SQLite]acqLock:%d, dbRef:%d, lockCnt:%d, curLock:%d, processLock:%d",
++    file->eFileLock, inode->nRef, inode->nLock, inode->eFileLock, inode->bProcessLock);
+   const char *lockName[DB_LOCK_NUM] = {"pending", "reserved", "shared_first"};
+   char *tmp = dumpBuf;
+   int availLen = dumpBufLen - 1;
+@@ -261511,10 +261546,13 @@ static void DumpTrxProcessLocks(unixFile *file, char *dumpBuf, int dumpBufLen)
+ 
+ static void DumpWalLocks(unixFile *file, u8 walEnabled, char *dumpBuf, int dumpBufLen)
+ {
+-  if (!walEnabled || file->pShm == NULL || file->pShm->pShmNode == NULL) {
+-    sqlite3_log(SQLITE_ERROR, "[SQLite]Wal mode disabled!");
++  if (file->pShm == NULL || file->pShm->pShmNode == NULL) {
++    sqlite3_log(SQLITE_ERROR, "[SQLite]Wal mode disabled! pShm or pShmNode is NULL");
+     return;
+   }
++  if (!walEnabled) {
++    sqlite3_log(SQLITE_ERROR, "[SQLite] walEnabled false");
++  }
+   unixShmNode *pShmNode = file->pShm->pShmNode;
+   char *tmp = dumpBuf;
+   int availLen = dumpBufLen - 1;
+@@ -261583,6 +261621,17 @@ static void DumpLocksByPager(Pager *pPager)
+ }
+ #endif /* SQLITE_OS_UNIX */
+ 
++static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime) {
++  sqlite3_int64 endTime;
++  sqlite3OsCurrentTimeInt64(db->pVfs, &endTime);
++  sqlite3_int64 timeUse = endTime - startTime;
++  /* Only when timeUse > 1500ms or wal size > 50MB, default pageSize 4K, 50*1024/4 = 12800 */
++  if (timeUse > 1500 || pWal->hdr.mxFrame > 12800) {
++    sqlite3_log(SQLITE_WARNING_DUMP, "[SQLite]Wal ckpt use time: %lld(ms), wal frame: %u",
++                timeUse, pWal->hdr.mxFrame);
++  }
++}
++
+ // hw export the symbols
+ #ifdef SQLITE_EXPORT_SYMBOLS
+ #ifndef SQLITE_CKSUMVFS_STATIC
 -- 
-2.46.0.windows.1
+2.34.1.windows.1
 
