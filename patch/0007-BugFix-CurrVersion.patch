@@ -1,17 +1,25 @@
-From 7493bd4e617b445df85794279c8bb9f335100efa Mon Sep 17 00:00:00 2001
-From: wuyichen <664334617@qq.com>
-Date: Wed, 5 Mar 2025 15:03:48 +0800
-Subject: [PATCH] base-7
+From 4cb905b575c2103caada8386cb5fe35562059d4a Mon Sep 17 00:00:00 2001
+From: ryne3366 <zengchuanrui@huawei.com>
+Date: Mon, 24 Mar 2025 20:30:45 +0800
+Subject: [PATCH] check permission for meta file
 
-Signed-off-by: wuyichen <664334617@qq.com>
 ---
- src/sqlite3.c | 81 +++++++++++++++++++++++++++++++++++++++++----------
- 1 file changed, 65 insertions(+), 16 deletions(-)
+ src/sqlite3.c | 120 ++++++++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 96 insertions(+), 24 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 7e9dcbf..dcb45f6 100644
+index 7e9dcbf..d350cfc 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
+@@ -45151,7 +45151,7 @@ static int unixOpen(
+         flags |= SQLITE_OPEN_READONLY;
+         openFlags |= O_RDONLY;
+         isReadonly = 1;
+-        sqlite3_log(SQLITE_WARNING, "Try open file readonly");
++        sqlite3_log(SQLITE_WARNING, "Try open file readonly sysno %d", errno);
+         pReadonly = findReusableFd(zName, flags);
+         if( pReadonly ){
+           fd = pReadonly->fd;
 @@ -70082,6 +70082,7 @@ SQLITE_PRIVATE int sqlite3WalFrames(
  ** If parameter xBusy is not NULL, it is a pointer to a busy-handler
  ** callback. In this case this function runs a blocking checkpoint.
@@ -57,7 +65,7 @@ index 7e9dcbf..dcb45f6 100644
 +}
 +
 +/*
-+** If expression pExpr is a phrase expression that uses an MSR query, 
++** If expression pExpr is a phrase expression that uses an MSR query,
 +** restart it as a regular, non-incremental query. Return SQLITE_OK
 +** if successful, or an SQLite error code otherwise.
 +*/
@@ -87,7 +95,63 @@ index 7e9dcbf..dcb45f6 100644
    /* Loop through the table columns, appending offset information to
    ** string-buffer res for each column.
    */
-@@ -261425,16 +261470,6 @@ static inline void MarkLockStatusByRc(int rc, u32 lockIdx, u32 lockLen, u8 lockT
+@@ -260390,7 +260435,7 @@ static int PragmaMetaDoubleWrie(sqlite3 *db, int iDb, Parse *parse, const char *
+     sqlite3_mutex_enter(db->mutex);
+     // only support enabled meta double write
+     int rc = MetaDwrOpenAndCheck(pBt);
+-    if (rc != SQLITE_OK) {
++    if (rc != SQLITE_OK && rc != SQLITE_PERM) {
+       parse->nErr++;
+       parse->rc = rc;
+     }
+@@ -260842,6 +260887,29 @@ static inline const char *GetMetaFilePath(Pager *pPager)
+   return pPager->metaFd == NULL ? NULL : ((const char *)pPager->metaFd + ROUND8(pPager->pVfs->szOsFile));
+ }
+ 
++static int MetaDwrCheckPerm(sqlite3_vfs *pVfs, u8 openCreate, char *metaPath) {
++  int exists = 0;
++  int rc = sqlite3OsAccess(pVfs, metaPath, SQLITE_ACCESS_EXISTS, &exists);
++  if (rc != SQLITE_OK) {
++    return rc;
++  }
++  if (!exists && !openCreate) {
++    return SQLITE_PERM;
++  }
++#ifdef HARMONY_OS
++  // check if the path have enough permission
++  rc = osAccess(metaPath, W_OK|R_OK);
++  if (rc == 0 || errno == ENOENT) {
++    return SQLITE_OK;
++  }
++  rc = SQLITE_PERM;
++  if (openCreate) {
++    sqlite3_log(SQLITE_WARNING_DUMP, "Meta double write disabled, sysno %d", errno);
++  }
++#endif
++  return rc;
++}
++
+ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
+   if (pPager->metaFd || pPager->zFilename == NULL) {
+     return SQLITE_OK;
+@@ -260858,15 +260926,10 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
+     return SQLITE_NOMEM_BKPT;
+   }
+   sqlite3_snprintf(size, metaPath, "%s-dwr", pPager->zFilename);
+-  int exists = 0;
+-  int rc = sqlite3OsAccess(pVfs, metaPath, SQLITE_ACCESS_EXISTS, &exists);
++  int rc = MetaDwrCheckPerm(pVfs, openCreate, metaPath);
+   if (rc != SQLITE_OK) {
+     goto INIT_META_OUT;
+   }
+-  if (!exists && !openCreate) {
+-    sqlite3_free(metaFd);
+-    goto INIT_META_OUT;
+-  }
+   u32 flags = (SQLITE_OPEN_READWRITE | SQLITE_OPEN_SUPER_JOURNAL);
+   if (openCreate) {
+     flags |= SQLITE_OPEN_CREATE;
+@@ -261425,16 +261488,6 @@ static inline void MarkLockStatusByRc(int rc, u32 lockIdx, u32 lockLen, u8 lockT
    }
  }
  
@@ -104,7 +168,7 @@ index 7e9dcbf..dcb45f6 100644
  static inline const char *IdxToLockName(u32 idx)
  {
    const char *lockName[MAX_LOCK_NUM] = {"write", "ckpt", "recover", "read0",
-@@ -261451,7 +261486,7 @@ static void DumpHandleLock(char *dumpBuf, int dumpBufLen)
+@@ -261451,7 +261504,7 @@ static void DumpHandleLock(char *dumpBuf, int dumpBufLen)
    for (int i = 0; i < MAX_LOCK_NUM && availLen > DUMP_MAX_STR_LEN; i++) {
      if (lockStatus[i] != NO_LOCK) {
        tmp[0] = '\0';
@@ -113,7 +177,7 @@ index 7e9dcbf..dcb45f6 100644
        int len = strlen(tmp);
        tmp += len;
        availLen -= len;
-@@ -261490,8 +261525,8 @@ static void DumpTrxProcessLocks(unixFile *file, char *dumpBuf, int dumpBufLen)
+@@ -261490,8 +261543,8 @@ static void DumpTrxProcessLocks(unixFile *file, char *dumpBuf, int dumpBufLen)
      sqlite3_log(SQLITE_ERROR, "[SQLite]Inode is null!");
      return;
    }
@@ -124,7 +188,7 @@ index 7e9dcbf..dcb45f6 100644
    const char *lockName[DB_LOCK_NUM] = {"pending", "reserved", "shared_first"};
    char *tmp = dumpBuf;
    int availLen = dumpBufLen - 1;
-@@ -261511,10 +261546,13 @@ static void DumpTrxProcessLocks(unixFile *file, char *dumpBuf, int dumpBufLen)
+@@ -261511,10 +261564,13 @@ static void DumpTrxProcessLocks(unixFile *file, char *dumpBuf, int dumpBufLen)
  
  static void DumpWalLocks(unixFile *file, u8 walEnabled, char *dumpBuf, int dumpBufLen)
  {
@@ -140,7 +204,7 @@ index 7e9dcbf..dcb45f6 100644
    unixShmNode *pShmNode = file->pShm->pShmNode;
    char *tmp = dumpBuf;
    int availLen = dumpBufLen - 1;
-@@ -261583,6 +261621,17 @@ static void DumpLocksByPager(Pager *pPager)
+@@ -261583,6 +261639,22 @@ static void DumpLocksByPager(Pager *pPager)
  }
  #endif /* SQLITE_OS_UNIX */
  
@@ -148,16 +212,21 @@ index 7e9dcbf..dcb45f6 100644
 +  sqlite3_int64 endTime;
 +  sqlite3OsCurrentTimeInt64(db->pVfs, &endTime);
 +  sqlite3_int64 timeUse = endTime - startTime;
++  static sqlite3_int64 lastDumpTime = 0;
++  static sqlite3_int64 ckptCnt = 0;
 +  /* Only when timeUse > 1500ms or wal size > 50MB, default pageSize 4K, 50*1024/4 = 12800 */
-+  if (timeUse > 1500 || pWal->hdr.mxFrame > 12800) {
-+    sqlite3_log(SQLITE_WARNING_DUMP, "[SQLite]Wal ckpt use time: %lld(ms), wal frame: %u",
-+                timeUse, pWal->hdr.mxFrame);
++  if (timeUse > 1500 || (pWal->hdr.mxFrame > 12800 && (lastDumpTime - endTime) > 2000)) {
++    sqlite3_log(SQLITE_WARNING_DUMP, "[SQLite]Wal try ckpt count %d use time: %lld(ms), wal frame: %u",
++                ckptCnt, timeUse, pWal->hdr.mxFrame);
++    lastDumpTime = endTime;
++    ckptCnt = 0;
 +  }
++  ckptCnt++;
 +}
 +
  // hw export the symbols
  #ifdef SQLITE_EXPORT_SYMBOLS
  #ifndef SQLITE_CKSUMVFS_STATIC
 -- 
-2.34.1.windows.1
+2.34.1
 
