@@ -1,14 +1,14 @@
-From 4cb905b575c2103caada8386cb5fe35562059d4a Mon Sep 17 00:00:00 2001
+From d080b85d1c44549f5cbc2bd7c55198af193a955a Mon Sep 17 00:00:00 2001
 From: ryne3366 <zengchuanrui@huawei.com>
-Date: Mon, 24 Mar 2025 20:30:45 +0800
-Subject: [PATCH] check permission for meta file
+Date: Tue, 1 Apr 2025 15:42:23 +0800
+Subject: [PATCH] Fix misreport db corruption
 
 ---
- src/sqlite3.c | 120 ++++++++++++++++++++++++++++++++++++++++----------
- 1 file changed, 96 insertions(+), 24 deletions(-)
+ src/sqlite3.c | 149 ++++++++++++++++++++++++++++++++++++--------------
+ 1 file changed, 109 insertions(+), 40 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 7e9dcbf..d350cfc 100644
+index 7e9dcbf..2e8a676 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -45151,7 +45151,7 @@ static int unixOpen(
@@ -42,7 +42,43 @@ index 7e9dcbf..d350cfc 100644
        }
  
        /* If no error occurred, set the output variables. */
-@@ -205751,6 +205757,39 @@ static int fts3ExprTermOffsetInit(Fts3Expr *pExpr, int iPhrase, void *ctx){
+@@ -83906,12 +83912,7 @@ SQLITE_API int sqlite3_backup_step(sqlite3_backup *p, int nPage){
+               }
+             }
+           }
+-        #ifdef SQLITE_META_DWR
+-          if (rc == SQLITE_OK && p->pDest->pBt->pPager->metaFd) {
+-            p->pDest->pBt->pPager->metaChanged = META_SCHEMA_CHANGED;
+-            (void)MetaDwrUpdateMetaPages(p->pDest);
+-          }
+-        #endif
++
+           if( rc==SQLITE_OK ){
+             rc = sqlite3PagerCommitPhaseOne(pDestPager, 0, 1);
+           }
+@@ -83942,15 +83943,14 @@ SQLITE_API int sqlite3_backup_step(sqlite3_backup *p, int nPage){
+           }
+         }else{
+           sqlite3PagerTruncateImage(pDestPager, nDestTruncate);
+-        #ifdef SQLITE_META_DWR
+-          if (rc == SQLITE_OK && p->pDest->pBt->pPager->metaFd) {
+-            p->pDest->pBt->pPager->metaChanged = META_SCHEMA_CHANGED;
+-            (void)MetaDwrUpdateMetaPages(p->pDest);
+-          }
+-        #endif
+           rc = sqlite3PagerCommitPhaseOne(pDestPager, 0, 0);
+         }
+-
++#ifdef SQLITE_META_DWR
++        if (rc == SQLITE_OK && p->pDest->pBt->pPager->metaFd) {
++          p->pDest->pBt->pPager->metaChanged = META_SCHEMA_CHANGED;
++          (void)MetaDwrUpdateMetaPages(p->pDest);
++        }
++#endif
+         /* Finish committing the transaction to the destination database. */
+         if( SQLITE_OK==rc
+          && SQLITE_OK==(rc = sqlite3BtreeCommitPhaseTwo(p->pDest, 0))
+@@ -205751,6 +205751,39 @@ static int fts3ExprTermOffsetInit(Fts3Expr *pExpr, int iPhrase, void *ctx){
    return rc;
  }
  
@@ -82,7 +118,7 @@ index 7e9dcbf..d350cfc 100644
  /*
  ** Implementation of offsets() function.
  */
-@@ -205787,6 +205826,12 @@ SQLITE_PRIVATE void sqlite3Fts3Offsets(
+@@ -205787,6 +205820,12 @@ SQLITE_PRIVATE void sqlite3Fts3Offsets(
    sCtx.iDocid = pCsr->iPrevId;
    sCtx.pCsr = pCsr;
  
@@ -95,7 +131,7 @@ index 7e9dcbf..d350cfc 100644
    /* Loop through the table columns, appending offset information to
    ** string-buffer res for each column.
    */
-@@ -260390,7 +260435,7 @@ static int PragmaMetaDoubleWrie(sqlite3 *db, int iDb, Parse *parse, const char *
+@@ -260390,7 +260429,7 @@ static int PragmaMetaDoubleWrie(sqlite3 *db, int iDb, Parse *parse, const char *
      sqlite3_mutex_enter(db->mutex);
      // only support enabled meta double write
      int rc = MetaDwrOpenAndCheck(pBt);
@@ -104,7 +140,40 @@ index 7e9dcbf..d350cfc 100644
        parse->nErr++;
        parse->rc = rc;
      }
-@@ -260842,6 +260887,29 @@ static inline const char *GetMetaFilePath(Pager *pPager)
+@@ -260453,11 +260492,13 @@ static SQLITE_NOINLINE int ScanOverflowPages(
+   nOvfl = (pInfo->nPayload - pInfo->nLocal + ovflPageSize - 1) / ovflPageSize;
+   assert(nOvfl > 0 ||
+          (CORRUPT_DB && (pInfo->nPayload + ovflPageSize) < ovflPageSize));
+-  while (nOvfl--) {
++  while (nOvfl > 0 && nOvfl--) {
+     Pgno iNext = 0;
+     MemPage *pOvfl = 0;
+     if (ovflPgno < 2 || ovflPgno > btreePagecount(pBt)) {
+-      return SQLITE_CORRUPT_BKPT;
++      sqlite3_log(SQLITE_WARNING_DUMP, "Ignore for ovfl page not as expect, pgno %u ovflPgno %u novfl %d payload %u local %u",
++        pPage->pgno, ovflPgno, nOvfl, pInfo->nPayload, pInfo->nLocal);
++      return SQLITE_MISUSE;
+     }
+     rc = getOverflowPage(pBt, ovflPgno, &pOvfl, &iNext);
+     if (rc)
+@@ -260508,7 +260549,7 @@ static int ScanBtreePage(
+       }
+     }
+     pPage->xParseCell(pPage, pCell, &info);
+-    if (info.nLocal != info.nPayload) {
++    if (info.nLocal < info.nPayload) {
+       rc = ScanOverflowPages(pPage, pCell, &info, fn, args);
+       if (rc) {
+         goto SCAN_PAGE_OUT;
+@@ -260833,6 +260874,7 @@ static int MetaDwrRestoreAllPages(Btree *pBt, const ScanPages *metaPages, MetaDw
+       return rc;
+     }
+   }
++  hdr->pageCnt = metaPages->pageCnt;
+   MetaDwrUpdateHeaderDbInfo(pBt->pBt);
+   return rc;
+ }
+@@ -260842,6 +260884,29 @@ static inline const char *GetMetaFilePath(Pager *pPager)
    return pPager->metaFd == NULL ? NULL : ((const char *)pPager->metaFd + ROUND8(pPager->pVfs->szOsFile));
  }
  
@@ -134,7 +203,7 @@ index 7e9dcbf..d350cfc 100644
  static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
    if (pPager->metaFd || pPager->zFilename == NULL) {
      return SQLITE_OK;
-@@ -260858,15 +260926,10 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
+@@ -260858,15 +260923,10 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
      return SQLITE_NOMEM_BKPT;
    }
    sqlite3_snprintf(size, metaPath, "%s-dwr", pPager->zFilename);
@@ -151,7 +220,7 @@ index 7e9dcbf..d350cfc 100644
    u32 flags = (SQLITE_OPEN_READWRITE | SQLITE_OPEN_SUPER_JOURNAL);
    if (openCreate) {
      flags |= SQLITE_OPEN_CREATE;
-@@ -261425,16 +261488,6 @@ static inline void MarkLockStatusByRc(int rc, u32 lockIdx, u32 lockLen, u8 lockT
+@@ -261425,16 +261485,6 @@ static inline void MarkLockStatusByRc(int rc, u32 lockIdx, u32 lockLen, u8 lockT
    }
  }
  
@@ -168,7 +237,7 @@ index 7e9dcbf..d350cfc 100644
  static inline const char *IdxToLockName(u32 idx)
  {
    const char *lockName[MAX_LOCK_NUM] = {"write", "ckpt", "recover", "read0",
-@@ -261451,7 +261504,7 @@ static void DumpHandleLock(char *dumpBuf, int dumpBufLen)
+@@ -261451,7 +261501,7 @@ static void DumpHandleLock(char *dumpBuf, int dumpBufLen)
    for (int i = 0; i < MAX_LOCK_NUM && availLen > DUMP_MAX_STR_LEN; i++) {
      if (lockStatus[i] != NO_LOCK) {
        tmp[0] = '\0';
@@ -177,7 +246,7 @@ index 7e9dcbf..d350cfc 100644
        int len = strlen(tmp);
        tmp += len;
        availLen -= len;
-@@ -261490,8 +261543,8 @@ static void DumpTrxProcessLocks(unixFile *file, char *dumpBuf, int dumpBufLen)
+@@ -261490,8 +261540,8 @@ static void DumpTrxProcessLocks(unixFile *file, char *dumpBuf, int dumpBufLen)
      sqlite3_log(SQLITE_ERROR, "[SQLite]Inode is null!");
      return;
    }
@@ -188,7 +257,7 @@ index 7e9dcbf..d350cfc 100644
    const char *lockName[DB_LOCK_NUM] = {"pending", "reserved", "shared_first"};
    char *tmp = dumpBuf;
    int availLen = dumpBufLen - 1;
-@@ -261511,10 +261564,13 @@ static void DumpTrxProcessLocks(unixFile *file, char *dumpBuf, int dumpBufLen)
+@@ -261511,10 +261561,13 @@ static void DumpTrxProcessLocks(unixFile *file, char *dumpBuf, int dumpBufLen)
  
  static void DumpWalLocks(unixFile *file, u8 walEnabled, char *dumpBuf, int dumpBufLen)
  {
@@ -204,7 +273,7 @@ index 7e9dcbf..d350cfc 100644
    unixShmNode *pShmNode = file->pShm->pShmNode;
    char *tmp = dumpBuf;
    int availLen = dumpBufLen - 1;
-@@ -261583,6 +261639,22 @@ static void DumpLocksByPager(Pager *pPager)
+@@ -261583,6 +261636,22 @@ static void DumpLocksByPager(Pager *pPager)
  }
  #endif /* SQLITE_OS_UNIX */
  
