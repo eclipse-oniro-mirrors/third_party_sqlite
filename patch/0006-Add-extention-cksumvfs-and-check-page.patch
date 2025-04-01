@@ -1023,7 +1023,7 @@ index 0666938..7e9dcbf 100644
 +  if( pPg->flags&PGHDR_DIRTY ) {
 +    return;
 +  }
-+  if( pPg->pageHash!=pager_pagehash(pPg) ){
++  if( pPg->pgno!=1 && pPg->pageHash!=pager_pagehash(pPg) ){
 +    sqlite3_log(SQLITE_CORRUPT, "cache corruption occurs through checking page(%u)", pPg->pgno);
 +  }
  }
