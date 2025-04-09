@@ -2159,21 +2159,6 @@ struct sqlite3_mem_methods {
 ** is compiled without -DSQLITE_ALLOW_ROWID_IN_VIEW (which is the usual and
 ** recommended case) then the integer is always filled with zero, regardless
 ** if its initial value.
-**
-** [[SQLITE_CONFIG_CORRUPTION]] <dt>SQLITE_CONFIG_CORRUPTION</dt>
-** <dd> The SQLITE_CONFIG_CORRUPTION option is used to configure the SQLite
-** global [ corruption error].
-** (^The SQLITE_CONFIG_CORRUPTION option takes two arguments: a pointer to a
-** function with a call signature of void(*)(void*,const void*),
-** and a pointer to void. ^If the function pointer is not NULL, it is
-** invoked to process each data corruption event.  ^If the
-** function pointer is NULL, no=op will do when corruption detect.
-** ^The void pointer that is the second argument to SQLITE_CONFIG_CORRUPTION is
-** passed through as the first parameter to the application-defined corruption
-** function whenever that function is invoked.  ^The second parameter to
-** the corruption function is a corruption message after formatting via [sqlite3_snprintf()].
-** In a multi-threaded application, the application-defined corruption
-** function must be threadsafe. </dd>
 ** </dl>
 */
 #define SQLITE_CONFIG_SINGLETHREAD         1  /* nil */
@@ -2206,8 +2191,7 @@ struct sqlite3_mem_methods {
 #define SQLITE_CONFIG_SORTERREF_SIZE      28  /* int nByte */
 #define SQLITE_CONFIG_MEMDB_MAXSIZE       29  /* sqlite3_int64 */
 #define SQLITE_CONFIG_ROWID_IN_VIEW       30  /* int* */
-#define SQLITE_CONFIG_CORRUPTION          31  /* xCorruption */
-#define SQLITE_CONFIG_ENABLE_ICU          32  /* boolean */
+#define SQLITE_CONFIG_ENABLE_ICU          31  /* boolean */
 
 /*
 ** CAPI3REF: Database Connection Configuration Options
