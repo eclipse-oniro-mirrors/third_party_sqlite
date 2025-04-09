@@ -12,7 +12,6 @@
 # limitations under the License.
 
 import("//build/ohos.gni")
-import("//third_party/sqlite/sqlite.gni")
 
 is_cross_platform_build = defined(is_arkui_x) && is_arkui_x
 sqlite_patched_dir = root_out_dir + "/patched_sqlite"
@@ -122,10 +121,8 @@ ohos_shared_library("sqlite") {
     "SQLITE_HDR_CHECK",
     "SQLITE_ENABLE_ICU",
     "SQLITE_META_DWR",
+    "SQLITE_CHECK_PAGES",
   ]
-  if (sqlite_support_check_pages) {
-    defines += [ "SQLITE_CHECK_PAGES" ]
-  }
   cflags_c = [
     "-fvisibility=hidden",
     "-Wno-implicit-fallthrough",
