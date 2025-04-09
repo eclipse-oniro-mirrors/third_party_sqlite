@@ -116,7 +116,6 @@ ohos_shared_library("sqlite") {
     "HARMONY_OS",
     "SQLITE_ENABLE_ICU",
     "SQLITE_META_DWR",
-    "SQLITE_CHECK_PAGES",
   ]
   cflags_c = [
     "-fvisibility=hidden",
