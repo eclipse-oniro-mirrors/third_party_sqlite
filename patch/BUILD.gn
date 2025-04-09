@@ -22,7 +22,6 @@ action("apply_patch") {
     script = "${sqlite_patch_dir}/apply_patch.sh"
     inputs = ["$sqlite_src_dir"]
     outputs = [
-      "$sqlite_dst_dir/ext/misc/cksumvfs.c",
       "$sqlite_dst_dir/src/shell.c",
       "$sqlite_dst_dir/src/sqlite3.c",
       "$sqlite_dst_dir/src/sqlite3icu.c",
