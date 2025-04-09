@@ -53,10 +53,7 @@ ohos_shared_library("sqliteicu") {
   if (target_os != "ios") {
     ldflags = [ "-Wl,--exclude-libs,ALL" ]
   }
-  deps = [
-    ":sqlite",
-    "//third_party/sqlite/patch:apply_patch"
-  ]
+  deps = [ ":sqlite" ]
   public_configs = [ ":sqlite_config" ]
   configs = [ ":sqlite3_private_config" ]
   innerapi_tags = [ "platformsdk_indirect" ]
@@ -121,6 +118,7 @@ ohos_shared_library("sqlite") {
     "SQLITE_HDR_CHECK",
     "SQLITE_ENABLE_ICU",
     "SQLITE_META_DWR",
+    "SQLITE_CHECK_PAGES",
   ]
   cflags_c = [
     "-fvisibility=hidden",
