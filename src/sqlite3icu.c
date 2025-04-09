@@ -590,8 +590,8 @@ EXPORT_SYMBOLS SQLITE_API int sqlite3IcuInit(sqlite3 *db){
 #endif /* !defined(SQLITE_CORE) || defined(SQLITE_ENABLE_ICU) */
   };
 #ifdef HARMONY_OS
-  const char *directory = "/system/usr/ohos_icu";
-  u_setDataDirectory(directory);
+  extern void SetOhosIcuDirectory();
+  SetOhosIcuDirectory();
 #endif
   int rc = SQLITE_OK;
   int i;

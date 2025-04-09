@@ -23,9 +23,6 @@
                 "c_utils",
                 "icu",
                 "openssl"
-            ],
-            "third_party": [
-                "openssl"
             ]
         },
         "build": {
