@@ -1,15 +1,19 @@
-From 4a29b0e98e03fea216795394ac340104e2e1bbfa Mon Sep 17 00:00:00 2001
-From: ryne3366 <zengchuanrui@huawei.com>
-Date: Tue, 25 Feb 2025 11:25:32 +0800
-Subject: [PATCH] suport busy debug
+From ba8d86270e371eedb750c16198ca5aea7205efbc Mon Sep 17 00:00:00 2001
+From: wuyichen <664334617@qq.com>
+Date: Mon, 14 Oct 2024 16:37:37 +0800
+Subject: [PATCH] =?UTF-8?q?=E6=B7=BB=E5=8A=A0busy=E6=97=B6=E7=BB=B4?=
+ =?UTF-8?q?=E6=B5=8B=E6=97=A5=E5=BF=97?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
 Signed-off-by: ryne3366 <zengchuanrui@huawei.com>
 ---
- src/sqlite3.c | 368 ++++++++++++++++++++++++++++++++++++++++++++++++--
- 1 file changed, 355 insertions(+), 13 deletions(-)
+ src/sqlite3.c | 367 ++++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 354 insertions(+), 13 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index d2bfc23..1ec1ae9 100644
+index d2bfc23..fa98d03 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -38490,6 +38490,45 @@ SQLITE_PRIVATE int sqlite3KvvfsInit(void){
@@ -190,16 +194,15 @@ index d2bfc23..1ec1ae9 100644
          if( bUnlock ){
            rc = unixShmSystemLock(pDbFd, F_UNLCK, ofst+UNIX_SHM_BASE, n);
            if( rc==SQLITE_OK ){
-@@ -43742,6 +43793,8 @@ static int unixShmLock(
+@@ -43742,6 +43793,7 @@ static int unixShmLock(
              p->sharedMask &= ~mask;
              p->exclMask &= ~mask;
            }
 +          useProcessLock = LOCK_BY_PROCESS;
-+          TryClearTid(aLockTid, ofst, n);
          }
        }else if( flags & SQLITE_SHM_SHARED ){
          /* Case (b) - a shared lock.  */
-@@ -43751,12 +43804,14 @@ static int unixShmLock(
+@@ -43751,12 +43803,14 @@ static int unixShmLock(
            rc = SQLITE_BUSY;
          }else if( aLock[ofst]==0 ){
            rc = unixShmSystemLock(pDbFd, F_RDLCK, ofst+UNIX_SHM_BASE, n);
@@ -215,7 +218,7 @@ index d2bfc23..1ec1ae9 100644
          }
        }else{
          /* Case (c) - an exclusive lock.  */
-@@ -43774,7 +43829,7 @@ static int unixShmLock(
+@@ -43774,7 +43828,7 @@ static int unixShmLock(
              break;
            }
          }
@@ -224,7 +227,7 @@ index d2bfc23..1ec1ae9 100644
          /* Get the exclusive locks at the system level. Then if successful
          ** also update the in-memory values. */
          if( rc==SQLITE_OK ){
-@@ -43784,8 +43839,10 @@ static int unixShmLock(
+@@ -43784,8 +43838,10 @@ static int unixShmLock(
              for(ii=ofst; ii<ofst+n; ii++){
                aLock[ii] = -1;
              }
@@ -235,7 +238,7 @@ index d2bfc23..1ec1ae9 100644
        }
        assert( assertLockingArrayOk(pShmNode) );
      }
-@@ -61904,6 +61961,7 @@ static int syncJournal(Pager *pPager, int newHdr){
+@@ -61904,6 +61960,7 @@ static int syncJournal(Pager *pPager, int newHdr){
    assert( !pagerUseWal(pPager) );
  
    rc = sqlite3PagerExclusiveLock(pPager);
@@ -243,7 +246,7 @@ index d2bfc23..1ec1ae9 100644
    if( rc!=SQLITE_OK ) return rc;
  
    if( !pPager->noSync ){
-@@ -62796,6 +62854,7 @@ static int hasHotJournal(Pager *pPager, int *pExists){
+@@ -62796,6 +62853,7 @@ static int hasHotJournal(Pager *pPager, int *pExists){
              sqlite3OsDelete(pVfs, pPager->zJournal, 0);
              if( !pPager->exclusiveMode ) pagerUnlockDb(pPager, SHARED_LOCK);
            }
@@ -251,7 +254,7 @@ index d2bfc23..1ec1ae9 100644
            sqlite3EndBenignMalloc();
          }else{
            /* The journal file exists and no other connection has a reserved
-@@ -62885,6 +62944,7 @@ SQLITE_PRIVATE int sqlite3PagerSharedLock(Pager *pPager){
+@@ -62885,6 +62943,7 @@ SQLITE_PRIVATE int sqlite3PagerSharedLock(Pager *pPager){
      assert( pPager->tempFile==0 || pPager->eLock==EXCLUSIVE_LOCK );
  
      rc = pager_wait_on_lock(pPager, SHARED_LOCK);
@@ -259,7 +262,7 @@ index d2bfc23..1ec1ae9 100644
      if( rc!=SQLITE_OK ){
        assert( pPager->eLock==NO_LOCK || pPager->eLock==UNKNOWN_LOCK );
        goto failed;
-@@ -62921,6 +62981,7 @@ SQLITE_PRIVATE int sqlite3PagerSharedLock(Pager *pPager){
+@@ -62921,6 +62980,7 @@ SQLITE_PRIVATE int sqlite3PagerSharedLock(Pager *pPager){
        ** downgraded to SHARED_LOCK before this function returns.
        */
        rc = pagerLockDb(pPager, EXCLUSIVE_LOCK);
@@ -267,7 +270,7 @@ index d2bfc23..1ec1ae9 100644
        if( rc!=SQLITE_OK ){
          goto failed;
        }
-@@ -63553,6 +63614,7 @@ SQLITE_PRIVATE int sqlite3PagerBegin(Pager *pPager, int exFlag, int subjInMemory
+@@ -63553,6 +63613,7 @@ SQLITE_PRIVATE int sqlite3PagerBegin(Pager *pPager, int exFlag, int subjInMemory
        */
        if( pPager->exclusiveMode && sqlite3WalExclusiveMode(pPager->pWal, -1) ){
          rc = pagerLockDb(pPager, EXCLUSIVE_LOCK);
@@ -275,7 +278,7 @@ index d2bfc23..1ec1ae9 100644
          if( rc!=SQLITE_OK ){
            return rc;
          }
-@@ -63565,6 +63627,7 @@ SQLITE_PRIVATE int sqlite3PagerBegin(Pager *pPager, int exFlag, int subjInMemory
+@@ -63565,6 +63626,7 @@ SQLITE_PRIVATE int sqlite3PagerBegin(Pager *pPager, int exFlag, int subjInMemory
        ** holds the write-lock. If possible, the upper layer will call it.
        */
        rc = sqlite3WalBeginWriteTransaction(pPager->pWal);
@@ -283,7 +286,7 @@ index d2bfc23..1ec1ae9 100644
      }else{
        /* Obtain a RESERVED lock on the database file. If the exFlag parameter
        ** is true, then immediately upgrade this to an EXCLUSIVE lock. The
-@@ -63572,8 +63635,10 @@ SQLITE_PRIVATE int sqlite3PagerBegin(Pager *pPager, int exFlag, int subjInMemory
+@@ -63572,8 +63634,10 @@ SQLITE_PRIVATE int sqlite3PagerBegin(Pager *pPager, int exFlag, int subjInMemory
        ** lock, but not when obtaining the RESERVED lock.
        */
        rc = pagerLockDb(pPager, RESERVED_LOCK);
@@ -294,7 +297,7 @@ index d2bfc23..1ec1ae9 100644
        }
      }
  
-@@ -65085,6 +65150,7 @@ SQLITE_PRIVATE int sqlite3PagerSetJournalMode(Pager *pPager, int eMode){
+@@ -65085,6 +65149,7 @@ SQLITE_PRIVATE int sqlite3PagerSetJournalMode(Pager *pPager, int eMode){
          if( pPager->eState==PAGER_READER ){
            assert( rc==SQLITE_OK );
            rc = pagerLockDb(pPager, RESERVED_LOCK);
@@ -302,7 +305,7 @@ index d2bfc23..1ec1ae9 100644
          }
          if( rc==SQLITE_OK ){
            sqlite3OsDelete(pPager->pVfs, pPager->zJournal, 0);
-@@ -65251,6 +65317,7 @@ static int pagerOpenWal(Pager *pPager){
+@@ -65251,6 +65316,7 @@ static int pagerOpenWal(Pager *pPager){
    */
    if( pPager->exclusiveMode ){
      rc = pagerExclusiveLock(pPager);
@@ -310,7 +313,7 @@ index d2bfc23..1ec1ae9 100644
    }
  
    /* Open the connection to the log file. If this operation fails,
-@@ -65334,6 +65401,7 @@ SQLITE_PRIVATE int sqlite3PagerCloseWal(Pager *pPager, sqlite3 *db){
+@@ -65334,6 +65400,7 @@ SQLITE_PRIVATE int sqlite3PagerCloseWal(Pager *pPager, sqlite3 *db){
    if( !pPager->pWal ){
      int logexists = 0;
      rc = pagerLockDb(pPager, SHARED_LOCK);
@@ -318,7 +321,7 @@ index d2bfc23..1ec1ae9 100644
      if( rc==SQLITE_OK ){
        rc = sqlite3OsAccess(
            pPager->pVfs, pPager->zWal, SQLITE_ACCESS_EXISTS, &logexists
-@@ -65349,6 +65417,7 @@ SQLITE_PRIVATE int sqlite3PagerCloseWal(Pager *pPager, sqlite3 *db){
+@@ -65349,6 +65416,7 @@ SQLITE_PRIVATE int sqlite3PagerCloseWal(Pager *pPager, sqlite3 *db){
    */
    if( rc==SQLITE_OK && pPager->pWal ){
      rc = pagerExclusiveLock(pPager);
@@ -326,7 +329,7 @@ index d2bfc23..1ec1ae9 100644
      if( rc==SQLITE_OK ){
        rc = sqlite3WalClose(pPager->pWal, db, pPager->walSyncFlags,
                             pPager->pageSize, (u8*)pPager->pTmpSpace);
-@@ -66883,6 +66952,7 @@ static int walIndexRecover(Wal *pWal){
+@@ -66883,6 +66951,7 @@ static int walIndexRecover(Wal *pWal){
    iLock = WAL_ALL_BUT_WRITE + pWal->ckptLock;
    rc = walLockExclusive(pWal, iLock, WAL_READ_LOCK(0)-iLock);
    if( rc ){
@@ -334,7 +337,7 @@ index d2bfc23..1ec1ae9 100644
      return rc;
    }
  
-@@ -67720,6 +67790,7 @@ static int walCheckpoint(
+@@ -67720,6 +67789,7 @@ static int walCheckpoint(
        if( mxSafeFrame>y ){
          assert( y<=pWal->hdr.mxFrame );
          rc = walBusyLock(pWal, xBusy, pBusyArg, WAL_READ_LOCK(i), 1);
@@ -342,7 +345,7 @@ index d2bfc23..1ec1ae9 100644
          if( rc==SQLITE_OK ){
            u32 iMark = (i==1 ? mxSafeFrame : READMARK_NOT_USED);
            AtomicStore(pInfo->aReadMark+i, iMark); SEH_INJECT_FAULT;
-@@ -67814,6 +67885,8 @@ static int walCheckpoint(
+@@ -67814,6 +67884,8 @@ static int walCheckpoint(
  
        /* Release the reader lock held while backfilling */
        walUnlockExclusive(pWal, WAL_READ_LOCK(0), 1);
@@ -351,7 +354,7 @@ index d2bfc23..1ec1ae9 100644
      }
  
      if( rc==SQLITE_BUSY ){
-@@ -67833,11 +67906,13 @@ static int walCheckpoint(
+@@ -67833,11 +67905,13 @@ static int walCheckpoint(
      SEH_INJECT_FAULT;
      if( pInfo->nBackfill<pWal->hdr.mxFrame ){
        rc = SQLITE_BUSY;
@@ -365,7 +368,7 @@ index d2bfc23..1ec1ae9 100644
        if( rc==SQLITE_OK ){
          if( eMode==SQLITE_CHECKPOINT_TRUNCATE ){
            /* IMPLEMENTATION-OF: R-44699-57140 This mode works the same way as
-@@ -68025,8 +68100,9 @@ SQLITE_PRIVATE int sqlite3WalClose(
+@@ -68025,8 +68099,9 @@ SQLITE_PRIVATE int sqlite3WalClose(
            walLimitSize(pWal, 0);
          }
        }
@@ -376,7 +379,7 @@ index d2bfc23..1ec1ae9 100644
      walIndexClose(pWal, isDelete);
      sqlite3OsClose(pWal->pWalFd);
      if( isDelete ){
-@@ -68179,6 +68255,7 @@ static int walIndexReadHdr(Wal *pWal, int *pChanged){
+@@ -68179,6 +68254,7 @@ static int walIndexReadHdr(Wal *pWal, int *pChanged){
          walUnlockShared(pWal, WAL_WRITE_LOCK);
          rc = SQLITE_READONLY_RECOVERY;
        }
@@ -384,7 +387,7 @@ index d2bfc23..1ec1ae9 100644
      }else{
        int bWriteLock = pWal->writeLock;
        if( bWriteLock
-@@ -68202,6 +68279,7 @@ static int walIndexReadHdr(Wal *pWal, int *pChanged){
+@@ -68202,6 +68278,7 @@ static int walIndexReadHdr(Wal *pWal, int *pChanged){
            walUnlockExclusive(pWal, WAL_WRITE_LOCK, 1);
          }
        }
@@ -392,7 +395,7 @@ index d2bfc23..1ec1ae9 100644
      }
    }
  
-@@ -68221,6 +68299,7 @@ static int walIndexReadHdr(Wal *pWal, int *pChanged){
+@@ -68221,6 +68298,7 @@ static int walIndexReadHdr(Wal *pWal, int *pChanged){
        ** writer truncated the WAL out from under it.  If that happens, it
        ** indicates that a writer has fixed the SHM file for us, so retry */
        if( rc==SQLITE_IOERR_SHORT_READ ) rc = WAL_RETRY;
@@ -400,7 +403,7 @@ index d2bfc23..1ec1ae9 100644
      }
      pWal->exclusiveMode = WAL_NORMAL_MODE;
    }
-@@ -68483,6 +68562,7 @@ static int walBeginShmUnreliable(Wal *pWal, int *pChanged){
+@@ -68483,6 +68561,7 @@ static int walBeginShmUnreliable(Wal *pWal, int *pChanged){
  ** so it takes care to hold an exclusive lock on the corresponding
  ** WAL_READ_LOCK() while changing values.
  */
@@ -408,7 +411,7 @@ index d2bfc23..1ec1ae9 100644
  static int walTryBeginRead(Wal *pWal, int *pChanged, int useWal, int *pCnt){
    volatile WalCkptInfo *pInfo;    /* Checkpoint information in wal-index */
    u32 mxReadMark;                 /* Largest aReadMark[] value */
-@@ -68525,6 +68605,9 @@ static int walTryBeginRead(Wal *pWal, int *pChanged, int useWal, int *pCnt){
+@@ -68525,6 +68604,9 @@ static int walTryBeginRead(Wal *pWal, int *pChanged, int useWal, int *pCnt){
        return SQLITE_PROTOCOL;
      }
      if( *pCnt>=10 ) nDelay = (cnt-9)*(cnt-9)*39;
@@ -418,7 +421,7 @@ index d2bfc23..1ec1ae9 100644
  #ifdef SQLITE_ENABLE_SETLK_TIMEOUT
      /* In SQLITE_ENABLE_SETLK_TIMEOUT builds, configure the file-descriptor
      ** to block for locks for approximately nDelay us. This affects three
-@@ -68576,11 +68659,14 @@ static int walTryBeginRead(Wal *pWal, int *pChanged, int useWal, int *pCnt){
+@@ -68576,11 +68658,14 @@ static int walTryBeginRead(Wal *pWal, int *pChanged, int useWal, int *pCnt){
          ** must be zeroed before the requested page is returned.
          */
          rc = WAL_RETRY;
@@ -433,7 +436,7 @@ index d2bfc23..1ec1ae9 100644
        }
      }
      if( rc!=SQLITE_OK ){
-@@ -68604,6 +68690,7 @@ static int walTryBeginRead(Wal *pWal, int *pChanged, int useWal, int *pCnt){
+@@ -68604,6 +68689,7 @@ static int walTryBeginRead(Wal *pWal, int *pChanged, int useWal, int *pCnt){
      ** and can be safely ignored.
      */
      rc = walLockShared(pWal, WAL_READ_LOCK(0));
@@ -441,7 +444,7 @@ index d2bfc23..1ec1ae9 100644
      walShmBarrier(pWal);
      if( rc==SQLITE_OK ){
        if( memcmp((void *)walIndexHdr(pWal), &pWal->hdr, sizeof(WalIndexHdr)) ){
-@@ -68621,6 +68708,7 @@ static int walTryBeginRead(Wal *pWal, int *pChanged, int useWal, int *pCnt){
+@@ -68621,6 +68707,7 @@ static int walTryBeginRead(Wal *pWal, int *pChanged, int useWal, int *pCnt){
          ** it finished. Leaving a corrupt image in the database file.
          */
          walUnlockShared(pWal, WAL_READ_LOCK(0));
@@ -449,7 +452,7 @@ index d2bfc23..1ec1ae9 100644
          return WAL_RETRY;
        }
        pWal->readLock = 0;
-@@ -68665,6 +68753,7 @@ static int walTryBeginRead(Wal *pWal, int *pChanged, int useWal, int *pCnt){
+@@ -68665,6 +68752,7 @@ static int walTryBeginRead(Wal *pWal, int *pChanged, int useWal, int *pCnt){
        }else if( rc!=SQLITE_BUSY ){
          return rc;
        }
@@ -457,7 +460,7 @@ index d2bfc23..1ec1ae9 100644
      }
    }
    if( mxI==0 ){
-@@ -68684,6 +68773,7 @@ static int walTryBeginRead(Wal *pWal, int *pChanged, int useWal, int *pCnt){
+@@ -68684,6 +68772,7 @@ static int walTryBeginRead(Wal *pWal, int *pChanged, int useWal, int *pCnt){
      assert( rc!=SQLITE_BUSY_TIMEOUT );
  #endif
      assert( (rc&0xFF)!=SQLITE_BUSY||rc==SQLITE_BUSY||rc==SQLITE_BUSY_TIMEOUT );
@@ -465,7 +468,7 @@ index d2bfc23..1ec1ae9 100644
      return (rc&0xFF)==SQLITE_BUSY ? WAL_RETRY : rc;
    }
    /* Now that the read-lock has been obtained, check that neither the
-@@ -68726,6 +68816,7 @@ static int walTryBeginRead(Wal *pWal, int *pChanged, int useWal, int *pCnt){
+@@ -68726,6 +68815,7 @@ static int walTryBeginRead(Wal *pWal, int *pChanged, int useWal, int *pCnt){
     || memcmp((void *)walIndexHdr(pWal), &pWal->hdr, sizeof(WalIndexHdr))
    ){
      walUnlockShared(pWal, WAL_READ_LOCK(mxI));
@@ -473,7 +476,7 @@ index d2bfc23..1ec1ae9 100644
      return WAL_RETRY;
    }else{
      assert( mxReadMark<=pWal->hdr.mxFrame );
-@@ -68863,7 +68954,7 @@ static int walBeginReadTransaction(Wal *pWal, int *pChanged){
+@@ -68863,7 +68953,7 @@ static int walBeginReadTransaction(Wal *pWal, int *pChanged){
      (void)walEnableBlocking(pWal);
      rc = walLockShared(pWal, WAL_CKPT_LOCK);
      walDisableBlocking(pWal);
@@ -482,7 +485,7 @@ index d2bfc23..1ec1ae9 100644
      if( rc!=SQLITE_OK ){
        return rc;
      }
-@@ -69810,6 +69901,7 @@ SQLITE_PRIVATE int sqlite3WalCheckpoint(
+@@ -69810,6 +69900,7 @@ SQLITE_PRIVATE int sqlite3WalCheckpoint(
    ** it will not be invoked in this case.
    */
    rc = walLockExclusive(pWal, WAL_CKPT_LOCK, 1);
@@ -490,7 +493,7 @@ index d2bfc23..1ec1ae9 100644
    testcase( rc==SQLITE_BUSY );
    testcase( rc!=SQLITE_OK && xBusy2!=0 );
    if( rc==SQLITE_OK ){
-@@ -69826,6 +69918,7 @@ SQLITE_PRIVATE int sqlite3WalCheckpoint(
+@@ -69826,6 +69917,7 @@ SQLITE_PRIVATE int sqlite3WalCheckpoint(
      */
      if( eMode!=SQLITE_CHECKPOINT_PASSIVE ){
        rc = walBusyLock(pWal, xBusy2, pBusyArg, WAL_WRITE_LOCK, 1);
@@ -498,7 +501,7 @@ index d2bfc23..1ec1ae9 100644
        if( rc==SQLITE_OK ){
          pWal->writeLock = 1;
        }else if( rc==SQLITE_BUSY ){
-@@ -73685,6 +73778,7 @@ static void pageReinit(DbPage *pData){
+@@ -73685,6 +73777,7 @@ static void pageReinit(DbPage *pData){
    }
  }
  
@@ -506,7 +509,7 @@ index d2bfc23..1ec1ae9 100644
  /*
  ** Invoke the busy handler for a btree.
  */
-@@ -73692,7 +73786,13 @@ static int btreeInvokeBusyHandler(void *pArg){
+@@ -73692,7 +73785,13 @@ static int btreeInvokeBusyHandler(void *pArg){
    BtShared *pBt = (BtShared*)pArg;
    assert( pBt->db );
    assert( sqlite3_mutex_held(pBt->db->mutex) );
@@ -521,7 +524,7 @@ index d2bfc23..1ec1ae9 100644
  }
  
  /*
-@@ -74123,7 +74223,7 @@ SQLITE_PRIVATE int sqlite3BtreeClose(Btree *p){
+@@ -74123,7 +74222,7 @@ SQLITE_PRIVATE int sqlite3BtreeClose(Btree *p){
      }
    }
  #endif
@@ -530,7 +533,7 @@ index d2bfc23..1ec1ae9 100644
    /* Rollback any active transaction and free the handle structure.
    ** The call to sqlite3BtreeRollback() drops any table-locks held by
    ** this handle.
-@@ -74788,7 +74888,7 @@ static SQLITE_NOINLINE int btreeBeginTrans(
+@@ -74788,7 +74887,7 @@ static SQLITE_NOINLINE int btreeBeginTrans(
  
    sqlite3BtreeEnter(p);
    btreeIntegrity(p);
@@ -539,7 +542,7 @@ index d2bfc23..1ec1ae9 100644
    /* If the btree is already in a write-transaction, or it
    ** is already in a read-transaction and a read-transaction
    ** is requested, this is a no-op.
-@@ -82419,8 +82519,10 @@ SQLITE_PRIVATE int sqlite3BtreeCheckpoint(Btree *p, int eMode, int *pnLog, int *
+@@ -82419,8 +82518,10 @@ SQLITE_PRIVATE int sqlite3BtreeCheckpoint(Btree *p, int eMode, int *pnLog, int *
    if( p ){
      BtShared *pBt = p->pBt;
      sqlite3BtreeEnter(p);
@@ -550,7 +553,7 @@ index d2bfc23..1ec1ae9 100644
      }else{
        rc = sqlite3PagerCheckpoint(pBt->pPager, p->db, eMode, pnLog, pnCkpt);
      }
-@@ -88466,6 +88568,7 @@ static int vdbeCommit(sqlite3 *db, Vdbe *p){
+@@ -88466,6 +88567,7 @@ static int vdbeCommit(sqlite3 *db, Vdbe *p){
          nTrans++;
        }
        rc = sqlite3PagerExclusiveLock(pPager);
@@ -558,7 +561,7 @@ index d2bfc23..1ec1ae9 100644
        sqlite3BtreeLeave(pBt);
      }
    }
-@@ -260441,9 +260544,248 @@ export_finish:
+@@ -260441,9 +260543,248 @@ export_finish:
    return;
  }
  /************** End file hw_codec.c *****************************************/

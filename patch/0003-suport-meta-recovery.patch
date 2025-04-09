@@ -1,15 +1,15 @@
-From d35904a31c2fe03afdccba31b75a34deb3bbcdbb Mon Sep 17 00:00:00 2001
-From: ryne3366 <zengchuanrui@huawei.com>
-Date: Tue, 25 Feb 2025 11:28:45 +0800
-Subject: [PATCH] support meta recovery
+From 318d147540540d21ef4158218ee41f7a90a84442 Mon Sep 17 00:00:00 2001
+From: root <root@DESKTOP-L4KIESM.localdomain>
+Date: Thu, 2 Jan 2025 21:39:52 +0800
+Subject: [PATCH] suport meta recovery
 
 Signed-off-by: ryne3366 <zengchuanrui@huawei.com>
 ---
- src/sqlite3.c | 1151 ++++++++++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 1140 insertions(+), 11 deletions(-)
+ src/sqlite3.c | 1152 ++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 1141 insertions(+), 11 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 1ec1ae9..17d0d25 100644
+index fa98d03..b389421 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -788,6 +788,7 @@ SQLITE_API int sqlite3_exec(
@@ -28,7 +28,7 @@ index 1ec1ae9..17d0d25 100644
  #endif /* SQLITE_OS_SETUP_H */
  
  /************** End of os_setup.h ********************************************/
-@@ -45066,6 +45066,7 @@ static int unixOpen(
+@@ -45065,6 +45065,7 @@ static int unixOpen(
          flags |= SQLITE_OPEN_READONLY;
          openFlags |= O_RDONLY;
          isReadonly = 1;
@@ -36,7 +36,7 @@ index 1ec1ae9..17d0d25 100644
          pReadonly = findReusableFd(zName, flags);
          if( pReadonly ){
            fd = pReadonly->fd;
-@@ -58068,6 +58069,26 @@ struct PagerSavepoint {
+@@ -58067,6 +58068,26 @@ struct PagerSavepoint {
  #endif
  };
  
@@ -63,7 +63,7 @@ index 1ec1ae9..17d0d25 100644
  /*
  ** Bits of the Pager.doNotSpill flag.  See further description below.
  */
-@@ -58333,6 +58354,13 @@ struct Pager {
+@@ -58332,6 +58353,13 @@ struct Pager {
    Wal *pWal;                  /* Write-ahead log used by "journal_mode=wal" */
    char *zWal;                 /* File name for write-ahead log */
  #endif
@@ -77,7 +77,7 @@ index 1ec1ae9..17d0d25 100644
  };
  
  /*
-@@ -58691,7 +58719,11 @@ static void setGetterMethod(Pager *pPager){
+@@ -58690,7 +58718,11 @@ static void setGetterMethod(Pager *pPager){
      pPager->xGet = getPageMMap;
  #endif /* SQLITE_MAX_MMAP_SIZE>0 */
    }else{
@@ -89,7 +89,7 @@ index 1ec1ae9..17d0d25 100644
    }
  }
  
-@@ -59765,7 +59797,14 @@ static int pager_end_transaction(Pager *pPager, int hasSuper, int bCommit){
+@@ -59764,7 +59796,14 @@ static int pager_end_transaction(Pager *pPager, int hasSuper, int bCommit){
      }
      sqlite3PcacheTruncate(pPager->pPCache, pPager->dbSize);
    }
@@ -105,7 +105,7 @@ index 1ec1ae9..17d0d25 100644
    if( pagerUseWal(pPager) ){
      /* Drop the WAL write-lock, if any. Also, if the connection was in
      ** locking_mode=exclusive mode but is no longer, drop the EXCLUSIVE
-@@ -61860,6 +61899,9 @@ SQLITE_PRIVATE int sqlite3PagerClose(Pager *pPager, sqlite3 *db){
+@@ -61859,6 +61898,9 @@ SQLITE_PRIVATE int sqlite3PagerClose(Pager *pPager, sqlite3 *db){
      sqlite3WalClose(pPager->pWal, db, pPager->walSyncFlags, pPager->pageSize,a);
      pPager->pWal = 0;
    }
@@ -115,7 +115,7 @@ index 1ec1ae9..17d0d25 100644
  #endif
    pager_reset(pPager);
    if( MEMDB ){
-@@ -62699,7 +62741,11 @@ act_like_temp_file:
+@@ -62698,7 +62740,11 @@ act_like_temp_file:
      rc = sqlite3PcacheOpen(szPageDflt, nExtra, !memDb,
                         !memDb?pagerStress:0, (void *)pPager, pPager->pPCache);
    }
@@ -128,7 +128,7 @@ index 1ec1ae9..17d0d25 100644
    /* If an error occurred above, free the  Pager structure and close the file.
    */
    if( rc!=SQLITE_OK ){
-@@ -63123,7 +63169,6 @@ SQLITE_PRIVATE int sqlite3PagerSharedLock(Pager *pPager){
+@@ -63122,7 +63168,6 @@ SQLITE_PRIVATE int sqlite3PagerSharedLock(Pager *pPager){
    if( pPager->tempFile==0 && pPager->eState==PAGER_OPEN && rc==SQLITE_OK ){
      rc = pagerPagecount(pPager, &pPager->dbSize);
    }
@@ -136,7 +136,7 @@ index 1ec1ae9..17d0d25 100644
   failed:
    if( rc!=SQLITE_OK ){
      assert( !MEMDB );
-@@ -64416,7 +64461,6 @@ SQLITE_PRIVATE int sqlite3PagerCommitPhaseTwo(Pager *pPager){
+@@ -64415,7 +64460,6 @@ SQLITE_PRIVATE int sqlite3PagerCommitPhaseTwo(Pager *pPager){
      pPager->eState = PAGER_READER;
      return SQLITE_OK;
    }
@@ -144,7 +144,7 @@ index 1ec1ae9..17d0d25 100644
    PAGERTRACE(("COMMIT %d\n", PAGERID(pPager)));
    rc = pager_end_transaction(pPager, pPager->setSuper, 1);
    return pager_error(pPager, rc);
-@@ -70676,6 +70720,10 @@ struct BtShared {
+@@ -70675,6 +70719,10 @@ struct BtShared {
  #endif
    u8 *pTmpSpace;        /* Temp space sufficient to hold a single cell */
    int nPreformatSize;   /* Size of last cell written by TransferRow() */
@@ -155,7 +155,7 @@ index 1ec1ae9..17d0d25 100644
  };
  
  /*
-@@ -74077,8 +74125,8 @@ SQLITE_PRIVATE int sqlite3BtreeOpen(
+@@ -74076,8 +74124,8 @@ SQLITE_PRIVATE int sqlite3BtreeOpen(
      }
    }
  #endif
@@ -165,7 +165,7 @@ index 1ec1ae9..17d0d25 100644
  btree_open_out:
    if( rc!=SQLITE_OK ){
      if( pBt && pBt->pPager ){
-@@ -75048,7 +75096,12 @@ trans_begun:
+@@ -75047,7 +75095,12 @@ trans_begun:
        rc = sqlite3PagerOpenSavepoint(pPager, p->db->nSavepoint);
      }
    }
@@ -179,7 +179,7 @@ index 1ec1ae9..17d0d25 100644
    btreeIntegrity(p);
    sqlite3BtreeLeave(p);
    return rc;
-@@ -75437,6 +75490,9 @@ SQLITE_PRIVATE int sqlite3BtreeIncrVacuum(Btree *p){
+@@ -75436,6 +75489,9 @@ SQLITE_PRIVATE int sqlite3BtreeIncrVacuum(Btree *p){
        if( rc==SQLITE_OK ){
          rc = sqlite3PagerWrite(pBt->pPage1->pDbPage);
          put4byte(&pBt->pPage1->aData[28], pBt->nPage);
@@ -189,7 +189,7 @@ index 1ec1ae9..17d0d25 100644
        }
      }else{
        rc = SQLITE_DONE;
-@@ -75521,6 +75577,9 @@ static int autoVacuumCommit(Btree *p){
+@@ -75520,6 +75576,9 @@ static int autoVacuumCommit(Btree *p){
        put4byte(&pBt->pPage1->aData[28], nFin);
        pBt->bDoTruncate = 1;
        pBt->nPage = nFin;
@@ -199,7 +199,7 @@ index 1ec1ae9..17d0d25 100644
      }
      if( rc!=SQLITE_OK ){
        sqlite3PagerRollback(pPager);
-@@ -75577,6 +75636,9 @@ SQLITE_PRIVATE int sqlite3BtreeCommitPhaseOne(Btree *p, const char *zSuperJrnl){
+@@ -75576,6 +75635,9 @@ SQLITE_PRIVATE int sqlite3BtreeCommitPhaseOne(Btree *p, const char *zSuperJrnl){
      if( pBt->bDoTruncate ){
        sqlite3PagerTruncateImage(pBt->pPager, pBt->nPage);
      }
@@ -209,7 +209,7 @@ index 1ec1ae9..17d0d25 100644
  #endif
      rc = sqlite3PagerCommitPhaseOne(pBt->pPager, zSuperJrnl, 0);
      sqlite3BtreeLeave(p);
-@@ -81669,6 +81731,11 @@ SQLITE_PRIVATE int sqlite3BtreeUpdateMeta(Btree *p, int idx, u32 iMeta){
+@@ -81668,6 +81730,11 @@ SQLITE_PRIVATE int sqlite3BtreeUpdateMeta(Btree *p, int idx, u32 iMeta){
        assert( iMeta==0 || iMeta==1 );
        pBt->incrVacuum = (u8)iMeta;
      }
@@ -221,7 +221,7 @@ index 1ec1ae9..17d0d25 100644
  #endif
    }
    sqlite3BtreeLeave(p);
-@@ -82082,7 +82149,6 @@ static int checkTreePage(
+@@ -82081,7 +82148,6 @@ static int checkTreePage(
      if( rc==SQLITE_IOERR_NOMEM ) pCheck->rc = SQLITE_NOMEM;
      goto end_of_check;
    }
@@ -229,7 +229,7 @@ index 1ec1ae9..17d0d25 100644
    /* Clear MemPage.isInit to make sure the corruption detection code in
    ** btreeInitPage() is executed.  */
    savedIsInit = pPage->isInit;
-@@ -83293,6 +83359,12 @@ SQLITE_API int sqlite3_backup_step(sqlite3_backup *p, int nPage){
+@@ -83292,6 +83358,12 @@ SQLITE_API int sqlite3_backup_step(sqlite3_backup *p, int nPage){
                }
              }
            }
@@ -242,7 +242,7 @@ index 1ec1ae9..17d0d25 100644
            if( rc==SQLITE_OK ){
              rc = sqlite3PagerCommitPhaseOne(pDestPager, 0, 1);
            }
-@@ -83323,6 +83395,12 @@ SQLITE_API int sqlite3_backup_step(sqlite3_backup *p, int nPage){
+@@ -83322,6 +83394,12 @@ SQLITE_API int sqlite3_backup_step(sqlite3_backup *p, int nPage){
            }
          }else{
            sqlite3PagerTruncateImage(pDestPager, nDestTruncate);
@@ -255,7 +255,7 @@ index 1ec1ae9..17d0d25 100644
            rc = sqlite3PagerCommitPhaseOne(pDestPager, 0, 0);
          }
  
-@@ -140300,8 +140378,14 @@ SQLITE_PRIVATE void sqlite3Pragma(
+@@ -140299,8 +140377,14 @@ SQLITE_PRIVATE void sqlite3Pragma(
      /* sqlite3CodecPragma executes internal */
      goto pragma_out;
    }
@@ -272,7 +272,7 @@ index 1ec1ae9..17d0d25 100644
    /* Locate the pragma in the lookup table */
    pPragma = pragmaLocate(zLeft);
    if( pPragma==0 ){
-@@ -155771,7 +155855,6 @@ static void updateVirtualTable(
+@@ -155770,7 +155854,6 @@ static void updateVirtualTable(
      }
    }
  
@@ -280,7 +280,7 @@ index 1ec1ae9..17d0d25 100644
    if( eOnePass==ONEPASS_OFF ){
      /* End the virtual table scan */
      if( pSrc->nSrc==1 ){
-@@ -182655,6 +182738,10 @@ SQLITE_PRIVATE const char *sqlite3ErrStr(int rc){
+@@ -182654,6 +182737,10 @@ SQLITE_PRIVATE const char *sqlite3ErrStr(int rc){
        zErr = "no more rows available";
        break;
      }
@@ -291,7 +291,7 @@ index 1ec1ae9..17d0d25 100644
      default: {
        rc &= 0xff;
        if( ALWAYS(rc>=0) && rc<ArraySize(aMsg) && aMsg[rc]!=0 ){
-@@ -260545,7 +260632,1049 @@ export_finish:
+@@ -260544,7 +260631,1050 @@ export_finish:
  }
  /************** End file hw_codec.c *****************************************/
  #endif
@@ -488,6 +488,7 @@ index 1ec1ae9..17d0d25 100644
 +  if (rc) {
 +    return rc;
 +  }
++  sqlite3_log(SQLITE_NOMEM, "Meta page %u", pgno);
 +  rc = fn(pPage, args);
 +  if (rc) {
 +    goto SCAN_PAGE_OUT;
