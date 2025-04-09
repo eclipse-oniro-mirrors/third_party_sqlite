@@ -359,17 +359,8 @@ struct sqlite3_api_routines {
   const char *(*db_name)(sqlite3*,int);
   /* Version 3.40.0 and later */
   int (*value_encoding)(sqlite3_value*);
-  /* Version 3.41.0 and later */
-  int (*is_interrupted)(sqlite3*);
-  /* Version 3.43.0 and later */
-  int (*stmt_explain)(sqlite3_stmt*,int);
-  /* Version 3.44.0 and later */
-  void *(*get_clientdata)(sqlite3*,const char*);
-  int (*set_clientdata)(sqlite3*, const char*, void*, void(*)(void*));
-#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
   /* handle after drop table done */
   int (*set_droptable_handle)(sqlite3*,void(*)(sqlite3*,const char*,const char*));
-#endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
 };
 
 /*
@@ -397,7 +388,7 @@ typedef int (*sqlite3_loadext_entry)(
 #ifdef SQLITE3_EXPORT_SYMBOLS
 extern const sqlite3_api_routines *sqlite3_export_symbols;
 #define sqlite3_api sqlite3_export_symbols
-#endif /* SQLITE3_EXPORT_SYMBOLS */
+#endif
 #define sqlite3_aggregate_context      sqlite3_api->aggregate_context
 #ifndef SQLITE_OMIT_DEPRECATED
 #define sqlite3_aggregate_count        sqlite3_api->aggregate_count
@@ -700,18 +691,9 @@ extern const sqlite3_api_routines *sqlite3_export_symbols;
 #define sqlite3_db_name                sqlite3_api->db_name
 /* Version 3.40.0 and later */
 #define sqlite3_value_encoding         sqlite3_api->value_encoding
-/* Version 3.41.0 and later */
-#define sqlite3_is_interrupted         sqlite3_api->is_interrupted
-/* Version 3.43.0 and later */
-#define sqlite3_stmt_explain           sqlite3_api->stmt_explain
-/* Version 3.44.0 and later */
-#define sqlite3_get_clientdata         sqlite3_api->get_clientdata
-#define sqlite3_set_clientdata         sqlite3_api->set_clientdata
-#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
 /* handle after drop table done */
 #define sqlite3_set_droptable_handle   sqlite3_api->set_droptable_handle
-#endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
-#endif /* !defined(SQLITE_CORE) && (!defined(SQLITE_OMIT_LOAD_EXTENSION) || defined(SQLITE3_EXPORT_SYMBOLS)) */
+#endif /* !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION) */
 
 #if !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION)
   /* This case when the file really is being compiled as a loadable 
