@@ -18,24 +18,24 @@ sqlite_dst_dir = root_out_dir + "/patched_sqlite"
 sqlite_patch_dir = sqlite_src_dir + "/patch"
 
 action("apply_patch") {
-  visibility = [ "*" ]
-  script = "${sqlite_patch_dir}/apply_patch.sh"
-  inputs = [ "$sqlite_src_dir" ]
-  outputs = [
-    "$sqlite_dst_dir/ext/misc/cksumvfs.c",
-    "$sqlite_dst_dir/src/shell.c",
-    "$sqlite_dst_dir/src/sqlite3.c",
-    "$sqlite_dst_dir/src/sqlite3icu.c",
-    "$sqlite_dst_dir/include/sqlite3ext.h",
-    "$sqlite_dst_dir/include/sqlite3.h",
-    "$sqlite_dst_dir/include/sqlite3sym.h",
-    "$sqlite_dst_dir/include/sqlite3icu.h",
-    "$sqlite_dst_dir/include/sqlite3tokenizer.h",
-  ]
+    visibility = ["*"]
+    script = "${sqlite_patch_dir}/apply_patch.sh"
+    inputs = ["$sqlite_src_dir"]
+    outputs = [
+      "$sqlite_dst_dir/ext/misc/cksumvfs.c",
+      "$sqlite_dst_dir/src/shell.c",
+      "$sqlite_dst_dir/src/sqlite3.c",
+      "$sqlite_dst_dir/src/sqlite3icu.c",
+      "$sqlite_dst_dir/include/sqlite3ext.h",
+      "$sqlite_dst_dir/include/sqlite3.h",
+      "$sqlite_dst_dir/include/sqlite3sym.h",
+      "$sqlite_dst_dir/include/sqlite3icu.h",
+      "$sqlite_dst_dir/include/sqlite3tokenizer.h",
+    ]
 
-  args = [
-    rebase_path(sqlite_src_dir, root_build_dir),
-    rebase_path(sqlite_dst_dir, root_build_dir),
-    rebase_path(sqlite_patch_dir, root_build_dir),
-  ]
+    args = [
+      rebase_path(sqlite_src_dir, root_build_dir),
+      rebase_path(sqlite_dst_dir, root_build_dir),
+      rebase_path(sqlite_patch_dir, root_build_dir),
+    ]
 }
