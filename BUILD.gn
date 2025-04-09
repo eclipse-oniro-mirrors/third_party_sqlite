@@ -262,7 +262,7 @@ if (is_cross_platform_build) {
         [ "//foundation/resourceschedule/resource_schedule_service/*" ]
     visibility += [ "//foundation/bundlemanager/ecological_rule_mgr/*" ]
 
-    sources = [ "$sqlite_patched_dir/src/sqlite3.c" ]
+    sources = [ "src/sqlite3.c" ]
 
     defines = [
       "NDEBUG=1",
