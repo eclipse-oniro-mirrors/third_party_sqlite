@@ -39,12 +39,4 @@ extern const struct sqlite3_api_routines_hw *sqlite3_export_hw_symbols;
 #define sqlite3_rekey               sqlite3_export_hw_symbols->rekey
 #define sqlite3_rekey_v2            sqlite3_export_hw_symbols->rekey_v2
 
-struct sqlite3_api_routines_cksumvfs {
-  int (*register_cksumvfs)(const char *);
-  int (*unregister_cksumvfs)();
-};
-extern const struct sqlite3_api_routines_cksumvfs *sqlite3_export_cksumvfs_symbols;
-#define sqlite3_register_cksumvfs sqlite3_export_cksumvfs_symbols->register_cksumvfs
-#define sqlite3_unregister_cksumvfs sqlite3_export_cksumvfs_symbols->unregister_cksumvfs
-
 #endif

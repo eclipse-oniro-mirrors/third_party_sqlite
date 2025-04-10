@@ -142,4 +142,4 @@ struct sqlite3_tokenizer {
 struct sqlite3_tokenizer_cursor {
   sqlite3_tokenizer *pTokenizer;       /* Tokenizer for this cursor. */
   /* Tokenizer implementations will typically add additional fields */
-};
+};

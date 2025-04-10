@@ -1,7 +1,7 @@
 {
     "name": "@ohos/sqlite",
     "description": "SQLite is a C-language library that implements a small, fast, self-contained, high-reliability, full-featured, SQL database engine.",
-    "version": "3.46.1",
+    "version": "3.40.1",
     "homePage": "https://www.sqlite.org/",
     "license": "Public Domain",
     "publishAs": "code-segment",
@@ -14,7 +14,7 @@
         "name": "sqlite",
         "subsystem": "thirdparty",
         "syscap": [],
-        "features": [ "sqlite_support_check_pages" ],
+        "features": [],
         "adapted_system_type": [ "standard" ],
         "rom": "2200KB",
         "ram": "1024KB",
@@ -22,9 +22,6 @@
             "components": [
                 "c_utils",
                 "icu",
-                "openssl"
-            ],
-            "third_party": [
                 "openssl"
             ]
         },
