@@ -1,0 +1,83 @@
+From f9a13d824a46350fa3ec852a3df7f894363bdcab Mon Sep 17 00:00:00 2001
+From: wanghaishuo <wanghaishuo1@huawei.com>
+Date: Sat, 12 Apr 2025 11:13:36 +0800
+Subject: [PATCH 7/7] BugFix CurrVersion
+
+Signed-off-by: ryne3366 <zengchuanrui@huawei.com>
+---
+ src/sqlite3.c | 35 ++++++++++++++++++++++++++++-------
+ 1 file changed, 28 insertions(+), 7 deletions(-)
+
+diff --git a/src/sqlite3.c b/src/sqlite3.c
+index 1063591..4d96a1e 100644
+--- a/src/sqlite3.c
++++ b/src/sqlite3.c
+@@ -43267,6 +43267,9 @@ static int unixOpen(
+         flags |= SQLITE_OPEN_READONLY;
+         openFlags |= O_RDONLY;
+         isReadonly = 1;
++#ifdef LOG_DUMP
++        sqlite3_log(SQLITE_WARNING, "Try open file readonly sysno %d", errno);
++#endif
+         fd = robust_open(zName, openFlags, openMode);
+       }
+     }
+@@ -246320,7 +246323,7 @@ static int PragmaMetaDoubleWrie(sqlite3 *db, int iDb, Parse *parse, const char *
+     sqlite3_mutex_enter(db->mutex);
+     // only support enabled meta double write
+     int rc = MetaDwrOpenAndCheck(pBt);
+-    if (rc != SQLITE_OK) {
++    if (rc != SQLITE_OK && rc != SQLITE_PERM) {
+       parse->nErr++;
+       parse->rc = rc;
+     }
+@@ -246776,6 +246779,29 @@ static inline const char *GetMetaFilePath(Pager *pPager)
+   return pPager->metaFd == NULL ? NULL : ((const char *)pPager->metaFd + ROUND8(pPager->pVfs->szOsFile));
+ }
+ 
++static int MetaDwrCheckPerm(sqlite3_vfs *pVfs, u8 openCreate, char *metaPath) {
++  int exists = 0;
++  int rc = sqlite3OsAccess(pVfs, metaPath, SQLITE_ACCESS_EXISTS, &exists);
++  if (rc != SQLITE_OK) {
++    return rc;
++  }
++  if (!exists && !openCreate) {
++    return SQLITE_PERM;
++  }
++#ifdef HARMONY_OS
++  // check if the path have enough permission
++  rc = osAccess(metaPath, W_OK|R_OK);
++  if (rc == 0 || errno == ENOENT) {
++    return SQLITE_OK;
++  }
++  rc = SQLITE_PERM;
++  if (openCreate) {
++    sqlite3_log(SQLITE_WARNING_DUMP, "Meta double write disabled, sysno %d", errno);
++  }
++#endif
++  return rc;
++}
++
+ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
+   if (pPager->metaFd || pPager->zFilename == NULL) {
+     return SQLITE_OK;
+@@ -246792,15 +246818,10 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
+     return SQLITE_NOMEM_BKPT;
+   }
+   sqlite3_snprintf(size, metaPath, "%s-dwr", pPager->zFilename);
+-  int exists = 0;
+-  int rc = sqlite3OsAccess(pVfs, metaPath, SQLITE_ACCESS_EXISTS, &exists);
++  int rc = MetaDwrCheckPerm(pVfs, openCreate, metaPath);
+   if (rc != SQLITE_OK) {
+     goto INIT_META_OUT;
+   }
+-  if (!exists && !openCreate) {
+-    sqlite3_free(metaFd);
+-    goto INIT_META_OUT;
+-  }
+   u32 flags = (SQLITE_OPEN_READWRITE | SQLITE_OPEN_SUPER_JOURNAL);
+   if (openCreate) {
+     flags |= SQLITE_OPEN_CREATE;
+-- 
+2.47.0.windows.2
+
