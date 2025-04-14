@@ -359,6 +359,10 @@ struct sqlite3_api_routines {
   const char *(*db_name)(sqlite3*,int);
   /* Version 3.40.0 and later */
   int (*value_encoding)(sqlite3_value*);
+#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
+  /* handle after drop table done */
+  int (*set_droptable_handle)(sqlite3*,void(*)(sqlite3*,const char*,const char*));
+#endif
 };
 
 /*
@@ -382,7 +386,11 @@ typedef int (*sqlite3_loadext_entry)(
 ** the API.  So the redefinition macros are only valid if the
 ** SQLITE_CORE macros is undefined.
 */
-#if !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION)
+#if !defined(SQLITE_CORE) && (!defined(SQLITE_OMIT_LOAD_EXTENSION) || defined(SQLITE3_EXPORT_SYMBOLS))
+#ifdef SQLITE3_EXPORT_SYMBOLS
+extern const sqlite3_api_routines *sqlite3_export_symbols;
+#define sqlite3_api sqlite3_export_symbols
+#endif
 #define sqlite3_aggregate_context      sqlite3_api->aggregate_context
 #ifndef SQLITE_OMIT_DEPRECATED
 #define sqlite3_aggregate_count        sqlite3_api->aggregate_count
@@ -685,6 +693,10 @@ typedef int (*sqlite3_loadext_entry)(
 #define sqlite3_db_name                sqlite3_api->db_name
 /* Version 3.40.0 and later */
 #define sqlite3_value_encoding         sqlite3_api->value_encoding
+#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
+/* handle after drop table done */
+#define sqlite3_set_droptable_handle   sqlite3_api->set_droptable_handle
+#endif
 #endif /* !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION) */
 
 #if !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION)
