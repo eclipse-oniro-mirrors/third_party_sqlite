@@ -1,50 +1,26 @@
-From 0fdc896d7434be7ad9a3947aaca13d5ce760547d Mon Sep 17 00:00:00 2001
-From: MartinChoo <214582617@qq.com>
-Date: Tue, 25 Feb 2025 22:16:42 +0800
-Subject: [PATCH] Report corruption when runtime detected
+From 75beaaa7d0cc8a392bc1ca2d164f2227c0c5b7f8 Mon Sep 17 00:00:00 2001
+From: wanghaishuo <wanghaishuo1@huawei.com>
+Date: Sat, 12 Apr 2025 10:53:34 +0800
+Subject: [PATCH 5/7] Report corruption when runtime detected
 
-Signed-off-by: MartinChoo <214582617@qq.com>
+Signed-off-by: ryne3366 <zengchuanrui@huawei.com>
 ---
- src/sqlite3.c | 717 ++++++++++++++++++++++++++++++++++++++++++--------
- 1 file changed, 605 insertions(+), 112 deletions(-)
+ src/sqlite3.c | 649 +++++++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 563 insertions(+), 86 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index f348f3c..0666938 100644
+index a25d540..aa629b5 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
-@@ -2474,6 +2474,21 @@ struct sqlite3_mem_methods {
- ** is compiled without -DSQLITE_ALLOW_ROWID_IN_VIEW (which is the usual and
- ** recommended case) then the integer is always filled with zero, regardless
- ** if its initial value.
-+**
-+** [[SQLITE_CONFIG_CORRUPTION]] <dt>SQLITE_CONFIG_CORRUPTION</dt>
-+** <dd> The SQLITE_CONFIG_CORRUPTION option is used to configure the SQLite
-+** global [ corruption error].
-+** (^The SQLITE_CONFIG_CORRUPTION option takes two arguments: a pointer to a
-+** function with a call signature of void(*)(void*,const void*),
-+** and a pointer to void. ^If the function pointer is not NULL, it is
-+** invoked to process each data corruption event.  ^If the
-+** function pointer is NULL, no=op will do when corruption detect.
-+** ^The void pointer that is the second argument to SQLITE_CONFIG_CORRUPTION is
-+** passed through as the first parameter to the application-defined corruption
-+** function whenever that function is invoked.  ^The second parameter to
-+** the corruption function is a corruption message after formatting via [sqlite3_snprintf()].
-+** In a multi-threaded application, the application-defined corruption
-+** function must be threadsafe. </dd>
- ** </dl>
- */
- #define SQLITE_CONFIG_SINGLETHREAD         1  /* nil */
-@@ -2506,7 +2521,8 @@ struct sqlite3_mem_methods {
+@@ -2459,6 +2459,7 @@ struct sqlite3_mem_methods {
+ #define SQLITE_CONFIG_SMALL_MALLOC        27  /* boolean */
  #define SQLITE_CONFIG_SORTERREF_SIZE      28  /* int nByte */
  #define SQLITE_CONFIG_MEMDB_MAXSIZE       29  /* sqlite3_int64 */
- #define SQLITE_CONFIG_ROWID_IN_VIEW       30  /* int* */
--#define SQLITE_CONFIG_ENABLE_ICU          31  /* boolean */
-+#define SQLITE_CONFIG_CORRUPTION          31  /* xCorruption */
-+#define SQLITE_CONFIG_ENABLE_ICU          32  /* boolean */
- 
++#define SQLITE_CONFIG_CORRUPTION          30  /* xCorruption */
+ #define SQLITE_CONFIG_ENABLE_ICU          31  /* boolean */
  /*
  ** CAPI3REF: Database Connection Configuration Options
-@@ -20360,6 +20376,8 @@ struct Sqlite3Config {
+@@ -19554,6 +19555,8 @@ struct Sqlite3Config {
    int iOnceResetThreshold;          /* When to reset OP_Once counters */
    u32 szSorterRef;                  /* Min size in bytes to use sorter-refs */
    unsigned int iPrngSeed;           /* Alternative fixed seed for the PRNG */
@@ -53,7 +29,7 @@ index f348f3c..0666938 100644
    /* vvvv--- must be last ---vvv */
  #ifdef SQLITE_DEBUG
    sqlite3_int64 aTune[SQLITE_NTUNE]; /* Tuning parameters */
-@@ -20627,6 +20645,57 @@ SQLITE_PRIVATE Window *sqlite3WindowAssemble(Parse*, Window*, ExprList*, ExprLis
+@@ -19805,6 +19808,57 @@ SQLITE_PRIVATE Window *sqlite3WindowAssemble(Parse*, Window*, ExprList*, ExprLis
    }                                                    \
  }
  
@@ -111,7 +87,7 @@ index f348f3c..0666938 100644
  /*
  ** The SQLITE_*_BKPT macros are substitutes for the error codes with
  ** the same name but without the _BKPT suffix.  These macros invoke
-@@ -20635,10 +20704,11 @@ SQLITE_PRIVATE Window *sqlite3WindowAssemble(Parse*, Window*, ExprList*, ExprLis
+@@ -19813,10 +19867,11 @@ SQLITE_PRIVATE Window *sqlite3WindowAssemble(Parse*, Window*, ExprList*, ExprLis
  ** to set a debugger breakpoint.
  */
  SQLITE_PRIVATE int sqlite3ReportError(int iErr, int lineno, const char *zType);
@@ -125,7 +101,7 @@ index f348f3c..0666938 100644
  #define SQLITE_MISUSE_BKPT sqlite3MisuseError(__LINE__)
  #define SQLITE_CANTOPEN_BKPT sqlite3CantopenError(__LINE__)
  #ifdef SQLITE_DEBUG
-@@ -20650,12 +20720,13 @@ SQLITE_PRIVATE   int sqlite3IoerrnomemError(int);
+@@ -19828,12 +19883,13 @@ SQLITE_PRIVATE   int sqlite3IoerrnomemError(int);
  # define SQLITE_NOMEM_BKPT SQLITE_NOMEM
  # define SQLITE_IOERR_NOMEM_BKPT SQLITE_IOERR_NOMEM
  #endif
@@ -142,16 +118,16 @@ index f348f3c..0666938 100644
  
  /*
  ** FTS3 and FTS4 both require virtual table support
-@@ -23111,6 +23182,8 @@ SQLITE_PRIVATE SQLITE_WSD struct Sqlite3Config sqlite3Config = {
+@@ -22312,6 +22368,8 @@ SQLITE_PRIVATE SQLITE_WSD struct Sqlite3Config sqlite3Config = {
     0x7ffffffe,                /* iOnceResetThreshold */
     SQLITE_DEFAULT_SORTERREF_SIZE,   /* szSorterRef */
     0,                         /* iPrngSeed */
 +   0,                         /* xCorruption */
 +   0,                         /* pCorruptionArg */
  #ifdef SQLITE_DEBUG
-    {0,0,0,0,0,0},             /* aTune */
+    {0,0,0,0,0,0}              /* aTune */
  #endif
-@@ -60758,7 +60831,7 @@ static int readDbPage(PgHdr *pPg){
+@@ -58784,7 +58842,7 @@ static int readDbPage(PgHdr *pPg){
    assert( isOpen(pPager->fd) );
  
    if( pagerUseWal(pPager) ){
@@ -160,7 +136,7 @@ index f348f3c..0666938 100644
      if( rc ) return rc;
    }
    if( iFrame ){
-@@ -63281,7 +63354,12 @@ static int getPageNormal(
+@@ -61324,7 +61382,12 @@ static int getPageNormal(
    assert( assert_pager_state(pPager) );
    assert( pPager->hasHeldSharedLock==1 );
  
@@ -174,7 +150,7 @@ index f348f3c..0666938 100644
    pBase = sqlite3PcacheFetch(pPager->pPCache, pgno, 3);
    if( pBase==0 ){
      pPg = 0;
-@@ -63313,7 +63391,11 @@ static int getPageNormal(
+@@ -61356,7 +61419,11 @@ static int getPageNormal(
      ** (2) Never try to fetch the locking page
      */
      if( pgno==PAGER_SJ_PGNO(pPager) ){
@@ -187,7 +163,7 @@ index f348f3c..0666938 100644
        goto pager_acquire_err;
      }
  
-@@ -63399,7 +63481,10 @@ static int getPageMMap(
+@@ -61438,7 +61505,10 @@ static int getPageMMap(
    ** test in the previous statement, and avoid testing pgno==0 in the
    ** common case where pgno is large. */
    if( pgno<=1 && pgno==0 ){
@@ -199,7 +175,7 @@ index f348f3c..0666938 100644
    }
    assert( pPager->eState>=PAGER_READER );
    assert( assert_pager_state(pPager) );
-@@ -65010,7 +65095,11 @@ SQLITE_PRIVATE int sqlite3PagerMovepage(Pager *pPager, DbPage *pPg, Pgno pgno, i
+@@ -63024,7 +63094,11 @@ SQLITE_PRIVATE int sqlite3PagerMovepage(Pager *pPager, DbPage *pPg, Pgno pgno, i
    if( pPgOld ){
      if( NEVER(pPgOld->nRef>1) ){
        sqlite3PagerUnrefNotNull(pPgOld);
@@ -212,7 +188,7 @@ index f348f3c..0666938 100644
      }
      pPg->flags |= (pPgOld->flags&PGHDR_NEED_SYNC);
      if( pPager->tempFile ){
-@@ -66940,7 +67029,13 @@ static int walIndexAppend(Wal *pWal, u32 iFrame, u32 iPage){
+@@ -64792,7 +64866,13 @@ static int walIndexAppend(Wal *pWal, u32 iFrame, u32 iPage){
      /* Write the aPgno[] array entry and the hash-table slot. */
      nCollide = idx;
      for(iKey=walHash(iPage); sLoc.aHash[iKey]; iKey=walNextHash(iKey)){
@@ -227,7 +203,7 @@ index f348f3c..0666938 100644
      }
      sLoc.aPgno[idx-1] = iPage;
      AtomicStore(&sLoc.aHash[iKey], (ht_slot)idx);
-@@ -67889,7 +67984,13 @@ static int walCheckpoint(
+@@ -65745,7 +65825,13 @@ static int walCheckpoint(
              ** database plus the amount of data in the wal file, plus the
              ** maximum size of the pending-byte page (65536 bytes), then
              ** must be corruption somewhere.  */
@@ -242,10 +218,10 @@ index f348f3c..0666938 100644
            }else{
              sqlite3OsFileControlHint(pWal->pDbFd, SQLITE_FCNTL_SIZE_HINT,&nReq);
            }
-@@ -69201,7 +69302,11 @@ static int walFindFrame(
+@@ -66856,7 +66942,11 @@ SQLITE_PRIVATE int sqlite3WalFindFrame(
+         iRead = iFrame;
        }
        if( (nCollide--)==0 ){
-         *piRead = 0;
 -        return SQLITE_CORRUPT_BKPT;
 +        char zMsg[SQLITE_PRINT_CORRUPT_SIZE] = {0};
 +        sqlite3_snprintf(sizeof(zMsg), zMsg, "mis-match page(%u) to map into WAL", pgno);
@@ -255,21 +231,21 @@ index f348f3c..0666938 100644
        }
        iKey = walNextHash(iKey);
      }
-@@ -70005,7 +70110,12 @@ SQLITE_PRIVATE int sqlite3WalCheckpoint(
-     /* Copy data from the log to the database file. */
-     if( rc==SQLITE_OK ){
-       if( pWal->hdr.mxFrame && walPagesize(pWal)!=nBuf ){
--        rc = SQLITE_CORRUPT_BKPT;
-+        char zMsg[SQLITE_PRINT_CORRUPT_SIZE] = {0};
-+        sqlite3_snprintf(sizeof(zMsg), zMsg, "mis-match between pageSize=%d and bufferSize=%d, mxFrame=%u",
-+          walPagesize(pWal),nBuf,pWal->hdr.mxFrame);
-+        sqlite3CorruptContext context = SQLITE_CORRUPT_CONTEXT(pWal->hdr.nPage, 0, CORRUPT_TYPE_FRAME_WAL,
-+          -1, 0, zMsg, NULL);
-+        rc = SQLITE_CORRUPT_REPORT(&context);
-       }else{
-         rc = walCheckpoint(pWal, db, eMode2, xBusy2, pBusyArg, sync_flags,zBuf);
-       }
-@@ -71469,7 +71579,7 @@ static int checkDbHeaderValid(sqlite3 *db, int iDbpage, u8 *zBuf){
+@@ -67597,7 +67687,12 @@ SQLITE_PRIVATE int sqlite3WalCheckpoint(
+   if( rc==SQLITE_OK ){
+ 
+     if( pWal->hdr.mxFrame && walPagesize(pWal)!=nBuf ){
+-      rc = SQLITE_CORRUPT_BKPT;
++      char zMsg[SQLITE_PRINT_CORRUPT_SIZE] = {0};
++      sqlite3_snprintf(sizeof(zMsg), zMsg, "mis-match between pageSize=%d and bufferSize=%d, mxFrame=%u",
++        walPagesize(pWal),nBuf,pWal->hdr.mxFrame);
++      sqlite3CorruptContext context = SQLITE_CORRUPT_CONTEXT(pWal->hdr.nPage, 0, CORRUPT_TYPE_FRAME_WAL,
++        -1, 0, zMsg, NULL);
++      rc = SQLITE_CORRUPT_REPORT(&context);
+     }else{
+       sqlite3_int64 startTime;
+       sqlite3OsCurrentTimeInt64(db->pVfs, &startTime);
+@@ -69055,7 +69150,7 @@ static int checkDbHeaderValid(sqlite3 *db, int iDbpage, u8 *zBuf){
  ** with the page number and filename associated with the (MemPage*).
  */
  #ifdef SQLITE_DEBUG
@@ -277,8 +253,8 @@ index f348f3c..0666938 100644
 +int corruptPageError(int lineno, MemPage *p, sqlite3CorruptContext *context){
    char *zMsg;
    sqlite3BeginBenignMalloc();
-   zMsg = sqlite3_mprintf("database corruption page %u of %s",
-@@ -71480,11 +71590,11 @@ int corruptPageError(int lineno, MemPage *p){
+   zMsg = sqlite3_mprintf("database corruption page %d of %s",
+@@ -69066,11 +69161,11 @@ int corruptPageError(int lineno, MemPage *p){
      sqlite3ReportError(SQLITE_CORRUPT, lineno, zMsg);
    }
    sqlite3_free(zMsg);
@@ -292,8 +268,8 @@ index f348f3c..0666938 100644
 +# define SQLITE_CORRUPT_PAGE(context,pMemPage) SQLITE_CORRUPT_PGNO((pMemPage)->pgno,(context))
  #endif
  
- /* Default value for SHARED_LOCK_TRACE macro if shared-cache is disabled
-@@ -72210,7 +72320,12 @@ static int btreeMoveto(
+ #ifndef SQLITE_OMIT_SHARED_CACHE
+@@ -69748,7 +69843,12 @@ static int btreeMoveto(
      if( pIdxKey==0 ) return SQLITE_NOMEM_BKPT;
      sqlite3VdbeRecordUnpack(pKeyInfo, (int)nKey, pKey, pIdxKey);
      if( pIdxKey->nField==0 || pIdxKey->nField>pKeyInfo->nAllField ){
@@ -307,7 +283,7 @@ index f348f3c..0666938 100644
      }else{
        rc = sqlite3BtreeIndexMoveto(pCur, pIdxKey, pRes);
      }
-@@ -72407,7 +72522,7 @@ static void ptrmapPut(BtShared *pBt, Pgno key, u8 eType, Pgno parent, int *pRC){
+@@ -69928,7 +70028,7 @@ static void ptrmapPut(BtShared *pBt, Pgno key, u8 eType, Pgno parent, int *pRC){
    assert( 0==PTRMAP_ISPAGE(pBt, PENDING_BYTE_PAGE(pBt)) );
  
    assert( pBt->autoVacuum );
@@ -316,7 +292,7 @@ index f348f3c..0666938 100644
      *pRC = SQLITE_CORRUPT_BKPT;
      return;
    }
-@@ -72421,12 +72536,24 @@ static void ptrmapPut(BtShared *pBt, Pgno key, u8 eType, Pgno parent, int *pRC){
+@@ -69942,12 +70042,24 @@ static void ptrmapPut(BtShared *pBt, Pgno key, u8 eType, Pgno parent, int *pRC){
      /* The first byte of the extra data is the MemPage.isInit byte.
      ** If that byte is set, it means this page is also being used
      ** as a btree page. */
@@ -343,7 +319,7 @@ index f348f3c..0666938 100644
      goto ptrmap_exit;
    }
    assert( offset <= (int)pBt->usableSize-5 );
-@@ -72471,7 +72598,12 @@ static int ptrmapGet(BtShared *pBt, Pgno key, u8 *pEType, Pgno *pPgno){
+@@ -69992,7 +70104,12 @@ static int ptrmapGet(BtShared *pBt, Pgno key, u8 *pEType, Pgno *pPgno){
    offset = PTRMAP_PTROFFSET(iPtrmap, key);
    if( offset<0 ){
      sqlite3PagerUnref(pDbPage);
@@ -357,7 +333,7 @@ index f348f3c..0666938 100644
    }
    assert( offset <= (int)pBt->usableSize-5 );
    assert( pEType!=0 );
-@@ -72479,7 +72611,15 @@ static int ptrmapGet(BtShared *pBt, Pgno key, u8 *pEType, Pgno *pPgno){
+@@ -70000,7 +70117,15 @@ static int ptrmapGet(BtShared *pBt, Pgno key, u8 *pEType, Pgno *pPgno){
    if( pPgno ) *pPgno = get4byte(&pPtrmap[offset+1]);
  
    sqlite3PagerUnref(pDbPage);
@@ -374,9 +350,9 @@ index f348f3c..0666938 100644
    return SQLITE_OK;
  }
  
-@@ -72919,7 +73059,14 @@ static void ptrmapPutOvflPtr(MemPage *pPage, MemPage *pSrc, u8 *pCell,int *pRC){
+@@ -70392,7 +70517,14 @@ static void ptrmapPutOvflPtr(MemPage *pPage, MemPage *pSrc, u8 *pCell,int *pRC){
      Pgno ovfl;
-     if( SQLITE_OVERFLOW(pSrc->aDataEnd, pCell, pCell+info.nLocal) ){
+     if( SQLITE_WITHIN(pSrc->aDataEnd, pCell, pCell+info.nLocal) ){
        testcase( pSrc!=pPage );
 -      *pRC = SQLITE_CORRUPT_BKPT;
 +      char zMsg[SQLITE_PRINT_CORRUPT_SIZE] = {0};
@@ -390,7 +366,7 @@ index f348f3c..0666938 100644
        return;
      }
      ovfl = get4byte(&pCell[info.nSize-4]);
-@@ -72977,10 +73124,29 @@ static int defragmentPage(MemPage *pPage, int nMaxFrag){
+@@ -70450,10 +70582,29 @@ static int defragmentPage(MemPage *pPage, int nMaxFrag){
    ** reconstruct the entire page.  */
    if( (int)data[hdr+7]<=nMaxFrag ){
      int iFree = get2byte(&data[hdr+1]);
@@ -422,7 +398,7 @@ index f348f3c..0666938 100644
        if( 0==iFree2 || (data[iFree2]==0 && data[iFree2+1]==0) ){
          u8 *pEnd = &data[cellOffset + nCell*2];
          u8 *pAddr;
-@@ -72988,16 +73154,51 @@ static int defragmentPage(MemPage *pPage, int nMaxFrag){
+@@ -70461,16 +70612,51 @@ static int defragmentPage(MemPage *pPage, int nMaxFrag){
          int sz = get2byte(&data[iFree+2]);
          int top = get2byte(&data[hdr+5]);
          if( top>=iFree ){
@@ -478,10 +454,10 @@ index f348f3c..0666938 100644
          }
  
          cbrk = top+sz;
-@@ -73030,13 +73231,24 @@ static int defragmentPage(MemPage *pPage, int nMaxFrag){
+@@ -70503,13 +70689,24 @@ static int defragmentPage(MemPage *pPage, int nMaxFrag){
        ** if PRAGMA cell_size_check=ON.
        */
-       if( pc>iCellLast ){
+       if( pc<iCellStart || pc>iCellLast ){
 -        return SQLITE_CORRUPT_PAGE(pPage);
 +        char zMsg[SQLITE_PRINT_CORRUPT_SIZE] = {0};
 +        char xBuffer[SQLITE_PRINT_BUF_SIZE] = {0};  // Print 4 bytes belong to 1st block
@@ -492,7 +468,7 @@ index f348f3c..0666938 100644
 +          cellOffset + i*2, 2, zMsg, NULL);
 +        return SQLITE_CORRUPT_PAGE(&context, pPage);
        }
-       assert( pc>=0 && pc<=iCellLast );
+       assert( pc>=iCellStart && pc<=iCellLast );
        size = pPage->xCellSize(pPage, &src[pc]);
        cbrk -= size;
        if( cbrk<iCellStart || pc+size>usableSize ){
@@ -505,7 +481,7 @@ index f348f3c..0666938 100644
        }
        assert( cbrk+size<=usableSize && cbrk>=iCellStart );
        testcase( cbrk+size==usableSize );
-@@ -73050,7 +73262,13 @@ static int defragmentPage(MemPage *pPage, int nMaxFrag){
+@@ -70523,7 +70720,13 @@ static int defragmentPage(MemPage *pPage, int nMaxFrag){
  defragment_out:
    assert( pPage->nFree>=0 );
    if( data[hdr+7]+cbrk-iCellFirst!=pPage->nFree ){
@@ -520,7 +496,7 @@ index f348f3c..0666938 100644
    }
    assert( cbrk>=iCellFirst );
    put2byte(&data[hdr+5], cbrk);
-@@ -73075,7 +73293,7 @@ defragment_out:
+@@ -70548,7 +70751,7 @@ defragment_out:
  ** will be ignored if adding the extra space to the fragmentation count
  ** causes the fragmentation count to exceed 60.
  */
@@ -529,7 +505,7 @@ index f348f3c..0666938 100644
    const int hdr = pPg->hdrOffset;            /* Offset to page header */
    u8 * const aData = pPg->aData;             /* Page data */
    int iAddr = hdr + 1;                       /* Address of ptr to pc */
-@@ -73107,7 +73325,15 @@ static u8 *pageFindSlot(MemPage *pPg, int nByte, int *pRc){
+@@ -70580,7 +70783,15 @@ static u8 *pageFindSlot(MemPage *pPg, int nByte, int *pRc){
          return &aData[pc];
        }else if( x+pc > maxPC ){
          /* This slot extends off the end of the usable part of the page */
@@ -546,7 +522,7 @@ index f348f3c..0666938 100644
          return 0;
        }else{
          /* The slot remains on the free-list. Reduce its size to account
-@@ -73122,14 +73348,25 @@ static u8 *pageFindSlot(MemPage *pPg, int nByte, int *pRc){
+@@ -70595,14 +70806,25 @@ static u8 *pageFindSlot(MemPage *pPg, int nByte, int *pRc){
      if( pc<=iAddr ){
        if( pc ){
          /* The next slot in the chain comes before the current slot */
@@ -574,7 +550,7 @@ index f348f3c..0666938 100644
    }
    return 0;
  }
-@@ -73177,10 +73414,16 @@ static SQLITE_INLINE int allocateSpace(MemPage *pPage, int nByte, int *pIdx){
+@@ -70651,7 +70873,13 @@ static int allocateSpace(MemPage *pPage, int nByte, int *pIdx){
      if( top==0 && pPage->pBt->usableSize==65536 ){
        top = 65536;
      }else{
@@ -587,13 +563,9 @@ index f348f3c..0666938 100644
 +        CORRUPT_TYPE_PAGE_BTREE_LEAF, 0, 8, zMsg, NULL);
 +      return SQLITE_CORRUPT_PAGE(&context, pPage);
      }
-   }else if( top>(int)pPage->pBt->usableSize ){
--    return SQLITE_CORRUPT_PAGE(pPage);
-+    return SQLITE_CORRUPT_PAGE(NULL, pPage);
    }
  
-   /* If there is enough space between gap and top for one more cell pointer,
-@@ -73197,7 +73440,11 @@ static SQLITE_INLINE int allocateSpace(MemPage *pPage, int nByte, int *pIdx){
+@@ -70669,7 +70897,11 @@ static int allocateSpace(MemPage *pPage, int nByte, int *pIdx){
        assert( pSpace+nByte<=data+pPage->pBt->usableSize );
        *pIdx = g2 = (int)(pSpace-data);
        if( g2<=gap ){
@@ -606,7 +578,7 @@ index f348f3c..0666938 100644
        }else{
          return SQLITE_OK;
        }
-@@ -73276,12 +73523,23 @@ static int freeSpace(MemPage *pPage, u16 iStart, u16 iSize){
+@@ -70748,12 +70980,23 @@ static int freeSpace(MemPage *pPage, u16 iStart, u16 iSize){
      while( (iFreeBlk = get2byte(&data[iPtr]))<iStart ){
        if( iFreeBlk<=iPtr ){
          if( iFreeBlk==0 ) break; /* TH3: corrupt082.100 */
@@ -632,7 +604,7 @@ index f348f3c..0666938 100644
      }
      assert( iFreeBlk>iPtr || iFreeBlk==0 || CORRUPT_DB );
  
-@@ -73293,10 +73551,24 @@ static int freeSpace(MemPage *pPage, u16 iStart, u16 iSize){
+@@ -70765,10 +71008,24 @@ static int freeSpace(MemPage *pPage, u16 iStart, u16 iSize){
      */
      if( iFreeBlk && iEnd+3>=iFreeBlk ){
        nFrag = iFreeBlk - iEnd;
@@ -659,7 +631,7 @@ index f348f3c..0666938 100644
        }
        iSize = iEnd - iStart;
        iFreeBlk = get2byte(&data[iFreeBlk]);
-@@ -73309,13 +73581,27 @@ static int freeSpace(MemPage *pPage, u16 iStart, u16 iSize){
+@@ -70781,13 +71038,27 @@ static int freeSpace(MemPage *pPage, u16 iStart, u16 iSize){
      if( iPtr>hdr+1 ){
        int iPtrEnd = iPtr + get2byte(&data[iPtr+2]);
        if( iPtrEnd+3>=iStart ){
@@ -689,7 +661,7 @@ index f348f3c..0666938 100644
      data[hdr+7] -= nFrag;
    }
    pTmp = &data[hdr+5];
-@@ -73329,8 +73615,21 @@ static int freeSpace(MemPage *pPage, u16 iStart, u16 iSize){
+@@ -70796,8 +71067,21 @@ static int freeSpace(MemPage *pPage, u16 iStart, u16 iSize){
      /* The new freeblock is at the beginning of the cell content area,
      ** so just extend the cell content area rather than create another
      ** freelist entry */
@@ -713,26 +685,11 @@ index f348f3c..0666938 100644
      put2byte(&data[hdr+1], iFreeBlk);
      put2byte(&data[hdr+5], iEnd);
    }else{
-@@ -73391,7 +73690,13 @@ static int decodeFlags(MemPage *pPage, int flagByte){
-         pPage->pgno, flagByte, pPage->isInit, pPage->intKey, pPage->intKeyLeaf, pPage->leaf,
-         pPage->childPtrSize, pPage->cellOffset, pPage->nCell, pPage->hdrOffset, pPage->minLocal, pPage->maxLocal, g_lastCkptTime);
+@@ -70882,7 +71166,13 @@ static int decodeFlags(MemPage *pPage, int flagByte){
+       pPage->pgno, flagByte, pPage->isInit, pPage->intKey, pPage->intKeyLeaf, pPage->leaf,
+       pPage->childPtrSize, pPage->cellOffset, pPage->nCell, pPage->hdrOffset, pPage->minLocal, pPage->maxLocal, g_lastCkptTime);
  #endif /* LOG_DUMP */
--      return SQLITE_CORRUPT_PAGE(pPage);
-+      char zMsg[SQLITE_PRINT_CORRUPT_SIZE] = {0};
-+      char xBuffer[SQLITE_PRINT_BUF_SIZE] = {0};
-+      (void)sqlite3base16Encode(pPage->aData, 8, xBuffer, sizeof(xBuffer));
-+      sqlite3_snprintf(sizeof(zMsg), zMsg, "unrecognized flag:%d, base16:%s", flagByte, xBuffer);
-+      sqlite3CorruptContext context = SQLITE_CORRUPT_CONTEXT(pPage->pBt->nPage, pPage->pgno,
-+        CORRUPT_TYPE_PAGE_BTREE_LEAF, -1, 0, zMsg, NULL);
-+      return SQLITE_CORRUPT_PAGE(&context, pPage);
-     }
-   }else{
-     pPage->childPtrSize = 4;
-@@ -73422,7 +73727,13 @@ static int decodeFlags(MemPage *pPage, int flagByte){
-         pPage->pgno, flagByte, pPage->isInit, pPage->intKey, pPage->intKeyLeaf, pPage->leaf,
-         pPage->childPtrSize, pPage->cellOffset, pPage->nCell, pPage->hdrOffset, pPage->minLocal, pPage->maxLocal, g_lastCkptTime);
- #endif /* LOG_DUMP */
--      return SQLITE_CORRUPT_PAGE(pPage);
+-    return SQLITE_CORRUPT_PAGE(pPage);
 +    char zMsg[SQLITE_PRINT_CORRUPT_SIZE] = {0};
 +    char xBuffer[SQLITE_PRINT_BUF_SIZE] = {0};
 +    (void)sqlite3base16Encode(pPage->aData, 8, xBuffer, sizeof(xBuffer));
@@ -740,10 +697,10 @@ index f348f3c..0666938 100644
 +    sqlite3CorruptContext context = SQLITE_CORRUPT_CONTEXT(pPage->pBt->nPage, pPage->pgno,
 +      CORRUPT_TYPE_PAGE_BTREE_LEAF, -1, 0, zMsg, NULL);
 +    return SQLITE_CORRUPT_PAGE(&context, pPage);
-     }
    }
+   pPage->max1bytePayload = pBt->max1bytePayload;
    return SQLITE_OK;
-@@ -73473,12 +73784,20 @@ static int btreeComputeFreeSpace(MemPage *pPage){
+@@ -70933,12 +71223,20 @@ static int btreeComputeFreeSpace(MemPage *pPage){
        /* EVIDENCE-OF: R-55530-52930 In a well-formed b-tree page, there will
        ** always be at least one cell before the first freeblock.
        */
@@ -766,7 +723,7 @@ index f348f3c..0666938 100644
        }
        next = get2byte(&data[pc]);
        size = get2byte(&data[pc+2]);
-@@ -73488,11 +73807,19 @@ static int btreeComputeFreeSpace(MemPage *pPage){
+@@ -70948,11 +71246,19 @@ static int btreeComputeFreeSpace(MemPage *pPage){
      }
      if( next>0 ){
        /* Freeblock not in ascending order */
@@ -788,7 +745,7 @@ index f348f3c..0666938 100644
      }
    }
  
-@@ -73504,7 +73831,13 @@ static int btreeComputeFreeSpace(MemPage *pPage){
+@@ -70964,7 +71270,13 @@ static int btreeComputeFreeSpace(MemPage *pPage){
    ** area, according to the page header, lies within the page.
    */
    if( nFree>usableSize || nFree<iCellFirst ){
@@ -803,7 +760,7 @@ index f348f3c..0666938 100644
    }
    pPage->nFree = (u16)(nFree - iCellFirst);
    return SQLITE_OK;
-@@ -73535,12 +73868,20 @@ static SQLITE_NOINLINE int btreeCellSizeCheck(MemPage *pPage){
+@@ -70995,12 +71307,20 @@ static SQLITE_NOINLINE int btreeCellSizeCheck(MemPage *pPage){
      testcase( pc==iCellFirst );
      testcase( pc==iCellLast );
      if( pc<iCellFirst || pc>iCellLast ){
@@ -826,7 +783,7 @@ index f348f3c..0666938 100644
      }
    }
    return SQLITE_OK;
-@@ -73572,7 +73913,7 @@ static int btreeInitPage(MemPage *pPage){
+@@ -71032,7 +71352,7 @@ static int btreeInitPage(MemPage *pPage){
    /* EVIDENCE-OF: R-28594-02890 The one-byte flag at offset 0 indicating
    ** the b-tree page type. */
    if( decodeFlags(pPage, data[0]) ){
@@ -835,7 +792,7 @@ index f348f3c..0666938 100644
    }
    assert( pBt->pageSize>=512 && pBt->pageSize<=65536 );
    pPage->maskPage = (u16)(pBt->pageSize - 1);
-@@ -73586,7 +73927,12 @@ static int btreeInitPage(MemPage *pPage){
+@@ -71046,7 +71366,12 @@ static int btreeInitPage(MemPage *pPage){
    pPage->nCell = get2byte(&data[3]);
    if( pPage->nCell>MX_CELL(pBt) ){
      /* To many cells for a single page.  The page must be corrupt */
@@ -849,20 +806,34 @@ index f348f3c..0666938 100644
    }
    testcase( pPage->nCell==MX_CELL(pBt) );
    /* EVIDENCE-OF: R-24089-57979 If a page contains no cells (which is only
-@@ -73729,7 +74075,11 @@ static int getAndInitPage(
+@@ -71201,7 +71526,11 @@ static int getAndInitPage(
+   assert( pCur==0 || pCur->iPage>0 );
  
    if( pgno>btreePagecount(pBt) ){
-     *ppPage = 0;
--    return SQLITE_CORRUPT_BKPT;
+-    rc = SQLITE_CORRUPT_BKPT;
 +    char zMsg[SQLITE_PRINT_CORRUPT_SIZE] = {0};
 +    sqlite3_snprintf(sizeof(zMsg), zMsg, "page number(%u) > db file size(%u)", pgno, btreePagecount(pBt));
 +    sqlite3CorruptContext context = SQLITE_CORRUPT_CONTEXT(pBt->nPage, pgno, CORRUPT_TYPE_PAGE_BTREE_LEAF,
 +      -1, 0, zMsg, NULL);
-+    return SQLITE_CORRUPT_REPORT(&context);
++    rc = SQLITE_CORRUPT_REPORT(&context);
+     goto getAndInitPage_error1;
    }
    rc = sqlite3PagerGet(pBt->pPager, pgno, (DbPage**)&pDbPage, bReadOnly);
-   if( rc ){
-@@ -75199,7 +75549,12 @@ static int modifyPagePointer(MemPage *pPage, Pgno iFrom, Pgno iTo, u8 eType){
+@@ -71222,7 +71551,12 @@ static int getAndInitPage(
+   /* If obtaining a child page for a cursor, we must verify that the page is
+   ** compatible with the root page. */
+   if( pCur && ((*ppPage)->nCell<1 || (*ppPage)->intKey!=pCur->curIntKey) ){
+-    rc = SQLITE_CORRUPT_PGNO(pgno);
++    char zMsg[SQLITE_PRINT_CORRUPT_SIZE] = {0};
++    sqlite3_snprintf(sizeof(zMsg), zMsg, "check btree page, nCell:%u, intKey:%u, cursor->curIntKey:%u",
++      (*ppPage)->nCell, (*ppPage)->intKey, pCur->curIntKey);
++    sqlite3CorruptContext context = SQLITE_CORRUPT_CONTEXT(pBt->nPage, pgno, CORRUPT_TYPE_PAGE_BTREE_LEAF,
++      -1, 0, zMsg, NULL);
++    rc = SQLITE_CORRUPT_REPORT_PGNO(&context);
+     goto getAndInitPage_error2;
+   }
+   return SQLITE_OK;
+@@ -72656,7 +72990,12 @@ static int modifyPagePointer(MemPage *pPage, Pgno iFrom, Pgno iTo, u8 eType){
    if( eType==PTRMAP_OVERFLOW2 ){
      /* The pointer is always the first 4 bytes of the page in this case.  */
      if( get4byte(pPage->aData)!=iFrom ){
@@ -876,7 +847,7 @@ index f348f3c..0666938 100644
      }
      put4byte(pPage->aData, iTo);
    }else{
-@@ -75218,7 +75573,13 @@ static int modifyPagePointer(MemPage *pPage, Pgno iFrom, Pgno iTo, u8 eType){
+@@ -72675,7 +73014,13 @@ static int modifyPagePointer(MemPage *pPage, Pgno iFrom, Pgno iTo, u8 eType){
          pPage->xParseCell(pPage, pCell, &info);
          if( info.nLocal<info.nPayload ){
            if( pCell+info.nSize > pPage->aData+pPage->pBt->usableSize ){
@@ -891,7 +862,7 @@ index f348f3c..0666938 100644
            }
            if( iFrom==get4byte(pCell+info.nSize-4) ){
              put4byte(pCell+info.nSize-4, iTo);
-@@ -75227,7 +75588,13 @@ static int modifyPagePointer(MemPage *pPage, Pgno iFrom, Pgno iTo, u8 eType){
+@@ -72684,7 +73029,13 @@ static int modifyPagePointer(MemPage *pPage, Pgno iFrom, Pgno iTo, u8 eType){
          }
        }else{
          if( pCell+4 > pPage->aData+pPage->pBt->usableSize ){
@@ -906,7 +877,7 @@ index f348f3c..0666938 100644
          }
          if( get4byte(pCell)==iFrom ){
            put4byte(pCell, iTo);
-@@ -75239,7 +75606,11 @@ static int modifyPagePointer(MemPage *pPage, Pgno iFrom, Pgno iTo, u8 eType){
+@@ -72696,7 +73047,11 @@ static int modifyPagePointer(MemPage *pPage, Pgno iFrom, Pgno iTo, u8 eType){
      if( i==nCell ){
        if( eType!=PTRMAP_BTREE ||
            get4byte(&pPage->aData[pPage->hdrOffset+8])!=iFrom ){
@@ -919,7 +890,7 @@ index f348f3c..0666938 100644
        }
        put4byte(&pPage->aData[pPage->hdrOffset+8], iTo);
      }
-@@ -75372,7 +75743,11 @@ static int incrVacuumStep(BtShared *pBt, Pgno nFin, Pgno iLastPg, int bCommit){
+@@ -72829,7 +73184,11 @@ static int incrVacuumStep(BtShared *pBt, Pgno nFin, Pgno iLastPg, int bCommit){
        return rc;
      }
      if( eType==PTRMAP_ROOTPAGE ){
@@ -932,7 +903,7 @@ index f348f3c..0666938 100644
      }
  
      if( eType==PTRMAP_FREEPAGE ){
-@@ -76448,7 +76823,12 @@ static int accessPayload(
+@@ -73907,7 +74266,12 @@ static int accessPayload(
    assert( eOp==0 || eOp==1 );
    assert( pCur->eState==CURSOR_VALID );
    if( pCur->ix>=pPage->nCell ){
@@ -946,7 +917,7 @@ index f348f3c..0666938 100644
    }
    assert( cursorHoldsMutex(pCur) );
  
-@@ -76463,7 +76843,12 @@ static int accessPayload(
+@@ -73922,7 +74286,12 @@ static int accessPayload(
      **    &aPayload[pCur->info.nLocal] > &pPage->aData[pBt->usableSize]
      ** but is recast into its current form to avoid integer overflow problems
      */
@@ -960,7 +931,7 @@ index f348f3c..0666938 100644
    }
  
    /* Check if data must be read/written to/from the btree page itself. */
-@@ -76534,7 +76919,16 @@ static int accessPayload(
+@@ -73984,7 +74353,16 @@ static int accessPayload(
      assert( rc==SQLITE_OK && amt>0 );
      while( nextPage ){
        /* If required, populate the overflow page-list cache. */
@@ -978,7 +949,7 @@ index f348f3c..0666938 100644
        assert( pCur->aOverflow[iIdx]==0
                || pCur->aOverflow[iIdx]==nextPage
                || CORRUPT_DB );
-@@ -76618,7 +77012,11 @@ static int accessPayload(
+@@ -74069,7 +74447,11 @@ static int accessPayload(
  
    if( rc==SQLITE_OK && amt>0 ){
      /* Overflow chain ends prematurely */
@@ -991,16 +962,7 @@ index f348f3c..0666938 100644
    }
    return rc;
  }
-@@ -76770,7 +77168,7 @@ static int moveToChild(BtCursor *pCur, u32 newPgno){
-    && (pCur->pPage->nCell<1 || pCur->pPage->intKey!=pCur->curIntKey)
-   ){
-     releasePage(pCur->pPage);
--    rc = SQLITE_CORRUPT_PGNO(newPgno);
-+    rc = SQLITE_CORRUPT_PGNO(newPgno, NULL);
-   }
-   if( rc ){
-     pCur->pPage = pCur->apPage[--pCur->iPage];
-@@ -76905,7 +77303,12 @@ static int moveToRoot(BtCursor *pCur){
+@@ -74345,7 +74727,12 @@ static int moveToRoot(BtCursor *pCur){
    ** (or the freelist).  */
    assert( pRoot->intKey==1 || pRoot->intKey==0 );
    if( pRoot->isInit==0 || (pCur->pKeyInfo==0)!=pRoot->intKey ){
@@ -1014,7 +976,7 @@ index f348f3c..0666938 100644
    }
  
  skip_init:
-@@ -77166,7 +77569,11 @@ SQLITE_PRIVATE int sqlite3BtreeTableMoveto(
+@@ -74599,7 +74986,11 @@ SQLITE_PRIVATE int sqlite3BtreeTableMoveto(
        if( pPage->intKeyLeaf ){
          while( 0x80 <= *(pCell++) ){
            if( pCell>=pPage->aDataEnd ){
@@ -1027,7 +989,7 @@ index f348f3c..0666938 100644
            }
          }
        }
-@@ -77449,7 +77856,12 @@ bypass_moveto_root:
+@@ -74882,7 +75273,12 @@ bypass_moveto_root:
          testcase( nCell==1 );  /* Invalid key size:  0x80 0x80 0x01 */
          testcase( nCell==2 );  /* Minimum legal index key size */
          if( nCell<2 || nCell/pCur->pBt->usableSize>pCur->pBt->nPage ){
@@ -1041,16 +1003,7 @@ index f348f3c..0666938 100644
            goto moveto_index_finish;
          }
          pCellKey = sqlite3Malloc( nCell+nOverrun );
-@@ -77523,7 +77935,7 @@ bypass_moveto_root:
-      && (pCur->pPage->nCell<1 || pCur->pPage->intKey!=pCur->curIntKey)
-     ){
-       releasePage(pCur->pPage);
--      rc = SQLITE_CORRUPT_PGNO(chldPg);
-+      rc = SQLITE_CORRUPT_PGNO(chldPg, NULL);
-     }
-     if( rc ){
-       pCur->pPage = pCur->apPage[--pCur->iPage];
-@@ -77807,7 +78219,13 @@ static int allocateBtreePage(
+@@ -75210,7 +75606,13 @@ static int allocateBtreePage(
    n = get4byte(&pPage1->aData[36]);
    testcase( n==mxPage-1 );
    if( n>=mxPage ){
@@ -1065,7 +1018,7 @@ index f348f3c..0666938 100644
    }
    if( n>0 ){
      /* There are pages on the freelist.  Reuse one of those pages. */
-@@ -77863,7 +78281,12 @@ static int allocateBtreePage(
+@@ -75266,7 +75668,12 @@ static int allocateBtreePage(
        }
        testcase( iTrunk==mxPage );
        if( iTrunk>mxPage || nSearch++ > n ){
@@ -1079,8 +1032,8 @@ index f348f3c..0666938 100644
        }else{
          rc = btreeGetUnusedPage(pBt, iTrunk, &pTrunk, 0);
        }
-@@ -77892,7 +78315,14 @@ static int allocateBtreePage(
-         TRACE(("ALLOCATE: %u trunk - %u free pages left\n", *pPgno, n-1));
+@@ -75295,7 +75702,14 @@ static int allocateBtreePage(
+         TRACE(("ALLOCATE: %d trunk - %d free pages left\n", *pPgno, n-1));
        }else if( k>(u32)(pBt->usableSize/4 - 2) ){
          /* Value of k is out of range.  Database corruption */
 -        rc = SQLITE_CORRUPT_PGNO(iTrunk);
@@ -1095,7 +1048,7 @@ index f348f3c..0666938 100644
          goto end_allocate_page;
  #ifndef SQLITE_OMIT_AUTOVACUUM
        }else if( searchList
-@@ -77926,7 +78356,14 @@ static int allocateBtreePage(
+@@ -75329,7 +75743,14 @@ static int allocateBtreePage(
            MemPage *pNewTrunk;
            Pgno iNewTrunk = get4byte(&pTrunk->aData[8]);
            if( iNewTrunk>mxPage ){
@@ -1111,7 +1064,7 @@ index f348f3c..0666938 100644
              goto end_allocate_page;
            }
            testcase( iNewTrunk==mxPage );
-@@ -77991,7 +78428,14 @@ static int allocateBtreePage(
+@@ -75394,7 +75815,14 @@ static int allocateBtreePage(
          iPage = get4byte(&aData[8+closest*4]);
          testcase( iPage==mxPage );
          if( iPage>mxPage || iPage<2 ){
@@ -1127,7 +1080,7 @@ index f348f3c..0666938 100644
            goto end_allocate_page;
          }
          testcase( iPage==mxPage );
-@@ -78176,7 +78620,14 @@ static int freePage2(BtShared *pBt, MemPage *pMemPage, Pgno iPage){
+@@ -75579,7 +76007,14 @@ static int freePage2(BtShared *pBt, MemPage *pMemPage, Pgno iPage){
      nLeaf = get4byte(&pTrunk->aData[4]);
      assert( pBt->usableSize>32 );
      if( nLeaf > (u32)pBt->usableSize/4 - 2 ){
@@ -1143,7 +1096,7 @@ index f348f3c..0666938 100644
        goto freepage_out;
      }
      if( nLeaf < (u32)pBt->usableSize/4 - 8 ){
-@@ -78265,7 +78716,12 @@ static SQLITE_NOINLINE int clearCellOverflow(
+@@ -75668,7 +76103,12 @@ static SQLITE_NOINLINE int clearCellOverflow(
    testcase( pCell + (pInfo->nSize-1) == pPage->aDataEnd );
    if( pCell + pInfo->nSize > pPage->aDataEnd ){
      /* Cell extends past end of page */
@@ -1157,7 +1110,7 @@ index f348f3c..0666938 100644
    }
    ovflPgno = get4byte(pCell + pInfo->nSize - 4);
    pBt = pPage->pBt;
-@@ -78282,7 +78738,14 @@ static SQLITE_NOINLINE int clearCellOverflow(
+@@ -75685,7 +76125,14 @@ static SQLITE_NOINLINE int clearCellOverflow(
        /* 0 is not a legal page number and page 1 cannot be an
        ** overflow page. Therefore if ovflPgno<2 or past the end of the
        ** file the database must be corrupt. */
@@ -1173,7 +1126,7 @@ index f348f3c..0666938 100644
      }
      if( nOvfl ){
        rc = getOverflowPage(pBt, ovflPgno, &pOvfl, &iNext);
-@@ -78558,7 +79021,12 @@ static void dropCell(MemPage *pPage, int idx, int sz, int *pRC){
+@@ -75958,7 +76405,12 @@ static void dropCell(MemPage *pPage, int idx, int sz, int *pRC){
    testcase( pc==(u32)get2byte(&data[hdr+5]) );
    testcase( pc+sz==pPage->pBt->usableSize );
    if( pc+sz > pPage->pBt->usableSize ){
@@ -1187,56 +1140,11 @@ index f348f3c..0666938 100644
      return;
    }
    rc = freeSpace(pPage, pc, sz);
-@@ -79700,7 +80168,7 @@ static int balance_nonroot(
-     ** table-interior, index-leaf, or index-interior).
-     */
-     if( pOld->aData[0]!=apOld[0]->aData[0] ){
--      rc = SQLITE_CORRUPT_PAGE(pOld);
-+      rc = SQLITE_CORRUPT_PAGE(NULL, pOld);
-       goto balance_cleanup;
-     }
- 
-@@ -79724,7 +80192,7 @@ static int balance_nonroot(
-     memset(&b.szCell[b.nCell], 0, sizeof(b.szCell[0])*(limit+pOld->nOverflow));
-     if( pOld->nOverflow>0 ){
-       if( NEVER(limit<pOld->aiOvfl[0]) ){
--        rc = SQLITE_CORRUPT_PAGE(pOld);
-+        rc = SQLITE_CORRUPT_PAGE(NULL, pOld);
-         goto balance_cleanup;
-       }
-       limit = pOld->aiOvfl[0];
-@@ -80367,7 +80835,7 @@ static int anotherValidCursor(BtCursor *pCur){
-      && pOther->eState==CURSOR_VALID
-      && pOther->pPage==pCur->pPage
-     ){
--      return SQLITE_CORRUPT_PAGE(pCur->pPage);
-+      return SQLITE_CORRUPT_PAGE(NULL, pCur->pPage);
-     }
-   }
-   return SQLITE_OK;
-@@ -80427,7 +80895,7 @@ static int balance(BtCursor *pCur){
-       /* The page being written is not a root page, and there is currently
-       ** more than one reference to it. This only happens if the page is one
-       ** of its own ancestor pages. Corruption. */
--      rc = SQLITE_CORRUPT_PAGE(pPage);
-+      rc = SQLITE_CORRUPT_PAGE(NULL, pPage);
-     }else{
-       MemPage * const pParent = pCur->apPage[iPage-1];
-       int const iIdx = pCur->aiIdx[iPage-1];
-@@ -80591,7 +81059,7 @@ static SQLITE_NOINLINE int btreeOverwriteOverflowCell(
-     rc = btreeGetPage(pBt, ovflPgno, &pPage, 0);
-     if( rc ) return rc;
-     if( sqlite3PagerPageRefcount(pPage->pDbPage)!=1 || pPage->isInit ){
--      rc = SQLITE_CORRUPT_PAGE(pPage);
-+      rc = SQLITE_CORRUPT_PAGE(NULL, pPage);
-     }else{
-       if( iOffset+ovflPageSize<(u32)nTotal ){
-         ovflPgno = get4byte(pPage->aData);
-@@ -80619,7 +81087,14 @@ static int btreeOverwriteCell(BtCursor *pCur, const BtreePayload *pX){
+@@ -77868,7 +78320,14 @@ static int btreeOverwriteCell(BtCursor *pCur, const BtreePayload *pX){
    if( pCur->info.pPayload + pCur->info.nLocal > pPage->aDataEnd
     || pCur->info.pPayload < pPage->aData + pPage->cellOffset
    ){
--    return SQLITE_CORRUPT_PAGE(pPage);
+-    return SQLITE_CORRUPT_BKPT;
 +    char zMsg[SQLITE_PRINT_CORRUPT_SIZE] = {0};
 +    sqlite3_snprintf(sizeof(zMsg), zMsg,
 +      "cell payload cursor point to(%d), size:%u overlaps with non-cell content area:[%u, %d]",
@@ -1244,149 +1152,11 @@ index f348f3c..0666938 100644
 +      (int)(pPage->aDataEnd - pPage->aData));
 +    sqlite3CorruptContext context = SQLITE_CORRUPT_CONTEXT(0, pPage->pgno, CORRUPT_TYPE_PAGE_BTREE_LEAF,
 +      -1, 0, zMsg, NULL);
-+    return SQLITE_CORRUPT_PAGE(&context, pPage);
++    return SQLITE_CORRUPT_REPORT(&context);
    }
-   if( pCur->info.nLocal==nTotal ){
-     /* The entire cell is local */
-@@ -80700,7 +81175,7 @@ SQLITE_PRIVATE int sqlite3BtreeInsert(
-       ** Which can only happen if the SQLITE_NoSchemaError flag was set when
-       ** the schema was loaded. This cannot be asserted though, as a user might
-       ** set the flag, load the schema, and then unset the flag.  */
--      return SQLITE_CORRUPT_PGNO(pCur->pgnoRoot);
-+      return SQLITE_CORRUPT_PGNO(pCur->pgnoRoot, NULL);
-     }
-   }
- 
-@@ -80823,7 +81298,7 @@ SQLITE_PRIVATE int sqlite3BtreeInsert(
-   if( pPage->nFree<0 ){
-     if( NEVER(pCur->eState>CURSOR_INVALID) ){
-      /* ^^^^^--- due to the moveToRoot() call above */
--      rc = SQLITE_CORRUPT_PAGE(pPage);
-+      rc = SQLITE_CORRUPT_PAGE(NULL, pPage);
-     }else{
-       rc = btreeComputeFreeSpace(pPage);
-     }
-@@ -80865,7 +81340,7 @@ SQLITE_PRIVATE int sqlite3BtreeInsert(
-     CellInfo info;
-     assert( idx>=0 );
-     if( idx>=pPage->nCell ){
--      return SQLITE_CORRUPT_PAGE(pPage);
-+      return SQLITE_CORRUPT_PAGE(NULL, pPage);
-     }
-     rc = sqlite3PagerWrite(pPage->pDbPage);
-     if( rc ){
-@@ -80892,10 +81367,10 @@ SQLITE_PRIVATE int sqlite3BtreeInsert(
-       ** necessary to add the PTRMAP_OVERFLOW1 pointer-map entry.  */
-       assert( rc==SQLITE_OK ); /* clearCell never fails when nLocal==nPayload */
-       if( oldCell < pPage->aData+pPage->hdrOffset+10 ){
--        return SQLITE_CORRUPT_PAGE(pPage);
-+        return SQLITE_CORRUPT_PAGE(NULL, pPage);
-       }
-       if( oldCell+szNew > pPage->aDataEnd ){
--        return SQLITE_CORRUPT_PAGE(pPage);
-+        return SQLITE_CORRUPT_PAGE(NULL, pPage);
-       }
-       memcpy(oldCell, newCell, szNew);
-       return SQLITE_OK;
-@@ -80997,7 +81472,7 @@ SQLITE_PRIVATE int sqlite3BtreeTransferRow(BtCursor *pDest, BtCursor *pSrc, i64
-   nIn = pSrc->info.nLocal;
-   aIn = pSrc->info.pPayload;
-   if( aIn+nIn>pSrc->pPage->aDataEnd ){
--    return SQLITE_CORRUPT_PAGE(pSrc->pPage);
-+    return SQLITE_CORRUPT_PAGE(NULL, pSrc->pPage);
-   }
-   nRem = pSrc->info.nPayload;
-   if( nIn==nRem && nIn<pDest->pPage->maxLocal ){
-@@ -81022,7 +81497,7 @@ SQLITE_PRIVATE int sqlite3BtreeTransferRow(BtCursor *pDest, BtCursor *pSrc, i64
- 
-     if( nRem>nIn ){
-       if( aIn+nIn+4>pSrc->pPage->aDataEnd ){
--        return SQLITE_CORRUPT_PAGE(pSrc->pPage);
-+        return SQLITE_CORRUPT_PAGE(NULL, pSrc->pPage);
-       }
-       ovflIn = get4byte(&pSrc->info.pPayload[nIn]);
-     }
-@@ -81118,7 +81593,7 @@ SQLITE_PRIVATE int sqlite3BtreeDelete(BtCursor *pCur, u8 flags){
-       assert( rc!=SQLITE_OK || CORRUPT_DB || pCur->eState==CURSOR_VALID );
-       if( rc || pCur->eState!=CURSOR_VALID ) return rc;
-     }else{
--      return SQLITE_CORRUPT_PGNO(pCur->pgnoRoot);
-+      return SQLITE_CORRUPT_PGNO(pCur->pgnoRoot, NULL);
-     }
-   }
-   assert( pCur->eState==CURSOR_VALID );
-@@ -81127,14 +81602,14 @@ SQLITE_PRIVATE int sqlite3BtreeDelete(BtCursor *pCur, u8 flags){
-   iCellIdx = pCur->ix;
-   pPage = pCur->pPage;
-   if( pPage->nCell<=iCellIdx ){
--    return SQLITE_CORRUPT_PAGE(pPage);
-+    return SQLITE_CORRUPT_PAGE(NULL, pPage);
-   }
-   pCell = findCell(pPage, iCellIdx);
-   if( pPage->nFree<0 && btreeComputeFreeSpace(pPage) ){
--    return SQLITE_CORRUPT_PAGE(pPage);
-+    return SQLITE_CORRUPT_PAGE(NULL, pPage);
-   }
-   if( pCell<&pPage->aCellIdx[pPage->nCell] ){
--    return SQLITE_CORRUPT_PAGE(pPage);
-+    return SQLITE_CORRUPT_PAGE(NULL, pPage);
-   }
- 
-   /* If the BTREE_SAVEPOSITION bit is on, then the cursor position must
-@@ -81225,7 +81700,7 @@ SQLITE_PRIVATE int sqlite3BtreeDelete(BtCursor *pCur, u8 flags){
-       n = pCur->pPage->pgno;
-     }
-     pCell = findCell(pLeaf, pLeaf->nCell-1);
--    if( pCell<&pLeaf->aData[4] ) return SQLITE_CORRUPT_PAGE(pLeaf);
-+    if( pCell<&pLeaf->aData[4] ) return SQLITE_CORRUPT_PAGE(NULL, pLeaf);
-     nCell = pLeaf->xCellSize(pLeaf, pCell);
-     assert( MX_CELL_SIZE(pBt) >= nCell );
-     pTmp = pBt->pTmpSpace;
-@@ -81341,7 +81816,7 @@ static int btreeCreateTable(Btree *p, Pgno *piTable, int createTabFlags){
-     */
-     sqlite3BtreeGetMeta(p, BTREE_LARGEST_ROOT_PAGE, &pgnoRoot);
-     if( pgnoRoot>btreePagecount(pBt) ){
--      return SQLITE_CORRUPT_PGNO(pgnoRoot);
-+      return SQLITE_CORRUPT_PGNO(pgnoRoot, NULL);
-     }
-     pgnoRoot++;
- 
-@@ -81389,7 +81864,7 @@ static int btreeCreateTable(Btree *p, Pgno *piTable, int createTabFlags){
-       }
-       rc = ptrmapGet(pBt, pgnoRoot, &eType, &iPtrPage);
-       if( eType==PTRMAP_ROOTPAGE || eType==PTRMAP_FREEPAGE ){
--        rc = SQLITE_CORRUPT_PGNO(pgnoRoot);
-+        rc = SQLITE_CORRUPT_PGNO(pgnoRoot, NULL);
-       }
-       if( rc!=SQLITE_OK ){
-         releasePage(pRoot);
-@@ -81479,14 +81954,14 @@ static int clearDatabasePage(
- 
-   assert( sqlite3_mutex_held(pBt->mutex) );
-   if( pgno>btreePagecount(pBt) ){
--    return SQLITE_CORRUPT_PGNO(pgno);
-+    return SQLITE_CORRUPT_PGNO(pgno, NULL);
-   }
-   rc = getAndInitPage(pBt, pgno, &pPage, 0);
-   if( rc ) return rc;
-   if( (pBt->openFlags & BTREE_SINGLE)==0
-    && sqlite3PagerPageRefcount(pPage->pDbPage) != (1 + (pgno==1))
-   ){
--    rc = SQLITE_CORRUPT_PAGE(pPage);
-+    rc = SQLITE_CORRUPT_PAGE(NULL, pPage);
-     goto cleardatabasepage_out;
-   }
-   hdr = pPage->hdrOffset;
-@@ -81590,7 +82065,7 @@ static int btreeDropTable(Btree *p, Pgno iTable, int *piMoved){
-   assert( p->inTrans==TRANS_WRITE );
-   assert( iTable>=2 );
-   if( iTable>btreePagecount(pBt) ){
--    return SQLITE_CORRUPT_PGNO(iTable);
-+    return SQLITE_CORRUPT_PGNO(iTable, NULL);
-   }
- 
-   rc = sqlite3BtreeClearTable(p, iTable, 0);
-@@ -85920,7 +86395,7 @@ static int growOpArray(Vdbe *v, int nOp){
+   /* Overwrite the local portion first */
+   rc = btreeOverwriteContent(pPage, pCur->info.pPayload, pX,
+@@ -83064,7 +83523,7 @@ static int growOpArray(Vdbe *v, int nOp){
  **
  ** Other useful labels for breakpoints include:
  **   test_trace_breakpoint(pc,pOp)
@@ -1395,7 +1165,7 @@ index f348f3c..0666938 100644
  **   sqlite3MisuseError(lineno)
  **   sqlite3CantopenError(lineno)
  */
-@@ -94157,7 +94632,7 @@ SQLITE_API int sqlite3_found_count = 0;
+@@ -90722,7 +91181,7 @@ SQLITE_API int sqlite3_found_count = 0;
  **
  ** Other useful labels for breakpoints include:
  **   test_addop_breakpoint(pc,pOp)
@@ -1404,10 +1174,10 @@ index f348f3c..0666938 100644
  **   sqlite3MisuseError(lineno)
  **   sqlite3CantopenError(lineno)
  */
-@@ -181855,6 +182330,12 @@ SQLITE_API int sqlite3_config(int op, ...){
- #endif
+@@ -174509,6 +174968,12 @@ SQLITE_API int sqlite3_config(int op, ...){
        break;
      }
+ #endif /* SQLITE_OMIT_DESERIALIZE */
 +    case SQLITE_CONFIG_CORRUPTION: {
 +      typedef void(*CORRUPTION_FUNC_t)(void*, const void*);
 +      sqlite3GlobalConfig.xCorruption = va_arg(ap, CORRUPTION_FUNC_t);
@@ -1417,7 +1187,7 @@ index f348f3c..0666938 100644
  
      default: {
        rc = SQLITE_ERROR;
-@@ -185037,9 +185518,21 @@ SQLITE_PRIVATE int sqlite3ReportError(int iErr, int lineno, const char *zType){
+@@ -177587,9 +178052,21 @@ SQLITE_PRIVATE int sqlite3ReportError(int iErr, int lineno, const char *zType){
                zType, lineno, 20+sqlite3_sourceid());
    return iErr;
  }

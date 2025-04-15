@@ -1,8 +1,9 @@
-From 506b1d3f9ea38fd7abc841ebc41649723247c1ee Mon Sep 17 00:00:00 2001
-From: MartinChoo <214582617@qq.com>
-Date: Wed, 26 Feb 2025 10:16:41 +0800
-Subject: [PATCH] Add extention:cksumvfs and check page
+From 4c555db067d3fb7aa245c3c0597151e863b94d69 Mon Sep 17 00:00:00 2001
+From: wanghaishuo <wanghaishuo1@huawei.com>
+Date: Sat, 12 Apr 2025 10:59:29 +0800
+Subject: [PATCH 6/7] add extention:cksumvfs and check page
 
+Signed-off-by: ryne3366 <zengchuanrui@huawei.com>
 ---
  ext/misc/cksumvfs.c | 916 ++++++++++++++++++++++++++++++++++++++++++++
  src/sqlite3.c       |  99 ++++-
@@ -932,10 +933,10 @@ index 0000000..6f4c55c
 +EXPORT_SYMBOLS const sqlite3_api_routines_cksumvfs *sqlite3_export_cksumvfs_symbols = &sqlite3CksumvfsApis;
 +#endif
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 0666938..7e9dcbf 100644
+index aa629b5..1063591 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
-@@ -58992,17 +58992,70 @@ static int jrnlBufferSize(Pager *pPager){
+@@ -57046,17 +57046,70 @@ static int jrnlBufferSize(Pager *pPager){
  ** and debugging only.
  */
  #ifdef SQLITE_CHECK_PAGES
@@ -1011,7 +1012,7 @@ index 0666938..7e9dcbf 100644
  static u32 pager_pagehash(PgHdr *pPage){
    return pager_datahash(pPage->pPager->pageSize, (unsigned char *)pPage->pData);
  }
-@@ -59018,8 +59071,15 @@ static void pager_set_pagehash(PgHdr *pPage){
+@@ -57072,8 +57125,15 @@ static void pager_set_pagehash(PgHdr *pPage){
  #define CHECK_PAGE(x) checkPage(x)
  static void checkPage(PgHdr *pPg){
    Pager *pPager = pPg->pPager;
@@ -1029,7 +1030,7 @@ index 0666938..7e9dcbf 100644
  }
  
  #else
-@@ -185754,12 +185814,16 @@ SQLITE_API int sqlite3_file_control(sqlite3 *db, const char *zDbName, int op, vo
+@@ -178288,12 +178348,16 @@ SQLITE_API int sqlite3_file_control(sqlite3 *db, const char *zDbName, int op, vo
        *(unsigned int*)pArg = sqlite3PagerDataVersion(pPager);
        rc = SQLITE_OK;
      }else if( op==SQLITE_FCNTL_RESERVE_BYTES ){
@@ -1046,8 +1047,8 @@ index 0666938..7e9dcbf 100644
      }else if( op==SQLITE_FCNTL_RESET_CACHE ){
        sqlite3BtreeClearCache(pBtree);
        rc = SQLITE_OK;
-@@ -261521,6 +261585,27 @@ static void DumpLocksByPager(Pager *pPager)
- 
+@@ -247458,6 +247522,27 @@ static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime
+ #endif
  // hw export the symbols
  #ifdef SQLITE_EXPORT_SYMBOLS
 +#ifndef SQLITE_CKSUMVFS_STATIC
