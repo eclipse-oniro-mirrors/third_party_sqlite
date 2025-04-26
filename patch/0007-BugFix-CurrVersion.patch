@@ -1,15 +1,15 @@
-From f9a13d824a46350fa3ec852a3df7f894363bdcab Mon Sep 17 00:00:00 2001
-From: wanghaishuo <wanghaishuo1@huawei.com>
-Date: Sat, 12 Apr 2025 11:13:36 +0800
-Subject: [PATCH 7/7] BugFix CurrVersion
+From 3d81c93e1b8859c245a499ce3834929da3671053 Mon Sep 17 00:00:00 2001
+From: wuyichen <664334617@qq.com>
+Date: Sat, 19 Apr 2025 10:48:21 +0800
+Subject: [PATCH] Min check page size set to 4K
 
 Signed-off-by: ryne3366 <zengchuanrui@huawei.com>
 ---
- src/sqlite3.c | 35 ++++++++++++++++++++++++++++-------
- 1 file changed, 28 insertions(+), 7 deletions(-)
+ src/sqlite3.c | 60 +++++++++++++++++++++++++++++++++++++++------------
+ 1 file changed, 46 insertions(+), 14 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 1063591..4d96a1e 100644
+index 1063591..e7e3557 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -43267,6 +43267,9 @@ static int unixOpen(
@@ -22,7 +22,49 @@ index 1063591..4d96a1e 100644
          fd = robust_open(zName, openFlags, openMode);
        }
      }
-@@ -246320,7 +246323,7 @@ static int PragmaMetaDoubleWrie(sqlite3 *db, int iDb, Parse *parse, const char *
+@@ -57046,6 +57049,9 @@ static int jrnlBufferSize(Pager *pPager){
+ ** and debugging only.
+ */
+ #ifdef SQLITE_CHECK_PAGES
++#ifndef SQLITE_MIN_CHECK_PAGE_SIZE
++#define SQLITE_MIN_CHECK_PAGE_SIZE 4096
++#endif
+ #if defined (__arm__) || defined (__aarch64__)
+ #include <arm_neon.h>
+ u32 deep_fast_hash_arm(void *src, int srcLen){
+@@ -57114,6 +57120,9 @@ static u32 pager_pagehash(PgHdr *pPage){
+   return pager_datahash(pPage->pPager->pageSize, (unsigned char *)pPage->pData);
+ }
+ static void pager_set_pagehash(PgHdr *pPage){
++  if( pPage->pPager->pageSize<SQLITE_MIN_CHECK_PAGE_SIZE ) {
++    return;
++  }
+   pPage->pageHash = pager_pagehash(pPage);
+ }
+ 
+@@ -57125,10 +57134,7 @@ static void pager_set_pagehash(PgHdr *pPage){
+ #define CHECK_PAGE(x) checkPage(x)
+ static void checkPage(PgHdr *pPg){
+   Pager *pPager = pPg->pPager;
+-  if( pPager->eState==PAGER_ERROR ){
+-    return;
+-  }
+-  if( pPg->flags&PGHDR_DIRTY ) {
++  if( pPager->pageSize<SQLITE_MIN_CHECK_PAGE_SIZE || pPager->eState==PAGER_ERROR || pPg->flags&PGHDR_DIRTY ) {
+     return;
+   }
+   if( pPg->pgno!=1 && pPg->pageHash!=pager_pagehash(pPg) ){
+@@ -59101,6 +59107,9 @@ static int pagerWalFrames(
+   }
+ 
+ #ifdef SQLITE_CHECK_PAGES
++  if( pPager->pageSize<SQLITE_MIN_CHECK_PAGE_SIZE ) {
++    return rc;
++  }
+   pList = sqlite3PcacheDirtyList(pPager->pPCache);
+   for(p=pList; p; p=p->pDirty){
+     pager_set_pagehash(p);
+@@ -246320,7 +246329,7 @@ static int PragmaMetaDoubleWrie(sqlite3 *db, int iDb, Parse *parse, const char *
      sqlite3_mutex_enter(db->mutex);
      // only support enabled meta double write
      int rc = MetaDwrOpenAndCheck(pBt);
@@ -31,7 +73,7 @@ index 1063591..4d96a1e 100644
        parse->nErr++;
        parse->rc = rc;
      }
-@@ -246776,6 +246779,29 @@ static inline const char *GetMetaFilePath(Pager *pPager)
+@@ -246776,6 +246785,29 @@ static inline const char *GetMetaFilePath(Pager *pPager)
    return pPager->metaFd == NULL ? NULL : ((const char *)pPager->metaFd + ROUND8(pPager->pVfs->szOsFile));
  }
  
@@ -61,7 +103,7 @@ index 1063591..4d96a1e 100644
  static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
    if (pPager->metaFd || pPager->zFilename == NULL) {
      return SQLITE_OK;
-@@ -246792,15 +246818,10 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
+@@ -246792,15 +246824,10 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
      return SQLITE_NOMEM_BKPT;
    }
    sqlite3_snprintf(size, metaPath, "%s-dwr", pPager->zFilename);
@@ -78,6 +120,26 @@ index 1063591..4d96a1e 100644
    u32 flags = (SQLITE_OPEN_READWRITE | SQLITE_OPEN_SUPER_JOURNAL);
    if (openCreate) {
      flags |= SQLITE_OPEN_CREATE;
+@@ -247513,11 +247540,16 @@ static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime
+   sqlite3_int64 endTime;
+   sqlite3OsCurrentTimeInt64(db->pVfs, &endTime);
+   sqlite3_int64 timeUse = endTime - startTime;
++  static sqlite3_int64 lastDumpTime = 0;
++  static sqlite3_int64 ckptCnt = 0;
+   /* Only when timeUse > 1500ms or wal size > 50MB, default pageSize 4K, 50*1024/4 = 12800 */
+-  if (timeUse > 1500 || pWal->hdr.mxFrame > 12800) {
+-    sqlite3_log(SQLITE_WARNING_DUMP, "[SQLite]Wal ckpt use time: %lld(ms), wal frame: %u",
+-                timeUse, pWal->hdr.mxFrame);
++  if (timeUse > 1500 || (pWal->hdr.mxFrame > 12800 && (lastDumpTime - endTime) > 2000)) {
++    sqlite3_log(SQLITE_WARNING_DUMP, "[SQLite]Wal try ckpt count %d use time: %lld(ms), wal frame: %u",
++                ckptCnt, timeUse, pWal->hdr.mxFrame);
++    lastDumpTime = endTime;
++    ckptCnt = 0;
+   }
++  ckptCnt++;
+ }
+ #endif
+ // hw export the symbols
 -- 
-2.47.0.windows.2
+2.34.1.windows.1
 
