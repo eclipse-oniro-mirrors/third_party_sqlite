@@ -1,17 +1,18 @@
-From 4cb905b575c2103caada8386cb5fe35562059d4a Mon Sep 17 00:00:00 2001
-From: ryne3366 <zengchuanrui@huawei.com>
-Date: Mon, 24 Mar 2025 20:30:45 +0800
-Subject: [PATCH] check permission for meta file
+From 0cb4346c98013b6276d1fda601871627bbd9e9c4 Mon Sep 17 00:00:00 2001
+From: Liu Hongyang <liuhongyang4@huawei.com>
+Date: Mon, 28 Apr 2025 19:02:48 +0800
+Subject: [PATCH] bugfix
 
+Signed-off-by: Liu Hongyang <liuhongyang4@huawei.com>
 ---
  src/sqlite3.c | 120 ++++++++++++++++++++++++++++++++++++++++----------
  1 file changed, 96 insertions(+), 24 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 7e9dcbf..d350cfc 100644
+index 3a6a372..6394950 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
-@@ -45151,7 +45151,7 @@ static int unixOpen(
+@@ -45357,7 +45357,7 @@ static int unixOpen(
          flags |= SQLITE_OPEN_READONLY;
          openFlags |= O_RDONLY;
          isReadonly = 1;
@@ -20,7 +21,7 @@ index 7e9dcbf..d350cfc 100644
          pReadonly = findReusableFd(zName, flags);
          if( pReadonly ){
            fd = pReadonly->fd;
-@@ -70082,6 +70082,7 @@ SQLITE_PRIVATE int sqlite3WalFrames(
+@@ -70288,6 +70288,7 @@ SQLITE_PRIVATE int sqlite3WalFrames(
  ** If parameter xBusy is not NULL, it is a pointer to a busy-handler
  ** callback. In this case this function runs a blocking checkpoint.
  */
@@ -28,7 +29,7 @@ index 7e9dcbf..d350cfc 100644
  SQLITE_PRIVATE int sqlite3WalCheckpoint(
    Wal *pWal,                      /* Wal connection */
    sqlite3 *db,                    /* Check this handle's interrupt flag */
-@@ -70177,7 +70178,12 @@ SQLITE_PRIVATE int sqlite3WalCheckpoint(
+@@ -70383,7 +70384,12 @@ SQLITE_PRIVATE int sqlite3WalCheckpoint(
            -1, 0, zMsg, NULL);
          rc = SQLITE_CORRUPT_REPORT(&context);
        }else{
@@ -42,7 +43,7 @@ index 7e9dcbf..d350cfc 100644
        }
  
        /* If no error occurred, set the output variables. */
-@@ -205751,6 +205757,39 @@ static int fts3ExprTermOffsetInit(Fts3Expr *pExpr, int iPhrase, void *ctx){
+@@ -206091,6 +206097,39 @@ static int fts3ExprTermOffsetInit(Fts3Expr *pExpr, int iPhrase, void *ctx){
    return rc;
  }
  
@@ -82,7 +83,7 @@ index 7e9dcbf..d350cfc 100644
  /*
  ** Implementation of offsets() function.
  */
-@@ -205787,6 +205826,12 @@ SQLITE_PRIVATE void sqlite3Fts3Offsets(
+@@ -206127,6 +206166,12 @@ SQLITE_PRIVATE void sqlite3Fts3Offsets(
    sCtx.iDocid = pCsr->iPrevId;
    sCtx.pCsr = pCsr;
  
@@ -95,7 +96,7 @@ index 7e9dcbf..d350cfc 100644
    /* Loop through the table columns, appending offset information to
    ** string-buffer res for each column.
    */
-@@ -260390,7 +260435,7 @@ static int PragmaMetaDoubleWrie(sqlite3 *db, int iDb, Parse *parse, const char *
+@@ -260730,7 +260775,7 @@ static int PragmaMetaDoubleWrie(sqlite3 *db, int iDb, Parse *parse, const char *
      sqlite3_mutex_enter(db->mutex);
      // only support enabled meta double write
      int rc = MetaDwrOpenAndCheck(pBt);
@@ -104,7 +105,7 @@ index 7e9dcbf..d350cfc 100644
        parse->nErr++;
        parse->rc = rc;
      }
-@@ -260842,6 +260887,29 @@ static inline const char *GetMetaFilePath(Pager *pPager)
+@@ -261182,6 +261227,29 @@ static inline const char *GetMetaFilePath(Pager *pPager)
    return pPager->metaFd == NULL ? NULL : ((const char *)pPager->metaFd + ROUND8(pPager->pVfs->szOsFile));
  }
  
@@ -134,7 +135,7 @@ index 7e9dcbf..d350cfc 100644
  static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
    if (pPager->metaFd || pPager->zFilename == NULL) {
      return SQLITE_OK;
-@@ -260858,15 +260926,10 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
+@@ -261198,15 +261266,10 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
      return SQLITE_NOMEM_BKPT;
    }
    sqlite3_snprintf(size, metaPath, "%s-dwr", pPager->zFilename);
@@ -151,7 +152,7 @@ index 7e9dcbf..d350cfc 100644
    u32 flags = (SQLITE_OPEN_READWRITE | SQLITE_OPEN_SUPER_JOURNAL);
    if (openCreate) {
      flags |= SQLITE_OPEN_CREATE;
-@@ -261425,16 +261488,6 @@ static inline void MarkLockStatusByRc(int rc, u32 lockIdx, u32 lockLen, u8 lockT
+@@ -261765,16 +261828,6 @@ static inline void MarkLockStatusByRc(int rc, u32 lockIdx, u32 lockLen, u8 lockT
    }
  }
  
@@ -168,7 +169,7 @@ index 7e9dcbf..d350cfc 100644
  static inline const char *IdxToLockName(u32 idx)
  {
    const char *lockName[MAX_LOCK_NUM] = {"write", "ckpt", "recover", "read0",
-@@ -261451,7 +261504,7 @@ static void DumpHandleLock(char *dumpBuf, int dumpBufLen)
+@@ -261791,7 +261844,7 @@ static void DumpHandleLock(char *dumpBuf, int dumpBufLen)
    for (int i = 0; i < MAX_LOCK_NUM && availLen > DUMP_MAX_STR_LEN; i++) {
      if (lockStatus[i] != NO_LOCK) {
        tmp[0] = '\0';
@@ -177,7 +178,7 @@ index 7e9dcbf..d350cfc 100644
        int len = strlen(tmp);
        tmp += len;
        availLen -= len;
-@@ -261490,8 +261543,8 @@ static void DumpTrxProcessLocks(unixFile *file, char *dumpBuf, int dumpBufLen)
+@@ -261830,8 +261883,8 @@ static void DumpTrxProcessLocks(unixFile *file, char *dumpBuf, int dumpBufLen)
      sqlite3_log(SQLITE_ERROR, "[SQLite]Inode is null!");
      return;
    }
@@ -188,7 +189,7 @@ index 7e9dcbf..d350cfc 100644
    const char *lockName[DB_LOCK_NUM] = {"pending", "reserved", "shared_first"};
    char *tmp = dumpBuf;
    int availLen = dumpBufLen - 1;
-@@ -261511,10 +261564,13 @@ static void DumpTrxProcessLocks(unixFile *file, char *dumpBuf, int dumpBufLen)
+@@ -261851,10 +261904,13 @@ static void DumpTrxProcessLocks(unixFile *file, char *dumpBuf, int dumpBufLen)
  
  static void DumpWalLocks(unixFile *file, u8 walEnabled, char *dumpBuf, int dumpBufLen)
  {
@@ -204,9 +205,9 @@ index 7e9dcbf..d350cfc 100644
    unixShmNode *pShmNode = file->pShm->pShmNode;
    char *tmp = dumpBuf;
    int availLen = dumpBufLen - 1;
-@@ -261583,6 +261639,22 @@ static void DumpLocksByPager(Pager *pPager)
+@@ -262789,6 +262845,22 @@ SQLITE_PRIVATE void sqlite3BinlogErrorCallback(sqlite3 *db, int errNo, char *err
  }
- #endif /* SQLITE_OS_UNIX */
+ /************** End of binlog implement ************************************/
  
 +static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime) {
 +  sqlite3_int64 endTime;
@@ -228,5 +229,5 @@ index 7e9dcbf..d350cfc 100644
  #ifdef SQLITE_EXPORT_SYMBOLS
  #ifndef SQLITE_CKSUMVFS_STATIC
 -- 
-2.34.1
+2.25.1
 
