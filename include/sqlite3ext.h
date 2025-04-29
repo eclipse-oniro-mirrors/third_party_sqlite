@@ -368,6 +368,11 @@ struct sqlite3_api_routines {
   int (*set_clientdata)(sqlite3*, const char*, void*, void(*)(void*));
   /* handle after drop table done */
   int (*set_droptable_handle)(sqlite3*,void(*)(sqlite3*,const char*,const char*));
+  int (*is_support_binlog)(void);
+  /* replay binlog from src db to the dest db */
+  int (*replay_binlog)(sqlite3*, sqlite3*);
+  /* clean the binlog of the db */
+  int (*clean_binlog)(sqlite3*, BinlogFileCleanModeE);
 };
 
 /*
@@ -707,6 +712,11 @@ extern const sqlite3_api_routines *sqlite3_export_symbols;
 #define sqlite3_set_clientdata         sqlite3_api->set_clientdata
 /* handle after drop table done */
 #define sqlite3_set_droptable_handle   sqlite3_api->set_droptable_handle
+#define sqlite3_is_support_binlog      sqlite3_api->is_support_binlog
+/* replay binlog from src db to the dest db */
+#define sqlite3_replay_binlog          sqlite3_api->replay_binlog
+/* clean the binlog of the db */
+#define sqlite3_clean_binlog           sqlite3_api->clean_binlog
 #endif /* !defined(SQLITE_CORE) && (!defined(SQLITE_OMIT_LOAD_EXTENSION) || defined(SQLITE3_EXPORT_SYMBOLS)) */
 
 #if !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION)

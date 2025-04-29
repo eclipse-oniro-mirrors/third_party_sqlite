@@ -2548,6 +2548,7 @@ struct sqlite3_mem_methods {
 #define SQLITE_DBCONFIG_STMT_SCANSTATUS       1018 /* int int* */
 #define SQLITE_DBCONFIG_REVERSE_SCANORDER     1019 /* int int* */
 #define SQLITE_DBCONFIG_MAX                   1019 /* Largest DBCONFIG */
+#define SQLITE_DBCONFIG_ENABLE_BINLOG         2006 /* Sqlite3BinlogConfig */
 
 /*
 ** CAPI3REF: Enable Or Disable Extended Result Codes
@@ -3257,6 +3258,24 @@ SQLITE_API int sqlite3_set_droptable_handle(
   void (*xFunc)(sqlite3*,const char*,const char*)
 );
 #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
+
+SQLITE_API int sqlite3_is_support_binlog(void);
+
+SQLITE_API int sqlite3_replay_binlog(
+  sqlite3 *srcDb,
+  sqlite3 *destDb
+);
+
+typedef enum BinlogFileCleanMode {
+  BINLOG_FILE_CLEAN_ALL_MODE = 0,
+  BINLOG_FILE_CLEAN_READ_MODE = 1,
+  BINLOG_FILE_CLEAN_MODE_MAX,
+} BinlogFileCleanModeE;
+
+SQLITE_API int sqlite3_clean_binlog(
+  sqlite3 *db,
+  BinlogFileCleanModeE mode
+);
 
 /*
 ** CAPI3REF: Authorizer Return Codes
@@ -13476,6 +13495,26 @@ struct fts5_api {
 
 /*
 ** END OF REGISTRATION API
+*************************************************************************/
+
+/*************************************************************************
+** BINLOG CONFIG
+*/
+typedef enum {
+  ROW = 0,
+} Sqlite3BinlogMode;
+ 
+typedef struct Sqlite3BinlogConfig {
+    Sqlite3BinlogMode mode;
+    unsigned short fullCallbackThreshold;
+    unsigned int maxFileSize;
+    void (*xErrorCallback)(void *pCtx, int errNo, char *errMsg);
+    void (*xLogFullCallback)(void *pCtx, unsigned short currentCount);
+    void *callbackCtx;
+} Sqlite3BinlogConfig;
+ 
+/*
+** END OF BINLOG CONFIG
 *************************************************************************/
 
 #ifdef __cplusplus
