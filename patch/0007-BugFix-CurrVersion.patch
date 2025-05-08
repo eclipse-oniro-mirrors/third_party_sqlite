@@ -1,15 +1,14 @@
-From 3d81c93e1b8859c245a499ce3834929da3671053 Mon Sep 17 00:00:00 2001
-From: wuyichen <664334617@qq.com>
-Date: Sat, 19 Apr 2025 10:48:21 +0800
-Subject: [PATCH] Min check page size set to 4K
+From 426e0bd27846faf2716ea9149aa296faee8bacf3 Mon Sep 17 00:00:00 2001
+From: ryne3366 <zengchuanrui@huawei.com>
+Date: Thu, 8 May 2025 18:41:23 +0800
+Subject: [PATCH] Bugfix of current version
 
-Signed-off-by: ryne3366 <zengchuanrui@huawei.com>
 ---
- src/sqlite3.c | 60 +++++++++++++++++++++++++++++++++++++++------------
- 1 file changed, 46 insertions(+), 14 deletions(-)
+ src/sqlite3.c | 107 +++++++++++++++++++++++++++++++++-----------------
+ 1 file changed, 72 insertions(+), 35 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 1063591..e7e3557 100644
+index c82804c..2abe447 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -43267,6 +43267,9 @@ static int unixOpen(
@@ -54,7 +53,55 @@ index 1063591..e7e3557 100644
      return;
    }
    if( pPg->pgno!=1 && pPg->pageHash!=pager_pagehash(pPg) ){
-@@ -59101,6 +59107,9 @@ static int pagerWalFrames(
+@@ -58289,9 +58295,11 @@ static int pager_playback_one_page(
+     ** file.  */
+ #ifdef SQLITE_HAS_CODEC
+     if( !jrnlEnc ){
+-      CODEC2(pPager, aData, pgno, 7, rc=SQLITE_NOMEM_BKPT, aData);
+-      rc = sqlite3OsWrite(pPager->fd, (u8 *)aData, pPager->pageSize, ofst);
+-      CODEC1(pPager, aData, pgno, 3, rc=SQLITE_NOMEM_BKPT);
++      CODEC2(pPager, aData, pgno, 7, rc=pPager->errCode, aData);
++      if (rc == SQLITE_OK) {
++        rc = sqlite3OsWrite(pPager->fd, (u8 *)aData, pPager->pageSize, ofst);
++        CODEC1(pPager, aData, pgno, 3, rc=pPager->errCode);
++      }
+     }else
+ #endif /* SQLITE_HAS_CODEC */
+     rc = sqlite3OsWrite(pPager->fd, (u8 *)aData, pPager->pageSize, ofst);
+@@ -58302,9 +58310,11 @@ static int pager_playback_one_page(
+     if( pPager->pBackup ){
+ #ifdef SQLITE_HAS_CODEC
+       if( jrnlEnc ){
+-        CODEC1(pPager, aData, pgno, 3, rc=SQLITE_NOMEM_BKPT);
+-        sqlite3BackupUpdate(pPager->pBackup, pgno, (u8*)aData);
+-        CODEC2(pPager, aData, pgno, 7, rc=SQLITE_NOMEM_BKPT,aData);
++        CODEC1(pPager, aData, pgno, 3, rc=pPager->errCode);
++        if (rc == SQLITE_OK) {
++          sqlite3BackupUpdate(pPager->pBackup, pgno, (u8*)aData);
++          CODEC2(pPager, aData, pgno, 7, rc=pPager->errCode, aData);
++        }
+       }else
+ #endif /* SQLITE_HAS_CODEC */
+       sqlite3BackupUpdate(pPager->pBackup, pgno, (u8*)aData);
+@@ -58359,7 +58369,7 @@ static int pager_playback_one_page(
+     }
+ #if SQLITE_HAS_CODEC
+     /* Decode the page just read from disk */
+-    if( jrnlEnc ){ CODEC1(pPager, pData, pPg->pgno, 3, rc=SQLITE_NOMEM_BKPT); }
++    if( jrnlEnc ){ CODEC1(pPager, pData, pPg->pgno, 3, rc=pPager->errCode); }
+ #endif /* SQLITE_HAS_CODEC */
+     sqlite3PcacheRelease(pPg);
+   }
+@@ -58937,7 +58947,7 @@ static int readDbPage(PgHdr *pPg){
+       memcpy(&pPager->dbFileVers, dbFileVers, sizeof(pPager->dbFileVers));
+     }
+   }
+-  CODEC1(pPager, pPg->pData, pPg->pgno, 3, rc = SQLITE_NOMEM_BKPT);
++  CODEC1(pPager, pPg->pData, pPg->pgno, 3, rc = pPager->errCode);
+ 
+   PAGER_INCR(sqlite3_pager_readdb_count);
+   PAGER_INCR(pPager->nRead);
+@@ -59101,6 +59111,9 @@ static int pagerWalFrames(
    }
  
  #ifdef SQLITE_CHECK_PAGES
@@ -64,7 +111,107 @@ index 1063591..e7e3557 100644
    pList = sqlite3PcacheDirtyList(pPager->pPCache);
    for(p=pList; p; p=p->pDirty){
      pager_set_pagehash(p);
-@@ -246320,7 +246329,7 @@ static int PragmaMetaDoubleWrie(sqlite3 *db, int iDb, Parse *parse, const char *
+@@ -60344,7 +60357,7 @@ static int pager_write_pagelist(Pager *pPager, PgHdr *pList){
+       assert( (pList->flags&PGHDR_NEED_SYNC)==0 );
+       if( pList->pgno==1 ) pager_write_changecounter(pList);
+ 
+-      CODEC2(pPager, pList->pData, pgno, 6, return SQLITE_NOMEM_BKPT, pData);
++      CODEC2(pPager, pList->pData, pgno, 6, return pPager->errCode, pData);
+ 
+       /* Write out the page data. */
+       rc = sqlite3OsWrite(pPager->fd, pData, pPager->pageSize, offset);
+@@ -60435,7 +60448,7 @@ static int subjournalPage(PgHdr *pPg){
+       char *pData2;
+ #if SQLITE_HAS_CODEC
+       if( !pPager->subjInMemory ){
+-        CODEC2(pPager, pData, pPg->pgno, 7, return SQLITE_NOMEM_BKPT, pData2);
++        CODEC2(pPager, pData, pPg->pgno, 7, return pPager->errCode, pData2);
+       }else
+ #endif /* SQLITE_HAS_CODEC */
+       pData2 = pData;
+@@ -61896,7 +61909,7 @@ static SQLITE_NOINLINE int pagerAddPageToRollbackJournal(PgHdr *pPg){
+   assert( pPg->pgno!=PAGER_SJ_PGNO(pPager) );
+ 
+   assert( pPager->journalHdr<=pPager->journalOff );
+-  CODEC2(pPager, pPg->pData, pPg->pgno, 7, return SQLITE_NOMEM_BKPT, pData2);
++  CODEC2(pPager, pPg->pData, pPg->pgno, 7, return pPager->errCode, pData2);
+   cksum = pager_cksum(pPager, (u8*)pData2);
+ 
+   /* Even if an IO or diskfull error occurs while journalling the
+@@ -62261,7 +62274,7 @@ static int pager_incr_changecounter(Pager *pPager, int isDirectMode){
+       if( DIRECT_MODE ){
+         const void *zBuf;
+         assert( pPager->dbFileSize>0 );
+-        CODEC2(pPager, pPgHdr->pData, 1, 6, rc=SQLITE_NOMEM_BKPT, zBuf);
++        CODEC2(pPager, pPgHdr->pData, 1, 6, rc=pPager->errCode, zBuf);
+         if( rc==SQLITE_OK ){
+           rc = sqlite3OsWrite(pPager->fd, zBuf, pPager->pageSize, 0);
+           pPager->aStat[PAGER_STAT_WRITE]++;
+@@ -245631,7 +245644,7 @@ CODEC_STATIC int sqlite3CodecDecryptData(CodecContext *ctx, OperateContext which
+     if(sqlite3CodecCheckHmac(keyCtx, pgno, inputBuffer.bufferSize + keyCtx->codecConst.initVectorSize, input, input + inputBuffer.bufferSize + keyCtx->codecConst.initVectorSize)){
+       sqlite3_log(SQLITE_ERROR, "codec: check hmac error at page %d, hmac %d, kdf %d, pageSize %d, iter %d.",
+         pgno, keyCtx->codecConst.hmacAlgo, keyCtx->codecConst.kdfAlgo, keyCtx->codecConst.cipherPageSize, keyCtx->iter);
+-      return SQLITE_ERROR;
++      return pgno == 1 ? SQLITE_NOTADB : SQLITE_CORRUPT;
+     }
+     unsigned char *initVector = input + inputBuffer.bufferSize;
+     void *cipherCtx = opensslGetCtx(keyCtx->codecConst.cipher, CODEC_OPERATION_DECRYPT, keyCtx->key, initVector);
+@@ -245654,7 +245667,7 @@ void* sqlite3Codec(void *ctx, void *data, Pgno pgno, int mode){
+   int rc = SQLITE_OK;
+   errno_t memcpyRc = EOK;
+   if(ctx == NULL || data == NULL){
+-    return pData;
++    return NULL;
+   }
+   if(pgno == 1){
+     offset = FILE_HEADER_SIZE;
+@@ -245668,12 +245681,13 @@ void* sqlite3Codec(void *ctx, void *data, Pgno pgno, int mode){
+         memcpyRc = memcpy_s(pCtx->buffer, cipherPageSize, SQLITE_FILE_HEADER, FILE_HEADER_SIZE);
+         if(memcpyRc != EOK){
+           sqlite3CodecSetError(pCtx, SQLITE_ERROR);
+-          return pData;
++          return NULL;
+         }
+       }
+       rc = sqlite3CodecDecryptData(pCtx, OPERATE_CONTEXT_READ, pgno, cipherPageSize - offset, (unsigned char *)(pData + offset), pCtx->buffer + offset);
+       if(rc != SQLITE_OK){
+         sqlite3CodecSetError(pCtx, rc);
++        return NULL;
+       }
+       (void)memcpy_s(pData, cipherPageSize, pCtx->buffer, cipherPageSize);
+       return pData;
+@@ -245683,13 +245697,13 @@ void* sqlite3Codec(void *ctx, void *data, Pgno pgno, int mode){
+         memcpyRc = memcpy_s(pCtx->buffer, cipherPageSize, pCtx->salt, FILE_HEADER_SIZE);
+         if(memcpyRc != EOK){
+           sqlite3CodecSetError(pCtx, SQLITE_ERROR);
+-          return pData;
++          return NULL;
+         }
+       }
+       rc = sqlite3CodecEncryptData(pCtx, OPERATE_CONTEXT_WRITE, pgno, cipherPageSize - offset, (unsigned char *)(pData + offset), pCtx->buffer + offset);
+       if(rc != SQLITE_OK){
+         sqlite3CodecSetError(pCtx, rc);
+-        return pData;
++        return NULL;
+       }
+       return pCtx->buffer;
+       break;
+@@ -245704,12 +245718,12 @@ void* sqlite3Codec(void *ctx, void *data, Pgno pgno, int mode){
+       rc = sqlite3CodecEncryptData(pCtx, OPERATE_CONTEXT_READ, pgno, cipherPageSize - offset, (unsigned char *)(pData + offset), pCtx->buffer + offset);
+       if(rc != SQLITE_OK){
+         sqlite3CodecSetError(pCtx, rc);
+-        return pData;
++        return NULL;
+       }
+       return pCtx->buffer;
+       break;
+     default:
+-      return pData;
++      return NULL;
+       break;
+   }
+ }
+@@ -246320,7 +246334,7 @@ static int PragmaMetaDoubleWrie(sqlite3 *db, int iDb, Parse *parse, const char *
      sqlite3_mutex_enter(db->mutex);
      // only support enabled meta double write
      int rc = MetaDwrOpenAndCheck(pBt);
@@ -73,7 +220,16 @@ index 1063591..e7e3557 100644
        parse->nErr++;
        parse->rc = rc;
      }
-@@ -246776,6 +246785,29 @@ static inline const char *GetMetaFilePath(Pager *pPager)
+@@ -246730,7 +246744,7 @@ static int MetaDwrWriteOnePage(Btree *pBt, PgHdr *pPage, MetaDwrHdr *hdr, u8 cur
+   void *pData;
+ #if defined(SQLITE_HAS_CODEC)
+   if ((pData = sqlite3PagerCodec(pPage)) == 0)
+-    return SQLITE_NOMEM;
++    return pPager->errCode;
+ #else
+   pData = pPage->pData;
+ #endif
+@@ -246776,6 +246790,29 @@ static inline const char *GetMetaFilePath(Pager *pPager)
    return pPager->metaFd == NULL ? NULL : ((const char *)pPager->metaFd + ROUND8(pPager->pVfs->szOsFile));
  }
  
@@ -103,7 +259,7 @@ index 1063591..e7e3557 100644
  static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
    if (pPager->metaFd || pPager->zFilename == NULL) {
      return SQLITE_OK;
-@@ -246792,15 +246824,10 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
+@@ -246792,15 +246829,10 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
      return SQLITE_NOMEM_BKPT;
    }
    sqlite3_snprintf(size, metaPath, "%s-dwr", pPager->zFilename);
@@ -120,7 +276,16 @@ index 1063591..e7e3557 100644
    u32 flags = (SQLITE_OPEN_READWRITE | SQLITE_OPEN_SUPER_JOURNAL);
    if (openCreate) {
      flags |= SQLITE_OPEN_CREATE;
-@@ -247513,11 +247540,16 @@ static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime
+@@ -246888,7 +246920,7 @@ static int MetaDwrLoadAndCheckMetaFile(BtShared *pBt, u8 reportErr) {
+ static int MetaDwrReadOnePage(Pager *pPager, MetaDwrHdr *hdr, int idx, u8 *pData) {
+   u64 ofs = CaculateMetaDwrWriteOffset(pPager->pageSize, idx, hdr->zones[idx]);
+   int rc = sqlite3OsRead(pPager->metaFd, pData, pPager->pageSize, ofs);
+-  CODEC1(pPager, pData, hdr->pages[idx], 3, rc = SQLITE_NOMEM_BKPT);
++  CODEC1(pPager, pData, hdr->pages[idx], 3, rc = pPager->errCode);
+   return rc;
+ }
+ 
+@@ -247513,11 +247545,16 @@ static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime
    sqlite3_int64 endTime;
    sqlite3OsCurrentTimeInt64(db->pVfs, &endTime);
    sqlite3_int64 timeUse = endTime - startTime;
@@ -141,5 +306,5 @@ index 1063591..e7e3557 100644
  #endif
  // hw export the symbols
 -- 
-2.34.1.windows.1
+2.28.0.windows.1
 
