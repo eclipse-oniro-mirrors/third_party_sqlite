@@ -154,6 +154,23 @@ ohos_shared_library("sqlite") {
       "openssl:libcrypto_shared",
     ]
   }
+  if (is_ohos && is_clang && enhanced_opt &&
+      (target_cpu == "arm" || target_cpu == "arm64")) {
+    ldflags += [ "-Wl,-Bsymbolic" ]
+    if (sqlite_feature_enable_pgo) {
+      cflags_c += [
+        "-fprofile-use=" +
+          rebase_path("${sqlite_feature_pgo_path}/libsqlite.profdata",
+                      root_build_dir),
+        "-Wno-error=backend_plugin",
+        "-Wno-profile-instr-out-of-date",
+        "-Wno-profile-instr-unprofiled",
+      ]
+      if(target_cpu == "arm64" && enable_enhanced_opt) {
+        ldflags += [ "-Wl,--aarch64-inline-plt" ]
+      }
+    }
+  }
 }
 
 ohos_executable("sqlite3") {
