@@ -48,7 +48,9 @@
                     "name": "//third_party/sqlite:sqliteicu"
                 }
             ],
-            "test": []
+            "test": [
+                "//third_party/sqlite/unittest:unittest"
+            ]
         }
     }
 }
