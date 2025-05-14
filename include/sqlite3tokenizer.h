@@ -35,6 +35,9 @@
 ** the tokenization rules supplied by a specific sqlite3_tokenizer
 ** object.
 */
+#ifndef SQLITE3TOKENIZER_H
+#define SQLITE3TOKENIZER_H
+
 typedef struct sqlite3_tokenizer_module sqlite3_tokenizer_module;
 typedef struct sqlite3_tokenizer sqlite3_tokenizer;
 typedef struct sqlite3_tokenizer_cursor sqlite3_tokenizer_cursor;
@@ -143,3 +146,5 @@ struct sqlite3_tokenizer_cursor {
   sqlite3_tokenizer *pTokenizer;       /* Tokenizer for this cursor. */
   /* Tokenizer implementations will typically add additional fields */
 };
+
+#endif
