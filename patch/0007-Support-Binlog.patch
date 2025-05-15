@@ -1,0 +1,1561 @@
+From bd1f40f6fa41ab9470436efbe641e1f1c2ac9b33 Mon Sep 17 00:00:00 2001
+From: Liu Hongyang <liuhongyang4@huawei.com>
+Date: Fri, 16 May 2025 17:27:13 +0800
+Subject: [PATCH] Support-Binlog
+
+---
+ src/sqlite3.c | 1288 ++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 1279 insertions(+), 9 deletions(-)
+
+diff --git a/src/sqlite3.c b/src/sqlite3.c
+index c82804c..8dddbf6 100644
+--- a/src/sqlite3.c
++++ b/src/sqlite3.c
+@@ -2839,7 +2839,9 @@ SQLITE_API sqlite3_int64 sqlite3_last_insert_rowid(sqlite3*);
+ #define SQLITE_DBCONFIG_SET_SHAREDBLOCK  2004
+ #define SQLITE_DBCONFIG_USE_SHAREDBLOCK  2005
+ #endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
+-
++#ifdef SQLITE_ENABLE_BINLOG
++#define SQLITE_DBCONFIG_ENABLE_BINLOG    2006 /* Sqlite3BinlogConfig */
++#endif
+ /*
+ ** CAPI3REF: Set the Last Insert Rowid value.
+ ** METHOD: sqlite3
+@@ -5197,6 +5199,19 @@ SQLITE_API int sqlite3_step(sqlite3_stmt*);
+ SQLITE_API int sqlite3_set_droptable_handle(sqlite3*, void (*xFunc)(sqlite3*,const char*,const char*));
+ #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
+ 
++#ifdef SQLITE_ENABLE_BINLOG
++SQLITE_API int sqlite3_is_support_binlog(void);
++
++SQLITE_API int sqlite3_replay_binlog(sqlite3 *srcDb, sqlite3 *destDb);
++
++typedef enum BinlogFileCleanMode {
++  BINLOG_FILE_CLEAN_ALL_MODE = 0,
++  BINLOG_FILE_CLEAN_READ_MODE = 1,
++  BINLOG_FILE_CLEAN_MODE_MAX,
++} BinlogFileCleanModeE;
++ 
++SQLITE_API int sqlite3_clean_binlog(sqlite3 *db, BinlogFileCleanModeE mode);
++#endif
+ /*
+ ** CAPI3REF: Number of columns in a result set
+ ** METHOD: sqlite3_stmt
+@@ -17029,6 +17044,195 @@ typedef struct CodecParameter {
+ } CodecParameter;
+ #endif /* defined(SQLITE_HAS_CODEC) && defined(SQLITE_CODEC_ATTACH_CHANGED) */
+ 
++#ifdef SQLITE_ENABLE_BINLOG
++/************** Begin of the header file of binlog ************************************/
++#define SQLITE_UUID_BLOB_LENGTH 16
++ 
++typedef enum {
++  ROW = 0,
++} Sqlite3BinlogMode;
++ 
++typedef enum {
++  GMERR_OK = 0,
++  GMERR_BASE = 1000000,
++  GMERR_LOCK_NOT_AVAILABLE = GMERR_BASE + 12002,
++  GMERR_BINLOG_READ_FINISH = GMERR_BASE + 29200,
++} BinlogErrnoE;
++ 
++typedef int BinlogErrno;
++typedef void (*BinlogOnErrorFuncT)(void *pCtx, BinlogErrno errNo, char *errMsg);
++typedef void (*BinlogOnLogFullFuncT)(void *pCtx, u16 currentCount);
++typedef int (*BinlogOnErrnoTransFuncT)(BinlogErrno errNo);
++ 
++typedef struct BinlogConfig {
++  Sqlite3BinlogMode logMode;
++  u16 fullCallbackThreshold;
++  u32 maxFileSize;
++  char *filePath;
++  BinlogOnErrorFuncT onError;
++  BinlogOnLogFullFuncT onLogFull;
++  void *callbackCtx;
++  u32 readHwmdelay;
++  BinlogOnErrnoTransFuncT onErrnoTrans;
++} BinlogConfigT;
++ 
++typedef enum BinlogEventType {
++  BINLOG_EVENT_TYPE_UNDEFINED = 0,
++  BINLOG_EVENT_TYPE_DDL = 64,
++  BINLOG_EVENT_TYPE_PRAGMA = 65,
++  BINLOG_EVENT_TYPE_DML = 66,
++  BINLOG_EVENT_TYPE_ROLLBACK = 67,
++  BINLOG_EVENT_TYPE_BUTT,
++} BinlogEventTypeE;
++ 
++typedef u8 BinlogXidT[SQLITE_UUID_BLOB_LENGTH];
++ 
++typedef struct BinlogWriteData {
++  BinlogEventTypeE type;
++  BinlogXidT xid;
++  char *data;
++  u32 dataLength;
++  int isFinishTrx;
++} BinlogWriteDataT;
++ 
++typedef struct BinlogEventHead {
++  u32 checksum;
++  u64 timestamp;
++  u8 eventType;
++  u32 eventLength;
++  BinlogXidT xid;
++  u64 nextEventPos;
++} BinlogEventHeadT;
++ 
++typedef struct BinlogEvent {
++  BinlogEventHeadT head;
++  u8 *body;
++} BinlogEventT;
++ 
++typedef struct BinlogReadResult {
++  u32 eventNum;
++  BinlogEventT **sqlEvent;
++} BinlogReadResultT;
++ 
++typedef struct BinlogInstanceT BinlogInstanceT;
++typedef void (*BinlogFreeReadResult)(BinlogInstanceT *instance, BinlogReadResultT *readRes);
++typedef BinlogErrno (*BinlogOpen)(const BinlogConfigT *, BinlogInstanceT **);
++typedef BinlogErrno (*BinlogClose)(BinlogInstanceT *instance);
++typedef BinlogErrno (*BinlogWrite)(BinlogInstanceT *instance, const BinlogWriteDataT *data);
++typedef BinlogErrno (*BinlogRead)(BinlogInstanceT *instance, BinlogReadResultT **readRes);
++typedef BinlogErrno (*BinlogFileClean)(BinlogInstanceT *instance, BinlogFileCleanModeE cleanMode);
++typedef BinlogErrno (*BinlogLockRead)(BinlogInstanceT *instance);
++typedef BinlogErrno (*BinlogUnlockRead)(BinlogInstanceT *instance);
++/************** End of the header file of binlog ************************************/
++
++/************** Binlog typedef in sqlite3 BEGIN ************************************/
++#define BINLOG_FLAG_ENABLE         0x00000001
++#define BINLOG_FLAG_UPDATE_TID     0x00000002
++ 
++typedef struct Sqlite3BinlogConfig {
++  Sqlite3BinlogMode mode;
++  u16 fullCallbackThreshold;
++  u32 maxFileSize;
++  void (*xErrorCallback)(void *pCtx, int errNo, char *errMsg);
++  void (*xLogFullCallback)(void *pCtx, u16 currentCount);
++  void *callbackCtx;
++} Sqlite3BinlogConfig;
++
++typedef struct BinlogRow {
++  int op;                // one of the SQLITE_INSERT, SQLITE_UPDATE, SQLITE_DELETE
++  sqlite3_int64 rowid;   // rowid of changed data, -1 for without rowid table
++  sqlite3_uint64 nData;  // size of pData
++  const char *pData;     // pointer to the row data in record format
++} BinlogRow;
++
++/* stores the affected rows by one DML statement*/
++typedef struct BinlogDMLData {
++  Table *pTable;           // pointer to the table being modified
++  char *pSavePointName;    // savepoint name for all the rows modified by current statment
++  int isSavePointReleased; // if the savepoint is released, used when free BinlogDMLData
++} BinlogDMLData;
++ 
++typedef void* BinlogLib;
++ 
++typedef struct BinlogApi {
++  BinlogLib binlogLib;
++  BinlogOpen binlogOpenApi;
++  BinlogClose binlogCloseApi;
++  BinlogWrite binlogWriteApi;
++  BinlogRead binlogReadApi;
++  BinlogFreeReadResult binlogFreeReadResultApi;
++  BinlogFileClean binlogFileCleanApi;
++  BinlogLockRead binlogLockReadApi;
++  BinlogUnlockRead binlogUnlockReadApi;
++} BinlogApi;
++ 
++typedef struct Sqlite3BinlogHandle {
++  Sqlite3BinlogMode mode;
++  void *callbackCtx;
++  u64 flags;
++  u8 xTid[SQLITE_UUID_BLOB_LENGTH];
++  void (*xErrorCallback)(void *pCtx, int errNo, char *errMsg);
++  void (*xLogFullCallback)(void *pCtx, u16 currentCount);
++  BinlogInstanceT *binlogConn;
++  BinlogApi binlogApi;
++} Sqlite3BinlogHandle;
++ 
++typedef enum {
++  STMT_TYPE_DML = 0,
++  STMT_TYPE_CREATE_TABLE,
++  STMT_TYPE_CREATE_INDEX,
++  STMT_TYPE_CREATE_TRIGGER,
++  STMT_TYPE_CREATE_VIEW,
++  STMT_TYPE_DROP_TABLE,
++  STMT_TYPE_DROP_INDEX,
++  STMT_TYPE_DROP_TRIGGER,
++  STMT_TYPE_DROP_VIEW,
++  STMT_TYPE_ALTER_ADD_COL,
++  STMT_TYPE_ALTER_RENAME_COL,
++  STMT_TYPE_ALTER_RENAME_TABLE,
++  STMT_TYPE_ALTER_DROP_COL,
++  STMT_TYPE_BEGIN_TRANSACTION,
++  STMT_TYPE_COMMIT_TRANSACTION,
++  STMT_TYPE_ROLLBACK_TRANSACTION,
++  STMT_TYPE_PRAGMA,
++  STMT_TYPE_SAVEPOINT,
++} StmtType;
++ 
++typedef struct Sqlite3BinlogStmt {
++  BinlogReadResultT *cursor;
++  u32 curIdx;
++} Sqlite3BinlogStmt;
++ 
++typedef struct Sqlite3BinlogApiInfo {
++  void **funcP;
++  const char *funcN;
++} Sqlite3BinlogApiInfo;
++ 
++SQLITE_PRIVATE int sqlite3BinlogStmtPrepare(sqlite3 *db, Sqlite3BinlogStmt *bStmt);
++SQLITE_PRIVATE int sqlite3BinlogStmtStep(Sqlite3BinlogStmt *bStmt, char **sql);
++SQLITE_PRIVATE void sqlite3BinlogStmtFinalize(sqlite3 *db, Sqlite3BinlogStmt *bStmt);
++ 
++SQLITE_PRIVATE int sqlite3BinlogInitApi(sqlite3 *db);
++SQLITE_PRIVATE int sqlite3SetBinLogConfig(sqlite3 *db, Sqlite3BinlogConfig *bConfig);
++SQLITE_PRIVATE int sqlite3TransferBinlogErrno(BinlogErrno err);
++ 
++SQLITE_PRIVATE void sqlite3BinlogWrite(Vdbe *p);
++SQLITE_PRIVATE int sqlite3BinlogClose(sqlite3 *db);
++SQLITE_PRIVATE void sqlite3BinlogReset(sqlite3 *db);
++SQLITE_PRIVATE int sqlite3BinlogReplay(sqlite3 *srcDb, sqlite3 *destDb);
++SQLITE_PRIVATE int sqlite3BinlogClean(sqlite3 *db, BinlogFileCleanModeE mode);
++SQLITE_PRIVATE void sqlite3BinlogErrorCallback(sqlite3 *db, int errNo, char *errMsg);
++SQLITE_PRIVATE BinlogEventTypeE sqlite3TransferLogEventType(StmtType stmtType);
++SQLITE_PRIVATE int sqlite3IsSkipWriteBinlog(Vdbe *p);
++SQLITE_PRIVATE int sqlite3IsRowBasedBinlog(Vdbe *p);
++SQLITE_PRIVATE Table *sqlite3BinlogFindTable(BtCursor *pC);
++SQLITE_PRIVATE void sqlite3StoreBinlogRowData(Vdbe *p, BtCursor *pCursor, sqlite3_uint64 nData,
++  const char *pData, int op, sqlite3_int64 rowid);
++SQLITE_PRIVATE void sqlite3FreeBinlogRowData(Vdbe *p);
++SQLITE_PRIVATE char *sqlite3BinlogGetNthCol(sqlite3 *db, const Table *pTab, const BinlogRow *pRow, int iCol);
++/************** Binlog typedef in sqlite3 END ************************************/
++#endif
++
+ /*
+ ** Each database connection is an instance of the following structure.
+ */
+@@ -17181,6 +17385,9 @@ struct sqlite3 {
+ #if defined(SQLITE_HAS_CODEC) && defined(SQLITE_CODEC_ATTACH_CHANGED)
+   CodecParameter codecParm;
+ #endif /* defined(SQLITE_HAS_CODEC) && defined(SQLITE_CODEC_ATTACH_CHANGED) */
++#ifdef SQLITE_ENABLE_BINLOG
++  Sqlite3BinlogHandle xBinlogHandle;
++#endif
+ };
+ 
+ /*
+@@ -22990,6 +23197,12 @@ struct Vdbe {
+   int startPos;
+   int addedRows;
+ #endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
++#ifdef SQLITE_ENABLE_BINLOG
++/* begin of binlog related field */
++  StmtType stmtType;              /* Type of binlog statement */
++  BinlogDMLData *pBinlogDMLData;  /* Data for binlog row-based DML statement */
++/* end of binlog related field */
++#endif
+ };
+ 
+ /*
+@@ -86224,7 +86437,11 @@ static int vdbeCommit(sqlite3 *db, Vdbe *p){
+         rc = sqlite3BtreeCommitPhaseOne(pBt, 0);
+       }
+     }
+-
++#ifdef SQLITE_ENABLE_BINLOG
++    if ( rc==SQLITE_OK ){
++      sqlite3BinlogWrite(p);
++    }
++#endif
+     /* Do the commit only if all databases successfully complete phase 1.
+     ** If one of the BtreeCommitPhaseOne() calls fails, this indicates an
+     ** IO error while deleting or truncating a journal file. It is unlikely,
+@@ -86372,6 +86589,9 @@ static int vdbeCommit(sqlite3 *db, Vdbe *p){
+     ** transaction is already guaranteed, but some stray 'cold' journals
+     ** may be lying around. Returning an error code won't help matters.
+     */
++#ifdef SQLITE_ENABLE_BINLOG
++    sqlite3BinlogWrite(p);
++#endif
+     disable_simulated_io_errors();
+     sqlite3BeginBenignMalloc();
+     for(i=0; i<db->nDb; i++){
+@@ -86654,6 +86874,9 @@ SQLITE_PRIVATE int sqlite3VdbeHalt(Vdbe *p){
+     }else if( eStatementOp==0 ){
+       if( p->rc==SQLITE_OK || p->errorAction==OE_Fail ){
+         eStatementOp = SAVEPOINT_RELEASE;
++#ifdef SQLITE_ENABLE_BINLOG
++        sqlite3BinlogWrite(p);
++#endif
+       }else if( p->errorAction==OE_Abort ){
+         eStatementOp = SAVEPOINT_ROLLBACK;
+       }else{
+@@ -86874,6 +87097,9 @@ SQLITE_PRIVATE int sqlite3VdbeReset(Vdbe *p){
+       fclose(out);
+     }
+   }
++#endif
++#ifdef SQLITE_ENABLE_BINLOG
++  sqlite3FreeBinlogRowData(p);
+ #endif
+   return p->rc & db->errMask;
+ }
+@@ -86978,6 +87204,9 @@ static void sqlite3VdbeClearObject(sqlite3 *db, Vdbe *p){
+     sqlite3DbFree(db, p->aScan);
+   }
+ #endif
++#ifdef SQLITE_ENABLE_BINLOG
++  sqlite3FreeBinlogRowData(p);
++#endif
+ }
+ 
+ /*
+@@ -89495,6 +89724,44 @@ SQLITE_API int sqlite3_set_droptable_handle(sqlite3 *db, void (*xFunc)(sqlite3*,
+ }
+ #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
+ 
++#ifdef SQLITE_ENABLE_BINLOG
++SQLITE_API int sqlite3_is_support_binlog(void)
++{
++  return SQLITE_ERROR;
++}
++
++SQLITE_API int sqlite3_replay_binlog(sqlite3 *srcDb, sqlite3 *destDb)
++{
++  if (srcDb == NULL || destDb == NULL) {
++    sqlite3_log(SQLITE_ERROR, "replay binlog parameter is null");
++    return SQLITE_ERROR;
++  }
++  int rc = SQLITE_OK;
++  sqlite3_mutex_enter(srcDb->mutex);
++  rc = sqlite3BinlogReplay(srcDb, destDb);
++  if (rc != SQLITE_OK) {
++    sqlite3_log(rc, "replay binlog err:%d", rc);
++  }
++  sqlite3_mutex_leave(srcDb->mutex);
++  return rc;
++}
++ 
++SQLITE_API int sqlite3_clean_binlog(sqlite3 *db, BinlogFileCleanModeE mode)
++{
++  if (db == NULL) {
++    sqlite3_log(SQLITE_ERROR, "clean binlog parameter is null");
++    return SQLITE_ERROR;
++  }
++  int rc = SQLITE_OK;
++  sqlite3_mutex_enter(db->mutex);
++  rc = sqlite3BinlogClean(db, mode);
++  if (rc != SQLITE_OK) {
++    sqlite3_log(rc, "clean binlog err:%d", rc);
++  }
++  sqlite3_mutex_leave(db->mutex);
++  return rc;
++}
++#endif
+ /*
+ ** This is the top-level implementation of sqlite3_step().  Call
+ ** sqlite3Step() to do most of the work.  If a schema error occurs,
+@@ -96801,6 +97068,15 @@ case OP_Insert: {
+     x.nZero = 0;
+   }
+   x.pKey = 0;
++#ifdef SQLITE_ENABLE_BINLOG
++  if ( pOp->p4.pTab
++    && !sqlite3IsSkipWriteBinlog(p)
++    && sqlite3IsRowBasedBinlog(p)
++    && sqlite3TransferLogEventType(p->stmtType) == BINLOG_EVENT_TYPE_DML ) {
++    sqlite3StoreBinlogRowData(p, pC->uc.pCursor, x.nData, pData->z,
++      (pOp->p5 & OPFLAG_ISUPDATE) ? SQLITE_UPDATE : SQLITE_INSERT, x.nKey);
++  }
++#endif
+   rc = sqlite3BtreeInsert(pC->uc.pCursor, &x,
+       (pOp->p5 & (OPFLAG_APPEND|OPFLAG_SAVEPOSITION|OPFLAG_PREFORMAT)),
+       seekResult
+@@ -96910,6 +97186,21 @@ case OP_Delete: {
+     assert( CORRUPT_DB || pC->movetoTarget==iKey );
+   }
+ #endif
++#ifdef SQLITE_ENABLE_BINLOG
++  if( !sqlite3IsSkipWriteBinlog(p)
++    && sqlite3IsRowBasedBinlog(p)
++    && sqlite3TransferLogEventType(p->stmtType) == BINLOG_EVENT_TYPE_DML ){
++    if (pC->isTable) {
++      sqlite3StoreBinlogRowData(p, pC->uc.pCursor, 0, NULL, SQLITE_DELETE, sqlite3BtreeIntegerKey(pC->uc.pCursor));
++    } else {
++      Table *pBinlogTab = sqlite3BinlogFindTable(pC->uc.pCursor);
++      if (pBinlogTab != NULL && !HasRowid(pBinlogTab)) {
++        /* If pC is not a table, then this is a delete operation in a without rowid table */
++        sqlite3StoreBinlogRowData(p, pC->uc.pCursor, pC->szRow, (const char *)pC->aRow, SQLITE_DELETE, -1);
++      }
++    }
++  }
++#endif
+ 
+   /* If the update-hook or pre-update-hook will be invoked, set zDb to
+   ** the name of the db to pass as to it. Also set local pTab to a copy
+@@ -97526,6 +97817,14 @@ case OP_IdxInsert: {        /* in2 */
+   x.pKey = pIn2->z;
+   x.aMem = aMem + pOp->p3;
+   x.nMem = (u16)pOp->p4.i;
++#ifdef SQLITE_ENABLE_BINLOG
++  if( (pOp->p5 & OPFLAG_NCHANGE)
++    && !sqlite3IsSkipWriteBinlog(p)
++    && sqlite3IsRowBasedBinlog(p)
++    && sqlite3TransferLogEventType(p->stmtType) == BINLOG_EVENT_TYPE_DML ){
++    sqlite3StoreBinlogRowData(p, pC->uc.pCursor, x.nKey, pIn2->z, SQLITE_INSERT, -1);
++  }
++#endif
+   rc = sqlite3BtreeInsert(pC->uc.pCursor, &x,
+        (pOp->p5 & (OPFLAG_APPEND|OPFLAG_SAVEPOSITION|OPFLAG_PREFORMAT)),
+       ((pOp->p5 & OPFLAG_USESEEKRESULT) ? pC->seekResult : 0)
+@@ -113449,7 +113748,11 @@ SQLITE_PRIVATE void sqlite3AlterRenameTable(
+ 
+   renameReloadSchema(pParse, iDb, INITFLAG_AlterRename);
+   renameTestSchema(pParse, zDb, iDb==1, "after rename", 0);
+-
++#ifdef SQLITE_ENABLE_BINLOG
++  if( v ){
++    v->stmtType = STMT_TYPE_ALTER_RENAME_TABLE;
++  }
++#endif
+ exit_rename_table:
+   sqlite3SrcListDelete(db, pSrc);
+   sqlite3DbFree(db, zName);
+@@ -113626,6 +113929,9 @@ SQLITE_PRIVATE void sqlite3AlterFinishAddColumn(Parse *pParse, Token *pColDef){
+         zTab, zDb
+       );
+     }
++#ifdef SQLITE_ENABLE_BINLOG
++    v->stmtType = STMT_TYPE_ALTER_ADD_COL;
++#endif
+   }
+ }
+ 
+@@ -113837,7 +114143,13 @@ SQLITE_PRIVATE void sqlite3AlterRenameColumn(
+   /* Drop and reload the database schema. */
+   renameReloadSchema(pParse, iSchema, INITFLAG_AlterRename);
+   renameTestSchema(pParse, zDb, iSchema==1, "after rename", 1);
+-
++#ifdef SQLITE_ENABLE_BINLOG
++  Vdbe *v = NULL;
++  v = sqlite3GetVdbe(pParse);
++  if( v ){
++    v->stmtType = STMT_TYPE_ALTER_RENAME_COL;
++  }
++#endif
+  exit_rename_column:
+   sqlite3SrcListDelete(db, pSrc);
+   sqlite3DbFree(db, zOld);
+@@ -115424,7 +115736,13 @@ SQLITE_PRIVATE void sqlite3AlterDropColumn(Parse *pParse, SrcList *pSrc, const T
+     sqlite3VdbeAddOp2(v, OP_Next, iCur, addr+1); VdbeCoverage(v);
+     sqlite3VdbeJumpHere(v, addr);
+   }
+-
++#ifdef SQLITE_ENABLE_BINLOG
++  Vdbe *v = NULL;
++  v = sqlite3GetVdbe(pParse);
++  if( v ){
++    v->stmtType = STMT_TYPE_ALTER_DROP_COL;
++  }
++#endif
+ exit_drop_column:
+   sqlite3DbFree(db, zCol);
+   sqlite3SrcListDelete(db, pSrc);
+@@ -119698,6 +120016,9 @@ SQLITE_PRIVATE void sqlite3StartTable(
+     sqlite3VdbeAddOp3(v, OP_Insert, 0, reg3, reg1);
+     sqlite3VdbeChangeP5(v, OPFLAG_APPEND);
+     sqlite3VdbeAddOp0(v, OP_Close);
++#ifdef SQLITE_ENABLE_BINLOG
++    v->stmtType = STMT_TYPE_CREATE_TABLE;
++#endif
+   }
+ 
+   /* Normal (non-error) return. */
+@@ -121344,7 +121665,13 @@ SQLITE_PRIVATE void sqlite3CreateView(
+ 
+   /* Use sqlite3EndTable() to add the view to the schema table */
+   sqlite3EndTable(pParse, 0, &sEnd, 0, 0);
+-
++#ifdef SQLITE_ENABLE_BINLOG
++  Vdbe *v = NULL;
++  v = sqlite3GetVdbe(pParse);
++  if( v ){
++    v->stmtType = STMT_TYPE_CREATE_VIEW;
++  }
++#endif
+ create_view_fail:
+   sqlite3SelectDelete(db, pSelect);
+   if( IN_RENAME_OBJECT ){
+@@ -121868,6 +122195,9 @@ SQLITE_PRIVATE void sqlite3DropTable(Parse *pParse, SrcList *pName, int isView,
+       sqlite3FkDropTable(pParse, pName, pTab);
+     }
+     sqlite3CodeDropTable(pParse, pTab, iDb, isView);
++#ifdef SQLITE_ENABLE_BINLOG
++    v->stmtType = (isView > 0) ? STMT_TYPE_DROP_VIEW : STMT_TYPE_DROP_TABLE;
++#endif
+   }
+ 
+ exit_drop_table:
+@@ -122726,6 +123056,9 @@ SQLITE_PRIVATE void sqlite3CreateIndex(
+         /* A named index with an explicit CREATE INDEX statement */
+         zStmt = sqlite3MPrintf(db, "CREATE%s INDEX %.*s",
+             onError==OE_None ? "" : " UNIQUE", n, pName->z);
++#ifdef SQLITE_ENABLE_BINLOG
++        v->stmtType = STMT_TYPE_CREATE_INDEX;
++#endif
+       }else{
+         /* An automatic index created by a PRIMARY KEY or UNIQUE constraint */
+         /* zStmt = sqlite3MPrintf(""); */
+@@ -122928,6 +123261,9 @@ SQLITE_PRIVATE void sqlite3DropIndex(Parse *pParse, SrcList *pName, int ifExists
+     sqlite3ChangeCookie(pParse, iDb);
+     destroyRootPage(pParse, pIndex->tnum, iDb);
+     sqlite3VdbeAddOp4(v, OP_DropIndex, iDb, 0, 0, pIndex->zName, 0);
++#ifdef SQLITE_ENABLE_BINLOG
++    v->stmtType = STMT_TYPE_DROP_INDEX;
++#endif
+   }
+ 
+ exit_drop_index:
+@@ -123452,6 +123788,9 @@ SQLITE_PRIVATE void sqlite3BeginTransaction(Parse *pParse, int type){
+     }
+   }
+   sqlite3VdbeAddOp0(v, OP_AutoCommit);
++#ifdef SQLITE_ENABLE_BINLOG
++  v->stmtType = STMT_TYPE_BEGIN_TRANSACTION;
++#endif
+ }
+ 
+ /*
+@@ -123474,6 +123813,9 @@ SQLITE_PRIVATE void sqlite3EndTransaction(Parse *pParse, int eType){
+   v = sqlite3GetVdbe(pParse);
+   if( v ){
+     sqlite3VdbeAddOp2(v, OP_AutoCommit, 1, isRollback);
++#ifdef SQLITE_ENABLE_BINLOG
++    v->stmtType = (isRollback > 0) ? STMT_TYPE_ROLLBACK_TRANSACTION : STMT_TYPE_COMMIT_TRANSACTION;
++#endif
+   }
+ }
+ 
+@@ -123494,6 +123836,9 @@ SQLITE_PRIVATE void sqlite3Savepoint(Parse *pParse, int op, Token *pName){
+       return;
+     }
+     sqlite3VdbeAddOp4(v, OP_Savepoint, op, 0, 0, zName, P4_DYNAMIC);
++#ifdef SQLITE_ENABLE_BINLOG
++    v->stmtType = STMT_TYPE_SAVEPOINT;
++#endif
+   }
+ }
+ 
+@@ -133458,6 +133803,13 @@ typedef int (*sqlite3_loadext_entry)(
+ /* handle after drop table done */
+ #define sqlite3_set_droptable_handle   sqlite3_api->set_droptable_handle
+ #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
++#ifdef SQLITE_ENABLE_BINLOG
++#define sqlite3_is_support_binlog      sqlite3_api->is_support_binlog
++/* replay binlog from src db to the dest db */
++#define sqlite3_replay_binlog          sqlite3_api->replay_binlog
++/* clean the binlog of the db */
++#define sqlite3_clean_binlog           sqlite3_api->clean_binlog
++#endif /* SQLITE_ENABLE_BINLOG */
+ #endif /* !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION) */
+ 
+ #if !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION)
+@@ -135485,6 +135837,9 @@ SQLITE_PRIVATE void sqlite3Pragma(
+   if( v==0 ) return;
+   sqlite3VdbeRunOnlyOnce(v);
+   pParse->nMem = 2;
++#ifdef SQLITE_ENABLE_BINLOG
++  v->stmtType = STMT_TYPE_PRAGMA;
++#endif
+ 
+   /* Interpret the [schema.] part of the pragma statement. iDb is the
+   ** index of the database this pragma is being applied to in db.aDb[]. */
+@@ -147457,7 +147812,13 @@ SQLITE_PRIVATE void sqlite3BeginTrigger(
+   if (tr_tm == TK_INSTEAD){
+     tr_tm = TK_BEFORE;
+   }
+-
++#ifdef SQLITE_ENABLE_BINLOG
++  Vdbe *v = NULL;
++  v = sqlite3GetVdbe(pParse);
++  if( v ){
++    v->stmtType = STMT_TYPE_CREATE_TRIGGER;
++  }
++#endif
+   /* Build the Trigger object */
+   pTrigger = (Trigger*)sqlite3DbMallocZero(db, sizeof(Trigger));
+   if( pTrigger==0 ) goto trigger_cleanup;
+@@ -147852,6 +148213,13 @@ SQLITE_PRIVATE void sqlite3DropTrigger(Parse *pParse, SrcList *pName, int noErr)
+     goto drop_trigger_cleanup;
+   }
+   sqlite3DropTriggerPtr(pParse, pTrigger);
++#ifdef SQLITE_ENABLE_BINLOG
++  Vdbe *v = NULL;
++  v = sqlite3GetVdbe(pParse);
++  if (v) {
++    v->stmtType = STMT_TYPE_DROP_TRIGGER;
++  }
++#endif
+ 
+ drop_trigger_cleanup:
+   sqlite3SrcListDelete(db, pName);
+@@ -175266,6 +175634,13 @@ SQLITE_API int sqlite3_db_config(sqlite3 *db, int op, ...){
+       break;
+     }
+ #endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
++#ifdef SQLITE_ENABLE_BINLOG
++    case SQLITE_DBCONFIG_ENABLE_BINLOG: {
++      Sqlite3BinlogConfig *pBinlogConfig = va_arg(ap, Sqlite3BinlogConfig*);
++      rc = sqlite3SetBinLogConfig(db, pBinlogConfig);
++      break;
++    }
++#endif
+     default: {
+       static const struct {
+         int op;      /* The opcode */
+@@ -175683,6 +176058,9 @@ SQLITE_PRIVATE void sqlite3LeaveMutexAndCloseZombie(sqlite3 *db){
+   sqlite3CollapseDatabaseArray(db);
+   assert( db->nDb<=2 );
+   assert( db->aDb==db->aDbStatic );
++#ifdef SQLITE_ENABLE_BINLOG
++  (void)sqlite3BinlogClose(db);
++#endif
+ 
+   /* Tell the code in notify.c that the connection no longer holds any
+   ** locks and does not require any further unlock-notify callbacks.
+@@ -177881,6 +178259,9 @@ opendb_out:
+   db->mDropSchemaName = NULL;
+   db->xDropTableHandle = NULL;
+ #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
++#ifdef SQLITE_ENABLE_BINLOG
++  sqlite3BinlogReset(db);
++#endif
+   *ppDb = db;
+ #ifdef SQLITE_ENABLE_SQLLOG
+   if( sqlite3GlobalConfig.xSqllog ){
+@@ -247520,6 +247901,883 @@ static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime
+   }
+ }
+ #endif
++#ifdef SQLITE_ENABLE_BINLOG
++/************** Begin of binlog implement ************************************/
++SQLITE_PRIVATE int sqlite3BinlogInitApi(sqlite3 *db)
++{
++  if (db == NULL || db->xBinlogHandle.binlogApi.binlogLib == NULL) {
++    sqlite3_log(SQLITE_ERROR, "binlog init api parameter is null");
++    return SQLITE_ERROR;
++  }
++  Sqlite3BinlogApiInfo apiInfo[] = {
++    {(void **)&db->xBinlogHandle.binlogApi.binlogOpenApi, "BinlogOpen"},
++    {(void **)&db->xBinlogHandle.binlogApi.binlogCloseApi, "BinlogClose"},
++    {(void **)&db->xBinlogHandle.binlogApi.binlogWriteApi, "BinlogWrite"},
++    {(void **)&db->xBinlogHandle.binlogApi.binlogReadApi, "BinlogRead"},
++    {(void **)&db->xBinlogHandle.binlogApi.binlogFreeReadResultApi, "BinlogFreeReadResult"},
++    {(void **)&db->xBinlogHandle.binlogApi.binlogFileCleanApi, "BinlogFileClean"},
++    {(void **)&db->xBinlogHandle.binlogApi.binlogLockReadApi, "BinlogLockRead"},
++    {(void **)&db->xBinlogHandle.binlogApi.binlogUnlockReadApi, "BinlogUnlockRead"},
++  };
++  int apiCount = sizeof(apiInfo) / sizeof(apiInfo[0]);
++  for (int i = 0; i < apiCount; i++) {
++    *apiInfo[i].funcP = sqlite3OsDlSym(db->pVfs, db->xBinlogHandle.binlogApi.binlogLib, apiInfo[i].funcN);
++    if (*apiInfo[i].funcP == NULL) {
++      sqlite3_log(SQLITE_ERROR, "dlsym binlog err: %s", apiInfo[i].funcN);
++      return SQLITE_ERROR;
++    }
++  }
++  return SQLITE_OK;
++}
++ 
++SQLITE_PRIVATE int sqlite3SetBinLogConfig(sqlite3 *db, Sqlite3BinlogConfig *bConfig)
++{
++  if (db == NULL) {
++    sqlite3_log(SQLITE_ERROR, "set binlog config parameter is null");
++    return SQLITE_ERROR;
++  }
++  if (bConfig == NULL) {
++    return sqlite3BinlogClose(db);
++  }
++ 
++  const char *zFile = sqlite3_db_filename(db, 0);
++  if (zFile == NULL || (db->xBinlogHandle.flags & BINLOG_FLAG_ENABLE)) {
++    sqlite3_log(SQLITE_ERROR, "set binlog config zFile is null or binlog is already enabled");
++    return SQLITE_ERROR;
++  }
++ 
++  void *handle = sqlite3OsDlOpen(db->pVfs, "libarkdata_db_core.z.so");
++  if (handle == NULL) {
++      sqlite3_log(SQLITE_ERROR, "dlopen binlog err:%d", errno);
++      return SQLITE_ERROR;
++  }
++  db->xBinlogHandle.binlogApi.binlogLib = handle;
++  int rc = sqlite3BinlogInitApi(db);
++  if (rc != SQLITE_OK) {
++      sqlite3_log(rc, "set binlog config init api err:%d", rc);
++      sqlite3BinlogReset(db);
++      return rc;
++  }
++ 
++  BinlogConfigT conf;
++  conf.logMode = bConfig->mode;
++  conf.fullCallbackThreshold = bConfig->fullCallbackThreshold;
++  conf.maxFileSize = bConfig->maxFileSize;
++  conf.filePath = (char *)zFile;
++  conf.onError = bConfig->xErrorCallback;
++  conf.onLogFull = bConfig->xLogFullCallback;
++  conf.onErrnoTrans = sqlite3TransferBinlogErrno;
++  conf.callbackCtx = bConfig->callbackCtx;
++ 
++  BinlogInstanceT *inst = NULL;
++  rc = sqlite3TransferBinlogErrno(db->xBinlogHandle.binlogApi.binlogOpenApi(&conf, &inst));
++  if (rc != SQLITE_OK) {
++    sqlite3_log(SQLITE_ERROR, "binlog open err:%d %d", rc, errno);
++    sqlite3BinlogReset(db);
++    return SQLITE_ERROR;
++  }
++ 
++  db->xBinlogHandle.mode = bConfig->mode;
++  db->xBinlogHandle.flags |= (BINLOG_FLAG_ENABLE | BINLOG_FLAG_UPDATE_TID);
++  db->xBinlogHandle.xErrorCallback = bConfig->xErrorCallback;
++  db->xBinlogHandle.xLogFullCallback = bConfig->xLogFullCallback;
++  db->xBinlogHandle.callbackCtx = bConfig->callbackCtx;
++  db->xBinlogHandle.binlogConn = inst;
++  return SQLITE_OK;
++}
++ 
++SQLITE_PRIVATE int sqlite3GenerateUuid(u8 *aBlobOut)
++ {
++  if (aBlobOut == NULL) {
++    return SQLITE_ERROR;
++  }
++  u8 aBlob[SQLITE_UUID_BLOB_LENGTH];
++  sqlite3_randomness(SQLITE_UUID_BLOB_LENGTH, aBlob);
++  aBlob[6] = (aBlob[6] & 0x0f) + 0x40;
++  aBlob[8] = (aBlob[8] & 0x3f) + 0x80;
++ 
++  errno_t errNo = EOK;
++  errNo = memcpy_s(aBlobOut, SQLITE_UUID_BLOB_LENGTH, aBlob, SQLITE_UUID_BLOB_LENGTH);
++  if (errNo != EOK) {
++    return SQLITE_ERROR;
++  }
++  return SQLITE_OK;
++}
++ 
++SQLITE_PRIVATE BinlogEventTypeE sqlite3TransferLogEventType(StmtType stmtType)
++{
++  switch(stmtType)  {
++    case STMT_TYPE_CREATE_TABLE:
++    case STMT_TYPE_CREATE_INDEX:
++    case STMT_TYPE_CREATE_TRIGGER:
++    case STMT_TYPE_CREATE_VIEW:
++    case STMT_TYPE_DROP_TABLE:
++    case STMT_TYPE_DROP_INDEX:
++    case STMT_TYPE_DROP_TRIGGER:
++    case STMT_TYPE_DROP_VIEW:
++    case STMT_TYPE_ALTER_ADD_COL:
++    case STMT_TYPE_ALTER_RENAME_COL:
++    case STMT_TYPE_ALTER_RENAME_TABLE:
++    case STMT_TYPE_ALTER_DROP_COL:
++      return BINLOG_EVENT_TYPE_DDL;
++    case STMT_TYPE_PRAGMA:
++      return BINLOG_EVENT_TYPE_PRAGMA;
++    case STMT_TYPE_ROLLBACK_TRANSACTION:
++      return BINLOG_EVENT_TYPE_ROLLBACK;
++    default:
++      return BINLOG_EVENT_TYPE_DML;
++  }
++}
++
++/* Write an sql into binlog with given type and isFinish flag */
++SQLITE_PRIVATE int sqlite3DirectWriteBinlog(Vdbe *p, BinlogEventTypeE type, char *zSql, int isFinishTrx)
++{
++  BinlogWriteDataT logData;
++  errno_t errNo = memcpy_s(&logData.xid, SQLITE_UUID_BLOB_LENGTH, p->db->xBinlogHandle.xTid, SQLITE_UUID_BLOB_LENGTH);
++  if (errNo != EOK) {
++    sqlite3_log(SQLITE_WARNING, "binlog memcpy xid failed");
++    return SQLITE_ERROR;
++  }
++
++  logData.type = type;
++  logData.data = zSql;
++  logData.dataLength = strlen(zSql);
++  logData.isFinishTrx = isFinishTrx;
++  sqlite3 *db = p->db;
++  int rc = sqlite3TransferBinlogErrno(db->xBinlogHandle.binlogApi.binlogWriteApi(db->xBinlogHandle.binlogConn,
++    &logData));
++  if (rc != SQLITE_OK) {
++    sqlite3_log(SQLITE_WARNING, "binlog write err:%d", rc);
++    return SQLITE_ERROR;
++  }
++  return SQLITE_OK;
++}
++
++/* Free the pBinlogDMLData saved on the Vdbe pointer */
++SQLITE_PRIVATE void sqlite3FreeBinlogRowData(Vdbe *p) {
++  if (p == NULL || p->db == NULL || p->pBinlogDMLData == NULL) {
++      return;
++  }
++  int isReleased = p->pBinlogDMLData->isSavePointReleased;
++  if (!isReleased && p->db->autoCommit > 0) {
++    sqlite3DirectWriteBinlog(p, BINLOG_EVENT_TYPE_ROLLBACK, (char *)"rollback;", 1);
++    p->db->xBinlogHandle.flags |= BINLOG_FLAG_UPDATE_TID;
++  } else if (!isReleased) {
++    /* If not in auto commit mode and savepoint not released, 
++    ** it means this statement failed to execute within a transaction.
++    ** In this case, we need to rollback to the point before this statement is executed.
++    ** If the rollback statement failed to write into binlog, then there may be an memory leak
++    */
++    char *rollbackSavePoint = sqlite3_mprintf("rollback to %s;", p->pBinlogDMLData->pSavePointName);
++    sqlite3DirectWriteBinlog(p, BINLOG_EVENT_TYPE_DML, rollbackSavePoint, 0);
++    sqlite3DbFree(p->db, rollbackSavePoint);
++  }
++
++  if (p->pBinlogDMLData->pSavePointName != NULL) {
++    sqlite3DbFree(p->db, p->pBinlogDMLData->pSavePointName);
++    p->pBinlogDMLData->pSavePointName = NULL;
++  }
++
++  sqlite3DbFree(p->db, p->pBinlogDMLData);
++  p->pBinlogDMLData = NULL;
++}
++
++/* Check and create a new binlog xid if needed */
++SQLITE_PRIVATE int sqlite3UpdateBinlogXidIfNeeded(sqlite3 *db){
++  assert(db!=NULL);
++  if ((db->xBinlogHandle.flags & BINLOG_FLAG_UPDATE_TID) != 0) {
++    if (sqlite3GenerateUuid(db->xBinlogHandle.xTid) != SQLITE_OK) {
++      sqlite3_log(SQLITE_ERROR, "binlog generate uuid failed");
++      return SQLITE_ERROR;
++    }
++    db->xBinlogHandle.flags &= ~BINLOG_FLAG_UPDATE_TID;
++  }
++  return SQLITE_OK;
++}
++
++/* Return a delete sql for a regular table, the returned value needs free by caller */
++SQLITE_PRIVATE char *sqlite3BinlogRowDelete(Table *pTab, sqlite3_int64 rowid){
++  return sqlite3_mprintf("delete from \"%s\" where rowid=%lld;", pTab->zName, rowid);
++}
++
++/* Return a delete sql for a without rowid table, the returned value needs free by caller */
++SQLITE_PRIVATE char *sqlite3BinlogRowDeleteNoRowid(sqlite3 *db, Table *pTab, const BinlogRow *pRow){
++  char *whereClause = NULL;;
++  Index *pIdx = sqlite3PrimaryKeyIndex(pTab);
++
++  for (int i=0; i<pIdx->nKeyCol; i++) {
++    i16 iCol = pIdx->aiColumn[i];
++    Column *pCol = &(pTab->aCol[iCol]);
++    if (whereClause == NULL) {
++      char *colValue = sqlite3BinlogGetNthCol(db, pTab, pRow, i);
++      if (colValue == NULL) {
++        return NULL;
++      }
++      whereClause = sqlite3_mprintf("%s=%s", pCol->zCnName, colValue);
++      sqlite3DbFree(db, colValue);
++    } else {
++      char *colValue = sqlite3BinlogGetNthCol(db, pTab, pRow, i);
++      if (colValue == NULL) {
++        sqlite3DbFree(db, whereClause);
++        return NULL;
++      }
++      char *temp = sqlite3_mprintf("%s and %s=%s", whereClause, pCol->zCnName, colValue);
++      sqlite3DbFree(db, whereClause);
++      sqlite3DbFree(db, colValue);
++      whereClause = temp;
++    }
++    if (whereClause == NULL) {
++      return NULL;
++    }
++  }
++
++  char *result = sqlite3_mprintf("delete from \"%s\" where %s;", pTab->zName, whereClause);
++  sqlite3DbFree(db, whereClause);
++  return result;
++}
++
++/* Get the field name and field values for a without rowid table, in two comma seperated strings */
++SQLITE_PRIVATE int sqlite3BinlogGetFieldDataNoRowid(
++  sqlite3 *db,                  /* dB handle */
++  Table *pTab,                  /* Table to which the row belongs */
++  const BinlogRow *pRow,        /* Row data to be written into binlog */
++  char **outNames,              /* field names to be returned */
++  char **outValues              /* field values to be returned */
++){
++  char *fieldNames = NULL;
++  char *fieldValues = NULL;
++  Index *pIdx = sqlite3PrimaryKeyIndex(pTab);
++  /* Without rowid table fields are rearranged with primary keys at front */
++  for (int i=0; i<pIdx->nKeyCol; i++) {
++    i16 iCol = pIdx->aiColumn[i];
++    if (i==0) {
++      fieldNames = sqlite3_mprintf("%s", pTab->aCol[iCol].zCnName);
++    } else {
++      char *temp = sqlite3_mprintf("%s, %s", fieldNames, pTab->aCol[iCol].zCnName);
++      sqlite3DbFree(db, fieldNames);
++      fieldNames = temp;
++    }
++    if (fieldNames==NULL) goto no_rowid_no_mem;
++  }
++
++  for (int k=0; k<pTab->nCol; k++) {
++    if ( (pTab->aCol[k].colFlags & COLFLAG_PRIMKEY) == 0 ) {
++        char *temp = sqlite3_mprintf("%s, %s", fieldNames, pTab->aCol[k].zCnName);
++        sqlite3DbFree(db, fieldNames);
++        fieldNames = temp;
++    }
++    if (k==0) {
++      fieldValues = sqlite3BinlogGetNthCol(db, pTab, pRow, k);
++    } else {
++      char *newVal = sqlite3BinlogGetNthCol(db, pTab, pRow, k);
++      if (newVal==NULL) {
++        goto no_rowid_no_mem;
++      }
++      char *temp = sqlite3_mprintf("%s, %s", fieldValues, newVal);
++      sqlite3DbFree(db, newVal);
++      sqlite3DbFree(db, fieldValues);
++      fieldValues = temp;
++    }
++    if (fieldValues == NULL || fieldValues == NULL) {
++      goto no_rowid_no_mem;
++    }
++  }
++  *outNames = fieldNames;
++  *outValues = fieldValues;
++  return SQLITE_OK;
++
++no_rowid_no_mem:
++  sqlite3DbFree(db, fieldNames);
++  sqlite3DbFree(db, fieldValues);
++  return SQLITE_NOMEM;
++}
++
++/* Get the field name and field values for a regular rowid table, in two comma seperated strings */
++SQLITE_PRIVATE int sqlite3BinlogGetFieldData(sqlite3 *db, Table *pTab, const BinlogRow *pRow, char **outNames, char **outValues){
++  char *fieldNames = NULL;
++  char *fieldValues = NULL;
++  for (int i=0; i<pTab->nCol; i++) {
++    if (i==0) {
++      fieldNames = sqlite3_mprintf("%s", pTab->aCol[i].zCnName);
++      fieldValues = sqlite3BinlogGetNthCol(db, pTab, pRow, i);
++    } else {
++      char *temp = sqlite3_mprintf("%s, %s", fieldNames, pTab->aCol[i].zCnName);
++      sqlite3DbFree(db, fieldNames);
++      fieldNames = temp;
++
++      char *newVal = sqlite3BinlogGetNthCol(db, pTab, pRow, i);
++      if (newVal==NULL) goto no_mem;
++      temp = sqlite3_mprintf("%s, %s", fieldValues, newVal);
++      sqlite3DbFree(db, newVal);
++      sqlite3DbFree(db, fieldValues);
++      fieldValues = temp;
++
++    }
++    if (fieldValues == NULL || fieldValues == NULL) {
++      goto no_mem;
++    }
++  }
++  *outNames = fieldNames;
++  *outValues = fieldValues;
++  return SQLITE_OK;
++
++no_mem:
++    sqlite3DbFree(db, fieldNames);
++    sqlite3DbFree(db, fieldValues);
++  return SQLITE_NOMEM;
++}
++
++/* Return an insert sql based on the binlog row data, the returned value needs free by caller */
++SQLITE_PRIVATE char *sqlite3BinlogRowInsert(sqlite3 *db, Table *pTab, const BinlogRow *pRow){
++  char *fieldNames = NULL;
++  char *fieldValues = NULL;
++
++  int rc = SQLITE_OK;
++  if (HasRowid(pTab)) {
++    rc = sqlite3BinlogGetFieldData(db, pTab, pRow, &fieldNames, &fieldValues);
++  } else {
++    rc = sqlite3BinlogGetFieldDataNoRowid(db, pTab, pRow, &fieldNames, &fieldValues);
++  }
++
++  if (rc != SQLITE_OK) {
++    sqlite3_log(rc, "binlog get field data err:%d", rc);
++    return NULL;
++  }
++  char *result = NULL;
++  if (HasRowid(pTab)) {
++    result = sqlite3_mprintf(
++      "insert into \"%s\" (%s, rowid) values (%s, %lld) on conflict do update set (%s) = (%s);",
++      pTab->zName, fieldNames, fieldValues, pRow->rowid, fieldNames, fieldValues
++    );
++  } else {
++    result = sqlite3_mprintf(
++      "insert into \"%s\" (%s) values (%s) on conflict do update set (%s) = (%s);",
++      pTab->zName, fieldNames, fieldValues, fieldNames, fieldValues
++    );
++  }
++  
++  sqlite3DbFree(db, fieldNames);
++  sqlite3DbFree(db, fieldValues);
++  return result;
++}
++
++/* Return an update sql for a regular table. Without rowid table has no update operation */
++SQLITE_PRIVATE char *sqlite3BinlogRowUpdate(sqlite3 *db, Table *pTab, const BinlogRow *pRow){
++  char *fieldNames = NULL;
++  char *fieldValues = NULL;
++  if (sqlite3BinlogGetFieldData(db, pTab, pRow, &fieldNames, &fieldValues) != SQLITE_OK) {
++    return NULL;
++  }
++  char *result = sqlite3_mprintf(
++    "insert into \"%s\" (%s, rowid) values (%s, %lld) on conflict(rowid) do update set (%s) = (%s);",
++    pTab->zName, fieldNames,
++    fieldValues, pRow->rowid,
++    fieldNames, fieldValues
++  );
++  sqlite3DbFree(db, fieldNames);
++  sqlite3DbFree(db, fieldValues);
++  return result;
++}
++
++/* Return the sql statement corresponds to a binlog row data, NULL is returned if error occurs */
++SQLITE_PRIVATE char *sqlite3GetBinlogRowStmt(Vdbe *p, const BinlogRow *pRow){
++  assert(p!=NULL);
++  assert(p->db!=NULL);
++  assert(p->pBinlogDMLData!=NULL);
++  sqlite3 *db = p->db;
++  Table *pTab = p->pBinlogDMLData->pTable;
++
++  switch (pRow->op) {
++    case SQLITE_DELETE:
++      return HasRowid(pTab) ? sqlite3BinlogRowDelete(pTab, pRow->rowid) : sqlite3BinlogRowDeleteNoRowid(db, pTab, pRow);
++    case SQLITE_INSERT:
++      return sqlite3BinlogRowInsert(db, pTab, pRow);
++    case SQLITE_UPDATE:
++      return sqlite3BinlogRowUpdate(db, pTab, pRow);
++    default:
++      return NULL;
++  }
++}
++
++/* Find the table that is pointed by pC, NULL is returned if a valid table can not be found */
++SQLITE_PRIVATE Table *sqlite3BinlogFindTable(BtCursor *pC){
++  if (pC==NULL || pC->pBtree == NULL || pC->pBtree->pBt == NULL || pC->pBtree->pBt->pSchema == NULL) {
++    return NULL;
++  }
++  Schema *pSchema = (Schema *)pC->pBtree->pBt->pSchema;
++  Table *pTab = NULL;
++  HashElem *k;
++  for(k=sqliteHashFirst(&pSchema->tblHash); k; k=sqliteHashNext(k)){
++    Table *tempTab = (Table*)sqliteHashData(k);
++    if (tempTab->tnum==pC->pgnoRoot) {
++      pTab = tempTab;
++      break;
++    }
++  }
++  if (pTab == NULL || sqlite3_stricmp(pTab->zName, LEGACY_SCHEMA_TABLE) == 0) {
++    return NULL;
++  }
++  return pTab;
++}
++
++/**
++** This is the function called in sqlite3VdbeExec to write a row-based binlog statement.
++** If an error occured, then the row data is cleared and the state will be logged in statement mode
++**/
++SQLITE_PRIVATE void sqlite3StoreBinlogRowData(Vdbe *p, BtCursor *pCursor,
++  sqlite3_uint64 nData, const char *pData, int op, sqlite3_int64 rowid){
++  assert(p!=NULL && pCursor!=NULL);
++  assert(p->db!=NULL);
++  assert(sqlite3IsRowBasedBinlog(p));
++  assert(op == SQLITE_INSERT || op == SQLITE_UPDATE || op == SQLITE_DELETE);
++  sqlite3 *db = p->db;
++  BinlogDMLData *dataContainer = NULL;
++
++  Table *pTab = sqlite3BinlogFindTable(pCursor);
++  if (pTab == NULL) {
++    goto error_when_store_binlog;
++  }
++
++  if (p->pBinlogDMLData == NULL) {
++    /* If pBinlogDMLData is empty, we need to initialize the data by the following steps:
++    ** 1. Change the xid if needed
++    ** 2. Start a savepoint so that all the rows are in the same transaction
++    */
++    dataContainer = (BinlogDMLData *)sqlite3DbMallocZero(db, sizeof(BinlogDMLData));
++    if (dataContainer == NULL) {
++      goto error_when_store_binlog;
++    }
++
++    if (sqlite3UpdateBinlogXidIfNeeded(p->db) != SQLITE_OK) {
++      goto error_when_store_binlog;
++    }
++
++    char xTidStr[SQLITE_UUID_BLOB_LENGTH*2+1] = {0};
++    for (int i=0; i<SQLITE_UUID_BLOB_LENGTH; i++) {
++      u8 byte = db->xBinlogHandle.xTid[i];
++      sqlite3_snprintf(3, xTidStr+i*2, "%02x", byte);
++    }
++    char *savePointName = sqlite3_mprintf("%s%s", "BinlogRow", xTidStr);
++    if (savePointName == NULL) {
++      goto error_when_store_binlog;
++    }
++    dataContainer->pSavePointName = savePointName;
++    p->pBinlogDMLData = dataContainer;
++    char *zSavePointSql = sqlite3_mprintf("savepoint %s;", savePointName);
++    if (zSavePointSql==NULL) {
++      goto error_when_store_binlog;
++    }
++    int rc = sqlite3DirectWriteBinlog(p, sqlite3TransferLogEventType(p->stmtType), zSavePointSql, 0);
++    sqlite3DbFree(db, zSavePointSql);
++    if (rc != SQLITE_OK) {
++      goto error_when_store_binlog;
++    }
++  } else {
++    dataContainer = p->pBinlogDMLData;
++  }
++
++  dataContainer->pTable = pTab;
++  BinlogRow pRow;
++  pRow.op = op;
++  pRow.nData = nData;
++  pRow.pData = pData;
++  pRow.rowid = rowid;
++  char *zSql = sqlite3GetBinlogRowStmt(p, &pRow);
++  if (zSql == NULL) {
++    goto error_when_store_binlog;
++  }
++
++  if (sqlite3DirectWriteBinlog(p, sqlite3TransferLogEventType(p->stmtType), zSql, 0) != SQLITE_OK) {
++    sqlite3DbFree(db, zSql);
++    goto error_when_store_binlog;
++  }
++  sqlite3DbFree(db, zSql);
++  return;
++
++error_when_store_binlog:
++  sqlite3_log(SQLITE_WARNING, "Failed to store row-based binlog data, use statement mode instead.");
++  if (p->pBinlogDMLData == NULL && dataContainer != NULL) {
++    sqlite3DbFree(db, dataContainer);
++  }
++  sqlite3FreeBinlogRowData(p);
++  return;
++}
++
++SQLITE_PRIVATE int sqlite3IsRowBasedBinlog(Vdbe *p) {
++  return p 
++    && p->db
++    && (p->db->xBinlogHandle.flags & BINLOG_FLAG_ENABLE)
++    && (p->db->xBinlogHandle.mode == ROW);
++}
++
++/* Get i-th column value from a row formated data. i starts from 0 */
++SQLITE_PRIVATE int sqlite3BinlogStat4Column(
++  sqlite3 *db,                    /* Database handle */
++  const void *pRec,               /* Pointer to buffer containing record */
++  int nRec,                       /* Size of buffer pRec in bytes */
++  int iCol,                       /* Column to extract */
++  sqlite3_value **ppVal           /* OUT: Extracted value */
++){
++  u32 t = 0;                      /* a column type code */
++  u32 nHdr;                       /* Size of the header in the record */
++  u32 iHdr;                       /* Next unread header byte */
++  i64 iField;                     /* Next unread data byte */
++  u32 szField = 0;                /* Size of the current data field */
++  int i;                          /* Column index */
++  u8 *a = (u8*)pRec;              /* Typecast byte array */
++  Mem *pMem = *ppVal;             /* Write result into this Mem object */
++
++  iHdr = getVarint32(a, nHdr);
++  if( nHdr>(u32)nRec || iHdr>=nHdr ) return SQLITE_CORRUPT_BKPT;
++  iField = nHdr;
++  for(i=0; i<=iCol; i++){
++    iHdr += getVarint32(&a[iHdr], t);
++
++    if( iHdr>nHdr ) return SQLITE_CORRUPT_BKPT;
++    szField = sqlite3VdbeSerialTypeLen(t);
++    iField += szField;
++  }
++
++  if( iField>nRec ) return SQLITE_CORRUPT_BKPT;
++  if( pMem==0 ){
++    pMem = *ppVal = sqlite3ValueNew(db);
++    if( pMem==0 ) return SQLITE_NOMEM_BKPT;
++  }
++  sqlite3VdbeSerialGet(&a[iField-szField], t, pMem);
++  pMem->enc = ENC(db);
++  return SQLITE_OK;
++}
++
++SQLITE_PRIVATE char *sqlite3BinlogGetHexFromBlobOrStr(sqlite3 *db, sqlite3_value *value) {
++  assert( db!=NULL && value!=NULL );
++  size_t strSize = (value->n) * 2 + 1;
++  char *zHex, *z;
++  z = zHex =sqlite3DbMallocZero(db, strSize);
++  if (z == NULL) {
++    return NULL;
++  }
++  for(int i=0; i<value->n; i++) {
++    unsigned char c = (value->z)[i];
++    *(z++) = hexdigits[(c>>4)&0xf];
++    *(z++) = hexdigits[c&0xf];
++  }
++  *z = 0;
++  return zHex;
++}
++
++SQLITE_PRIVATE char *sqlite3BinlogGetNthCol(sqlite3 *db, const Table *pTab, const BinlogRow *pRow, int iCol) {
++  assert( db!=NULL && pTab!=NULL && pRow!=NULL );
++  assert( iCol>=0 );  
++  if (HasRowid(pTab) && pTab->iPKey == iCol) {
++      return sqlite3_mprintf("%lld", pRow->rowid);
++  }
++
++  sqlite3_value *tempVal = NULL;
++  sqlite3BinlogStat4Column(db, pRow->pData, pRow->nData, iCol, &tempVal);
++  if (tempVal == NULL) {
++    sqlite3_log(SQLITE_ERROR, "decode data failed");
++    return NULL;
++  }
++  int type = sqlite3_value_type(tempVal);
++  const unsigned char *temp = sqlite3_value_text(tempVal);
++  
++  char *res = NULL;
++  if (type == SQLITE_BLOB) {
++    char *hex = sqlite3BinlogGetHexFromBlobOrStr(db, tempVal);
++    if (hex != NULL) {
++      res = sqlite3_mprintf("x'%s'", hex);
++      sqlite3DbFree(db, hex);
++    } else {
++      res = sqlite3_mprintf("'%s'", temp);
++    }
++  } else if (type == SQLITE_TEXT) {
++    res = sqlite3_mprintf("'%s'", temp);
++  } else if (type == SQLITE_NULL) { 
++    res = sqlite3_mprintf("NULL");
++  } else {
++    res = sqlite3_mprintf("%s", temp);
++  }
++  sqlite3ValueFree(tempVal);
++
++  return res;
++}
++
++/* Check if binlog is enabled and the stmtType needs being logged */
++SQLITE_PRIVATE int sqlite3IsSkipWriteBinlog(Vdbe *p) {
++  int isBinlogEnabled = (p != NULL) && (p->db != NULL) && 
++    ((p->db->xBinlogHandle.flags & BINLOG_FLAG_ENABLE) != 0) &&
++    p->db->xBinlogHandle.binlogApi.binlogWriteApi;
++  
++  return p == NULL
++    || !isBinlogEnabled
++    || p->db->nVdbeExec > 1
++    || (p->readOnly && p->stmtType != STMT_TYPE_BEGIN_TRANSACTION && p->stmtType != STMT_TYPE_SAVEPOINT &&
++      p->stmtType != STMT_TYPE_COMMIT_TRANSACTION && p->stmtType != STMT_TYPE_ROLLBACK_TRANSACTION);
++}
++
++SQLITE_PRIVATE void sqlite3BinlogWrite(Vdbe *p)
++{
++  if (sqlite3IsSkipWriteBinlog(p)) {
++    sqlite3FreeBinlogRowData(p);
++    return;
++  }
++
++  sqlite3 *db = p->db;
++  BinlogWriteDataT logData;
++  logData.type = sqlite3TransferLogEventType(p->stmtType);
++
++  char *zSql = NULL;
++  if (logData.type == BINLOG_EVENT_TYPE_DML && sqlite3IsRowBasedBinlog(p) && p->pBinlogDMLData != NULL) {
++    // release savepoint
++    zSql = sqlite3_mprintf("release savepoint %s;", p->pBinlogDMLData->pSavePointName);
++    p->pBinlogDMLData->isSavePointReleased = 1;
++  } else {
++    zSql = sqlite3_expanded_sql((sqlite3_stmt *)p);
++  }
++  if (zSql == NULL) {
++    sqlite3_log(SQLITE_ERROR, "binlog get sql failed");
++    sqlite3FreeBinlogRowData(p);
++    return;
++  }
++
++  if (sqlite3UpdateBinlogXidIfNeeded(db) != SQLITE_OK) {
++    sqlite3FreeBinlogRowData(p);
++    sqlite3BinlogErrorCallback(db, SQLITE_ERROR, "generate tid failed");
++    sqlite3_free(zSql);
++    sqlite3BinlogClose(db);
++    return;
++  }
++  errno_t errNo = EOK;
++  errNo = memcpy_s(&logData.xid, SQLITE_UUID_BLOB_LENGTH, db->xBinlogHandle.xTid, SQLITE_UUID_BLOB_LENGTH);
++  if (errNo != EOK) {
++    sqlite3FreeBinlogRowData(p);
++    sqlite3BinlogErrorCallback(db, SQLITE_ERROR, "copy tid failed");
++    sqlite3_free(zSql);
++    sqlite3BinlogClose(db);
++    return;
++  }
++  logData.data = zSql;
++  logData.dataLength = strlen(zSql);
++  logData.isFinishTrx = db->autoCommit;
++  int rc = sqlite3TransferBinlogErrno(db->xBinlogHandle.binlogApi.binlogWriteApi(db->xBinlogHandle.binlogConn,
++    &logData));
++  sqlite3_free(zSql);
++  if (rc != SQLITE_OK) {
++    sqlite3FreeBinlogRowData(p);
++    sqlite3_log(SQLITE_ERROR, "binlog write err:%d len:%u", rc, logData.dataLength);
++    sqlite3BinlogClose(db);
++    return;
++  }
++  if (db->autoCommit > 0) {
++    db->xBinlogHandle.flags |= BINLOG_FLAG_UPDATE_TID;
++  }
++  sqlite3FreeBinlogRowData(p);
++}
++ 
++SQLITE_PRIVATE int sqlite3TransferBinlogErrno(BinlogErrno err)
++{
++  switch (err) {
++    case GMERR_OK:
++      return SQLITE_OK;
++    case GMERR_LOCK_NOT_AVAILABLE:
++      return SQLITE_BUSY;
++    case GMERR_BINLOG_READ_FINISH:
++      return SQLITE_DONE;
++    default:
++      return SQLITE_ERROR;
++  }
++}
++ 
++SQLITE_PRIVATE int sqlite3BinlogClose(sqlite3 *db)
++{
++  if (db == NULL) {
++    sqlite3_log(SQLITE_ERROR, "binlog close parameter is null");
++    return SQLITE_ERROR;
++  }
++  if ((db->xBinlogHandle.flags & BINLOG_FLAG_ENABLE) == 0) {
++    return SQLITE_OK;
++  }
++  if (db->xBinlogHandle.binlogApi.binlogCloseApi) {
++    int rc = sqlite3TransferBinlogErrno(db->xBinlogHandle.binlogApi.binlogCloseApi(db->xBinlogHandle.binlogConn));
++    if (rc != SQLITE_OK) {
++      sqlite3_log(rc, "binlog close err:%d", rc);
++      return rc;
++    }
++  }
++  sqlite3BinlogReset(db);
++  return SQLITE_OK;
++}
++ 
++SQLITE_PRIVATE void sqlite3BinlogReset(sqlite3 *db)
++{
++  if (db == NULL) {
++    sqlite3_log(SQLITE_ERROR, "binlog reset parameter is null");
++    return;
++  }
++  db->xBinlogHandle.flags = 0;
++  (void)memset_s(db->xBinlogHandle.xTid, SQLITE_UUID_BLOB_LENGTH, 0, SQLITE_UUID_BLOB_LENGTH);
++  db->xBinlogHandle.xErrorCallback = NULL;
++  db->xBinlogHandle.binlogApi.binlogOpenApi = NULL;
++  db->xBinlogHandle.binlogApi.binlogCloseApi = NULL;
++  db->xBinlogHandle.binlogApi.binlogWriteApi = NULL;
++  db->xBinlogHandle.binlogApi.binlogReadApi = NULL;
++  db->xBinlogHandle.binlogApi.binlogFileCleanApi = NULL;
++  db->xBinlogHandle.binlogApi.binlogFreeReadResultApi = NULL;
++  db->xBinlogHandle.binlogApi.binlogLockReadApi = NULL;
++  db->xBinlogHandle.binlogApi.binlogUnlockReadApi = NULL;
++  db->xBinlogHandle.callbackCtx = NULL;
++  db->xBinlogHandle.binlogConn = NULL;
++  if (db->xBinlogHandle.binlogApi.binlogLib) {
++    sqlite3OsDlClose(db->pVfs, db->xBinlogHandle.binlogApi.binlogLib);
++    db->xBinlogHandle.binlogApi.binlogLib = NULL;
++  }
++}
++ 
++SQLITE_PRIVATE int sqlite3BinlogStmtPrepare(sqlite3 *db, Sqlite3BinlogStmt *bStmt)
++{
++  if (db == NULL || db->xBinlogHandle.binlogApi.binlogReadApi == NULL || bStmt == NULL) {
++    sqlite3_log(SQLITE_ERROR, "binlog stmt prepare parameter is null");
++    return SQLITE_ERROR;
++  }
++  BinlogReadResultT *result = NULL;
++  int rc = sqlite3TransferBinlogErrno(db->xBinlogHandle.binlogApi.binlogReadApi(db->xBinlogHandle.binlogConn,
++    &result));
++  if (rc != SQLITE_OK) {
++    if (rc != SQLITE_DONE) {
++      sqlite3_log(rc, "binlog stmt prepare err:%d", rc);
++    }
++    return rc;
++  }
++  bStmt->cursor = result;
++  bStmt->curIdx = 0;
++  return SQLITE_OK;
++}
++ 
++SQLITE_PRIVATE int sqlite3BinlogStmtStep(Sqlite3BinlogStmt *bStmt, char **sql)
++{
++  if (bStmt == NULL || bStmt->cursor == NULL || sql == NULL) {
++    sqlite3_log(SQLITE_ERROR, "binlog stmt stmp parameter is null");
++    return SQLITE_ERROR;
++  }
++  if (bStmt->curIdx >= bStmt->cursor->eventNum) {
++    return SQLITE_DONE;
++  }
++  BinlogEventT *event = bStmt->cursor->sqlEvent[bStmt->curIdx];
++  if (event == NULL) {
++    sqlite3_log(SQLITE_ERROR, "binlog stmt stmp event is null");
++    return SQLITE_ERROR;
++  }
++  *sql = (char *)event->body;
++  bStmt->curIdx++;
++  return SQLITE_ROW;
++}
++ 
++SQLITE_PRIVATE void sqlite3BinlogStmtFinalize(sqlite3 *db, Sqlite3BinlogStmt *bStmt)
++{
++  if (db == NULL || bStmt == NULL || bStmt->cursor == NULL ||
++    db->xBinlogHandle.binlogApi.binlogFreeReadResultApi == NULL) {
++    sqlite3_log(SQLITE_WARNING, "binlog stmt finalize parameter is null");
++    return;
++  }
++  db->xBinlogHandle.binlogApi.binlogFreeReadResultApi(db->xBinlogHandle.binlogConn, bStmt->cursor);
++  bStmt->cursor = NULL;
++  bStmt->curIdx = 0;
++}
++ 
++SQLITE_PRIVATE int sqlite3BinlogExecuteReplaySql(sqlite3 *srcDb, sqlite3 *destDb, const char *sql)
++{
++  if (srcDb == NULL || destDb == NULL || sql == NULL) {
++    sqlite3_log(SQLITE_ERROR, "binlog execute replay sql parameter is null");
++    return SQLITE_ERROR;
++  }
++  int rc = sqlite3_exec(destDb, sql, NULL, NULL, NULL);
++  if (rc == SQLITE_OK || rc == SQLITE_CONSTRAINT) {
++    return SQLITE_OK;
++  }
++  sqlite3BinlogErrorCallback(srcDb, rc, "exec replay sql failed");
++  return rc;
++}
++ 
++SQLITE_PRIVATE int sqlite3BinlogReplay(sqlite3 *srcDb, sqlite3 *destDb)
++{
++  if (srcDb == NULL || destDb == NULL) {
++    sqlite3_log(SQLITE_ERROR, "binlog replay parameter is null");
++    return SQLITE_ERROR;
++  }
++  if ((srcDb->xBinlogHandle.flags & BINLOG_FLAG_ENABLE) == 0) {
++    sqlite3_log(SQLITE_ERROR, "binlog replay srcDb not enable binlog");
++    return SQLITE_ERROR;
++  }
++  const char *srcFile = sqlite3_db_filename(srcDb, 0);
++  const char *destFile = sqlite3_db_filename(destDb, 0);
++  if (srcFile == NULL || destFile == NULL || strcmp(srcFile, destFile) == 0) {
++    return SQLITE_ERROR;
++  }
++  int res =
++    sqlite3TransferBinlogErrno(srcDb->xBinlogHandle.binlogApi.binlogLockReadApi(srcDb->xBinlogHandle.binlogConn));
++  if (res != SQLITE_OK) {
++    return res;
++  }
++  do {
++    Sqlite3BinlogStmt bStmt;
++    bStmt.curIdx = 0;
++    bStmt.cursor = NULL;
++    res = sqlite3BinlogStmtPrepare(srcDb, &bStmt);
++    if (res != SQLITE_OK) {
++      if (res == SQLITE_DONE) {
++        res = SQLITE_OK;
++      } else {
++        sqlite3_log(res, "read binlog failed");
++      }
++      break;
++    }
++    char *bSql = NULL;
++    while ((res = sqlite3BinlogStmtStep(&bStmt, &bSql)) == SQLITE_ROW) {
++      if (bSql == NULL) {
++        sqlite3_log(SQLITE_ERROR, "binlog event read invalid");
++        continue;
++      }
++      int errCode = sqlite3BinlogExecuteReplaySql(srcDb, destDb, bSql);
++      if (errCode != SQLITE_OK) {
++        res = errCode;
++        break;
++      }
++      bSql = NULL;
++    }
++    sqlite3BinlogStmtFinalize(srcDb, &bStmt);
++    if (res != SQLITE_DONE) {
++      break;
++    }
++  } while (1);
++  (void)srcDb->xBinlogHandle.binlogApi.binlogUnlockReadApi(srcDb->xBinlogHandle.binlogConn);
++  if (res != SQLITE_OK) {
++    sqlite3BinlogClose(srcDb);
++  }
++  return res;
++}
++ 
++SQLITE_PRIVATE int sqlite3BinlogClean(sqlite3 *db, BinlogFileCleanModeE mode)
++{
++  if (db == NULL || mode < BINLOG_FILE_CLEAN_ALL_MODE ||
++    mode >= BINLOG_FILE_CLEAN_MODE_MAX || (db->xBinlogHandle.flags & BINLOG_FLAG_ENABLE) == 0 ||
++    db->xBinlogHandle.binlogApi.binlogFileCleanApi == NULL) {
++    sqlite3_log(SQLITE_ERROR, "binlog clean parameter is invalid");
++    return SQLITE_ERROR;
++  }
++ 
++  return sqlite3TransferBinlogErrno(db->xBinlogHandle.binlogApi.binlogFileCleanApi(db->xBinlogHandle.binlogConn, mode));
++}
++ 
++SQLITE_PRIVATE void sqlite3BinlogErrorCallback(sqlite3 *db, int errNo, char *errMsg)
++{
++  if (db == NULL || db->xBinlogHandle.xErrorCallback == NULL) {
++    return;
++  }
++  db->xBinlogHandle.xErrorCallback(db->xBinlogHandle.callbackCtx, errNo, errMsg);
++}
++/************** End of binlog implement ************************************/
++#endif /* SQLITE_ENABLE_BINLOG */
++
+ // hw export the symbols
+ #ifdef SQLITE_EXPORT_SYMBOLS
+ #ifndef SQLITE_CKSUMVFS_STATIC
+@@ -247550,6 +248808,9 @@ struct sqlite3_api_routines_hw {
+   int (*key_v2)(sqlite3*,const char*,const void*,int);
+   int (*rekey)(sqlite3*,const void*,int);
+   int (*rekey_v2)(sqlite3*,const char*,const void*,int);
++  int (*is_support_binlog)(void);
++  int (*replay_binlog)(sqlite3*, sqlite3*);
++  int (*clean_binlog)(sqlite3*, BinlogFileCleanModeE);
+ };
+ 
+ typedef struct sqlite3_api_routines_hw sqlite3_api_routines_hw;
+@@ -247560,13 +248821,22 @@ static const sqlite3_api_routines_hw sqlite3HwApis = {
+   sqlite3_key,
+   sqlite3_key_v2,
+   sqlite3_rekey,
+-  sqlite3_rekey_v2
++  sqlite3_rekey_v2,
+ #else
+   0,
+   0,
+   0,
+-  0
++  0,
+ #endif /* SQLITE_HAS_CODEC */
++#ifdef SQLITE_ENABLE_BINLOG
++  sqlite3_is_support_binlog,
++  sqlite3_replay_binlog,
++  sqlite3_clean_binlog,
++#else
++  0,
++  0,
++  0,
++#endif/* SQLITE_ENABLE_BINLOG */
+ };
+ 
+ EXPORT_SYMBOLS const sqlite3_api_routines *sqlite3_export_symbols = &sqlite3Apis;
+-- 
+2.25.1
+

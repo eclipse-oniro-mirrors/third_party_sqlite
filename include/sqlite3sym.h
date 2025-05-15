@@ -22,6 +22,33 @@
 // We extend the original purpose of the "sqlite3ext.h".
 #include "sqlite3ext.h"
 
+/*************************************************************************
+** BINLOG CONFIG
+*/
+#define SQLITE_DBCONFIG_ENABLE_BINLOG    2006 /* Sqlite3BinlogConfig */
+
+typedef enum BinlogFileCleanMode {
+  BINLOG_FILE_CLEAN_ALL_MODE = 0,
+  BINLOG_FILE_CLEAN_READ_MODE = 1,
+  BINLOG_FILE_CLEAN_MODE_MAX,
+} BinlogFileCleanModeE;
+
+typedef enum {
+  ROW = 0,
+} Sqlite3BinlogMode;
+ 
+typedef struct Sqlite3BinlogConfig {
+    Sqlite3BinlogMode mode;
+    unsigned short fullCallbackThreshold;
+    unsigned int maxFileSize;
+    void (*xErrorCallback)(void *pCtx, int errNo, char *errMsg);
+    void (*xLogFullCallback)(void *pCtx, unsigned short currentCount);
+    void *callbackCtx;
+} Sqlite3BinlogConfig;
+/*
+** END OF BINLOG CONFIG
+*************************************************************************/
+
 struct sqlite3_api_routines_hw {
   int (*initialize)();
   int (*config)(int,...);
@@ -29,6 +56,9 @@ struct sqlite3_api_routines_hw {
   int (*key_v2)(sqlite3*,const char*,const void*,int);
   int (*rekey)(sqlite3*,const void*,int);
   int (*rekey_v2)(sqlite3*,const char*,const void*,int);
+  int (*is_support_binlog)(void);
+  int (*replay_binlog)(sqlite3*, sqlite3*);
+  int (*clean_binlog)(sqlite3*, BinlogFileCleanModeE);
 };
 
 extern const struct sqlite3_api_routines_hw *sqlite3_export_hw_symbols;
@@ -38,6 +68,9 @@ extern const struct sqlite3_api_routines_hw *sqlite3_export_hw_symbols;
 #define sqlite3_key_v2              sqlite3_export_hw_symbols->key_v2
 #define sqlite3_rekey               sqlite3_export_hw_symbols->rekey
 #define sqlite3_rekey_v2            sqlite3_export_hw_symbols->rekey_v2
+#define sqlite3_is_support_binlog   sqlite3_export_hw_symbols->is_support_binlog
+#define sqlite3_replay_binlog       sqlite3_export_hw_symbols->replay_binlog
+#define sqlite3_clean_binlog        sqlite3_export_hw_symbols->clean_binlog
 
 struct sqlite3_api_routines_cksumvfs {
   int (*register_cksumvfs)(const char *);

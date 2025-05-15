@@ -122,6 +122,7 @@ ohos_shared_library("sqlite") {
     "SQLITE_HDR_CHECK",
     "SQLITE_ENABLE_ICU",
     "SQLITE_META_DWR",
+    "SQLITE_ENABLE_BINLOG",
   ]
   if (sqlite_support_check_pages) {
     defines += [ "SQLITE_CHECK_PAGES" ]
@@ -188,6 +189,7 @@ ohos_executable("sqlite3") {
     "LOG_DUMP",
     "FDSAN_ENABLE",
     "HARMONY_OS",
+    "SQLITE_ENABLE_BINLOG",
   ]
 
   cflags = [
@@ -231,6 +233,7 @@ if (is_mingw || is_mac) {
       "SQLITE_EXPORT_SYMBOLS",
       "SQLITE_SHARED_BLOCK_OPTIMIZATION",
       "OPENSSL_SUPPRESS_DEPRECATED",
+      "SQLITE_ENABLE_BINLOG",
     ]
     remove_configs = [ "//build/config/compiler:chromium_code" ]
     deps = [
@@ -296,6 +299,7 @@ if (is_cross_platform_build) {
       "SQLITE_CODEC_ATTACH_CHANGED",
       "SQLITE_ENABLE_DROPTABLE_CALLBACK",
       "OPENSSL_SUPPRESS_DEPRECATED",
+      "SQLITE_ENABLE_BINLOG",
     ]
 
     cflags_c = [
