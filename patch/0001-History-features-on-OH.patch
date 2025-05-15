@@ -1,0 +1,3037 @@
+From f71a3aaddebdcba87ad8af804d680397ecc5fa48 Mon Sep 17 00:00:00 2001
+From: wanghaishuo <wanghaishuo1@huawei.com>
+Date: Mon, 12 May 2025 15:29:53 +0800
+Subject: [PATCH 1/6] History features on OH
+
+Signed-off-by: wanghaishuo <wanghaishuo1@huawei.com>
+---
+ src/sqlite3.c | 2451 ++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 2438 insertions(+), 13 deletions(-)
+
+diff --git a/src/sqlite3.c b/src/sqlite3.c
+index 7fb290f..ad78006 100644
+--- a/src/sqlite3.c
++++ b/src/sqlite3.c
+@@ -2915,6 +2915,11 @@ SQLITE_API int sqlite3_extended_result_codes(sqlite3*, int onoff);
+ */
+ SQLITE_API sqlite3_int64 sqlite3_last_insert_rowid(sqlite3*);
+ 
++#ifdef SQLITE_SHARED_BLOCK_OPTIMIZATION
++#define SQLITE_DBCONFIG_SET_SHAREDBLOCK  2004
++#define SQLITE_DBCONFIG_USE_SHAREDBLOCK  2005
++#endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
++
+ /*
+ ** CAPI3REF: Set the Last Insert Rowid value.
+ ** METHOD: sqlite3
+@@ -3274,6 +3279,16 @@ SQLITE_API int sqlite3_get_table(
+ );
+ SQLITE_API void sqlite3_free_table(char **result);
+ 
++// hw export the symbols
++#ifdef SQLITE_EXPORT_SYMBOLS
++#if defined(__GNUC__)
++#  define EXPORT_SYMBOLS  __attribute__ ((visibility ("default")))
++#elif defined(_MSC_VER)
++#  define EXPORT_SYMBOLS  __declspec(dllexport)
++#else
++#  define EXPORT_SYMBOLS
++#endif
++#endif
+ /*
+ ** CAPI3REF: Formatted String Printing Functions
+ **
+@@ -5312,6 +5327,10 @@ SQLITE_API const void *sqlite3_column_decltype16(sqlite3_stmt*,int);
+ */
+ SQLITE_API int sqlite3_step(sqlite3_stmt*);
+ 
++#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
++SQLITE_API int sqlite3_set_droptable_handle(sqlite3*, void (*xFunc)(sqlite3*,const char*,const char*));
++#endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
++
+ /*
+ ** CAPI3REF: Number of columns in a result set
+ ** METHOD: sqlite3_stmt
+@@ -6712,6 +6731,44 @@ SQLITE_API int sqlite3_collation_needed16(
+   void(*)(void*,sqlite3*,int eTextRep,const void*)
+ );
+ 
++#ifdef SQLITE_HAS_CODEC
++/*
++** Specify the key for an encrypted database.  This routine should be
++** called right after sqlite3_open().
++**
++** The code to implement this API is not available in the public release
++** of SQLite.
++*/
++SQLITE_API int sqlite3_key(
++  sqlite3 *db,                   /* Database to be rekeyed */
++  const void *pKey, int nKey     /* The key */
++);
++SQLITE_API int sqlite3_key_v2(
++  sqlite3 *db,                   /* Database to be rekeyed */
++  const char *zDbName,           /* Name of the database */
++  const void *pKey, int nKey     /* The key */
++);
++
++/*
++** Change the key on an open database.  If the current database is not
++** encrypted, this routine will encrypt it.  If pNew==0 or nNew==0, the
++** database is decrypted.
++**
++** The code to implement this API is not available in the public release
++** of SQLite.
++*/
++SQLITE_API int sqlite3_rekey(
++  sqlite3 *db,                   /* Database to be rekeyed */
++  const void *pKey, int nKey     /* The new key */
++);
++SQLITE_API int sqlite3_rekey_v2(
++  sqlite3 *db,                   /* Database to be rekeyed */
++  const char *zDbName,           /* Name of the database */
++  const void *pKey, int nKey     /* The new key */
++);
++
++#endif /* SQLITE_HAS_CODEC */
++
+ #ifdef SQLITE_ENABLE_CEROD
+ /*
+ ** Specify the activation key for a CEROD database.  Unless
+@@ -10149,6 +10206,27 @@ SQLITE_API int sqlite3_vtab_config(sqlite3*, int op, ...);
+ */
+ SQLITE_API int sqlite3_vtab_on_conflict(sqlite3 *);
+ 
++#ifdef SQLITE_SHARED_BLOCK_OPTIMIZATION
++typedef struct Sqlite3SharedBlockMethods Sqlite3SharedBlockMethods;
++struct Sqlite3SharedBlockMethods {
++  int iVersion;
++  void* pContext;
++  int countAllRows;
++  int startPos;
++  int requiredPos;
++  int (*xAddRow)(void* pCtx, int addedRows);
++  int (*xReset)(void* pCtx, int startPos);
++  int (*xFinish)(void* pCtx, int addedRows, int totalRows);
++  int (*xPutString)(void *pCtx, int addedRows, int column, const char* text, int len);
++  int (*xPutLong)(void *pCtx, int addedRows, int column, sqlite3_int64 value);
++  int (*xPutDouble)(void *pCtx, int addedRows, int column, double value);
++  int (*xPutBlob)(void *pCtx, int addedRows, int column, const void* blob, int len);
++  int (*xPutNull)(void *pCtx, int addedRows, int column);
++  int (*xPutOther)(void *pCtx, int addedRows, int column);
++  /* Additional methods may be added in future releases */
++};
++#endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
++
+ /*
+ ** CAPI3REF: Determine If Virtual Table Column Access Is For UPDATE
+ **
+@@ -15771,6 +15849,9 @@ SQLITE_PRIVATE int sqlite3PagerReadFileheader(Pager*, int, unsigned char*);
+ /* Functions used to configure a Pager object. */
+ SQLITE_PRIVATE void sqlite3PagerSetBusyHandler(Pager*, int(*)(void *), void *);
+ SQLITE_PRIVATE int sqlite3PagerSetPagesize(Pager*, u32*, int);
++#ifdef SQLITE_HAS_CODEC
++SQLITE_PRIVATE void sqlite3PagerAlignReserve(Pager*, Pager*);
++#endif /* SQLITE_HAS_CODEC */
+ SQLITE_PRIVATE Pgno sqlite3PagerMaxPageCount(Pager*, Pgno);
+ SQLITE_PRIVATE void sqlite3PagerSetCachesize(Pager*, int);
+ SQLITE_PRIVATE int sqlite3PagerSetSpillsize(Pager*, int);
+@@ -15867,6 +15948,10 @@ SQLITE_PRIVATE void sqlite3PagerTruncateImage(Pager*,Pgno);
+ 
+ SQLITE_PRIVATE void sqlite3PagerRekey(DbPage*, Pgno, u16);
+ 
++#if defined(SQLITE_HAS_CODEC) && !defined(SQLITE_OMIT_WAL)
++SQLITE_PRIVATE void *sqlite3PagerCodec(DbPage *);
++#endif /* defined(SQLITE_HAS_CODEC) && !defined(SQLITE_OMIT_WAL) */
++
+ /* Functions to support testing and debugging. */
+ #if !defined(NDEBUG) || defined(SQLITE_TEST)
+ SQLITE_PRIVATE   Pgno sqlite3PagerPagenumber(DbPage*);
+@@ -17497,6 +17582,21 @@ SQLITE_PRIVATE void sqlite3CryptFunc(sqlite3_context*,int,sqlite3_value**);
+ */
+ #define SQLITE_MAX_DB (SQLITE_MAX_ATTACHED+2)
+ 
++#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
++typedef void (*sqlite3_xDropTableHandle)(sqlite3*, const char*, const char*);
++#endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
++
++#if defined(SQLITE_HAS_CODEC) && defined(SQLITE_CODEC_ATTACH_CHANGED)
++typedef struct CodecParameter {
++  int kdfIter;
++  int pageSize;
++  u8 cipher;
++  u8 hmacAlgo;
++  u8 kdfAlgo;
++  u8 reserved;
++} CodecParameter;
++#endif /* defined(SQLITE_HAS_CODEC) && defined(SQLITE_CODEC_ATTACH_CHANGED) */
++
+ /*
+ ** Each database connection is an instance of the following structure.
+ */
+@@ -17641,6 +17741,15 @@ struct sqlite3 {
+ #ifdef SQLITE_USER_AUTHENTICATION
+   sqlite3_userauth auth;        /* User authentication information */
+ #endif
++#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
++  unsigned int isDropTable;
++  char *mDropTableName;
++  char *mDropSchemaName;
++  sqlite3_xDropTableHandle xDropTableHandle;        /* User drop table callback */
++#endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
++#if defined(SQLITE_HAS_CODEC) && defined(SQLITE_CODEC_ATTACH_CHANGED)
++  CodecParameter codecParm;
++#endif /* defined(SQLITE_HAS_CODEC) && defined(SQLITE_CODEC_ATTACH_CHANGED) */
+ };
+ 
+ /*
+@@ -20733,7 +20842,14 @@ SQLITE_PRIVATE void sqlite3EndTable(Parse*,Token*,Token*,u32,Select*);
+ SQLITE_PRIVATE void sqlite3AddReturning(Parse*,ExprList*);
+ SQLITE_PRIVATE int sqlite3ParseUri(const char*,const char*,unsigned int*,
+                     sqlite3_vfs**,char**,char **);
+-#define sqlite3CodecQueryParameters(A,B,C) 0
++#ifdef SQLITE_HAS_CODEC
++SQLITE_PRIVATE   int sqlite3CodecQueryParameters(sqlite3*,const char*,const char*);
++#else
++# define sqlite3CodecQueryParameters(A,B,C) 0
++#endif /* SQLITE_HAS_CODEC */
++#if defined(SQLITE_HAS_CODEC) && defined(SQLITE_CODEC_ATTACH_CHANGED)
++SQLITE_PRIVATE void sqlite3CodecResetParameters(CodecParameter *p);
++#endif /* defined(SQLITE_HAS_CODEC) && defined(SQLITE_CODEC_ATTACH_CHANGED) */
+ SQLITE_PRIVATE Btree *sqlite3DbNameToBtree(sqlite3*,const char*);
+ 
+ #ifdef SQLITE_UNTESTABLE
+@@ -22095,6 +22211,9 @@ static const char * const sqlite3azCompileOpt[] = {
+ #ifdef SQLITE_FTS5_NO_WITHOUT_ROWID
+   "FTS5_NO_WITHOUT_ROWID",
+ #endif
++#if SQLITE_HAS_CODEC
++  "HAS_CODEC",
++#endif
+ #if HAVE_ISNAN || SQLITE_HAVE_ISNAN
+   "HAVE_ISNAN",
+ #endif
+@@ -22103,6 +22222,9 @@ static const char * const sqlite3azCompileOpt[] = {
+   "HOMEGROWN_RECURSIVE_MUTEX=" CTIMEOPT_VAL(SQLITE_HOMEGROWN_RECURSIVE_MUTEX),
+ # endif
+ #endif
++#if SQLITE_SHARED_BLOCK_OPTIMIZATION
++ "SHARED_BLOCK_OPTIMIZATION",
++#endif
+ #ifdef SQLITE_IGNORE_AFP_LOCK_ERRORS
+   "IGNORE_AFP_LOCK_ERRORS",
+ #endif
+@@ -22678,9 +22800,16 @@ SQLITE_PRIVATE const unsigned char sqlite3CtypeMap[256] = {
+ ** EVIDENCE-OF: R-43642-56306 By default, URI handling is globally
+ ** disabled. The default value may be changed by compiling with the
+ ** SQLITE_USE_URI symbol defined.
++**
++** URI filenames are enabled by default if SQLITE_HAS_CODEC is
++** enabled.
+ */
+ #ifndef SQLITE_USE_URI
+-# define SQLITE_USE_URI 0
++# ifdef SQLITE_HAS_CODEC
++#  define SQLITE_USE_URI 1
++# else
++#  define SQLITE_USE_URI 0
++# endif /* SQLITE_HAS_CODEC */
+ #endif
+ 
+ /* EVIDENCE-OF: R-38720-18127 The default setting is determined by the
+@@ -23449,6 +23578,13 @@ struct Vdbe {
+   int nScan;              /* Entries in aScan[] */
+   ScanStatus *aScan;      /* Scan definitions for sqlite3_stmt_scanstatus() */
+ #endif
++#ifdef SQLITE_SHARED_BLOCK_OPTIMIZATION
++  Sqlite3SharedBlockMethods *pSharedBlock;
++  int totalRows;
++  int blockFull;
++  int startPos;
++  int addedRows;
++#endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
+ };
+ 
+ /*
+@@ -35960,7 +36096,7 @@ SQLITE_PRIVATE u8 sqlite3HexToInt(int h){
+   return (u8)(h & 0xf);
+ }
+ 
+-#if !defined(SQLITE_OMIT_BLOB_LITERAL)
++#if !defined(SQLITE_OMIT_BLOB_LITERAL) || defined(SQLITE_HAS_CODEC)
+ /*
+ ** Convert a BLOB literal of the form "x'hhhhhh'" into its binary
+ ** value.  Return a pointer to its binary value.  Space to hold the
+@@ -35981,7 +36117,7 @@ SQLITE_PRIVATE void *sqlite3HexToBlob(sqlite3 *db, const char *z, int n){
+   }
+   return zBlob;
+ }
+-#endif /* !SQLITE_OMIT_BLOB_LITERAL */
++#endif /* !defined(SQLITE_OMIT_BLOB_LITERAL) || defined(SQLITE_HAS_CODEC) */
+ 
+ /*
+ ** Log an error that is an API call on a connection pointer that should
+@@ -56898,6 +57034,20 @@ int sqlite3PagerTrace=1;  /* True to enable tracing */
+ */
+ #define UNKNOWN_LOCK                (EXCLUSIVE_LOCK+1)
+ 
++#ifdef SQLITE_HAS_CODEC
++/*
++** A macro used for invoking the codec if there is one
++*/
++# define CODEC1(P,D,N,X,E) \
++    if( P->xCodec && P->xCodec(P->pCodec,D,N,X)==0 ){ E; }
++# define CODEC2(P,D,N,X,E,O) \
++    if( P->xCodec==0 ){ O=(char*)D; }else \
++    if( (O=(char*)(P->xCodec(P->pCodec,D,N,X)))==0 ){ E; }
++#else
++# define CODEC1(P,D,N,X,E)   /* NO-OP */
++# define CODEC2(P,D,N,X,E,O) O=(char*)D
++#endif /* SQLITE_HAS_CODEC */
++
+ /*
+ ** The maximum allowed sector size. 64KiB. If the xSectorsize() method
+ ** returns a value larger than this, then MAX_SECTOR_SIZE is used instead.
+@@ -57186,6 +57336,12 @@ struct Pager {
+ #endif
+   void (*xReiniter)(DbPage*); /* Call this routine when reloading pages */
+   int (*xGet)(Pager*,Pgno,DbPage**,int); /* Routine to fetch a patch */
++#ifdef SQLITE_HAS_CODEC
++  void *(*xCodec)(void*,void*,Pgno,int); /* Routine for en/decoding data */
++  void (*xCodecSizeChng)(void*,int,int); /* Notify of page size changes */
++  void (*xCodecFree)(void*);             /* Destructor for the codec */
++  void *pCodec;               /* First argument to xCodec... methods */
++#endif /* SQLITE_HAS_CODEC */
+   char *pTmpSpace;            /* Pager.pageSize bytes of space for tmp use */
+   PCache *pPCache;            /* Pointer to page cache object */
+ #ifndef SQLITE_OMIT_WAL
+@@ -57307,6 +57463,9 @@ static const unsigned char aJournalMagic[] = {
+ SQLITE_PRIVATE int sqlite3PagerDirectReadOk(Pager *pPager, Pgno pgno){
+   if( pPager->fd->pMethods==0 ) return 0;
+   if( sqlite3PCacheIsDirty(pPager->pPCache) ) return 0;
++#ifdef SQLITE_HAS_CODEC
++  if( pPager->xCodec!=0 ) return 0;
++#endif /* SQLITE_HAS_CODEC */
+ #ifndef SQLITE_OMIT_WAL
+   if( pPager->pWal ){
+     u32 iRead = 0;
+@@ -57540,7 +57699,11 @@ static void setGetterMethod(Pager *pPager){
+   if( pPager->errCode ){
+     pPager->xGet = getPageError;
+ #if SQLITE_MAX_MMAP_SIZE>0
+-  }else if( USEFETCH(pPager) ){
++  }else if( USEFETCH(pPager)
++#ifdef SQLITE_HAS_CODEC
++   && pPager->xCodec==0
++#endif /* SQLITE_HAS_CODEC */
++  ){
+     pPager->xGet = getPageMMap;
+ #endif /* SQLITE_MAX_MMAP_SIZE>0 */
+   }else{
+@@ -58732,6 +58895,32 @@ static u32 pager_cksum(Pager *pPager, const u8 *aData){
+   return cksum;
+ }
+ 
++#ifdef SQLITE_HAS_CODEC
++/*
++** Report the current page size and number of reserved bytes back
++** to the codec.
++*/
++static void pagerReportSize(Pager *pPager){
++  if( pPager->xCodecSizeChng ){
++    pPager->xCodecSizeChng(pPager->pCodec, pPager->pageSize,
++                           (int)pPager->nReserve);
++  }
++}
++/*
++** Make sure the number of reserved bits is the same in the destination
++** pager as it is in the source.  This comes up when a VACUUM changes the
++** number of reserved bits to the "optimal" amount.
++*/
++SQLITE_PRIVATE void sqlite3PagerAlignReserve(Pager *pDest, Pager *pSrc){
++  if( pDest->nReserve!=pSrc->nReserve ){
++    pDest->nReserve = pSrc->nReserve;
++    pagerReportSize(pDest);
++  }
++}
++#else
++# define pagerReportSize(X)     /* No-op if we do not support a codec */
++#endif
++
+ /*
+ ** Read a single page from either the journal file (if isMainJrnl==1) or
+ ** from the sub-journal (if isMainJrnl==0) and playback that page.
+@@ -58783,6 +58972,11 @@ static int pager_playback_one_page(
+   char *aData;                  /* Temporary storage for the page */
+   sqlite3_file *jfd;            /* The file descriptor for the journal file */
+   int isSynced;                 /* True if journal page is synced */
++#ifdef SQLITE_HAS_CODEC
++  /* The jrnlEnc flag is true if Journal pages should be passed through
++  ** the codec.  It is false for pure in-memory journals. */
++  const int jrnlEnc = (isMainJrnl || pPager->subjInMemory==0);
++#endif /* SQLITE_HAS_CODEC */
+ 
+   assert( (isMainJrnl&~1)==0 );      /* isMainJrnl is 0 or 1 */
+   assert( (isSavepnt&~1)==0 );       /* isSavepnt is 0 or 1 */
+@@ -58912,12 +59106,30 @@ static int pager_playback_one_page(
+     ** is if the data was just read from an in-memory sub-journal. In that
+     ** case it must be encrypted here before it is copied into the database
+     ** file.  */
++#ifdef SQLITE_HAS_CODEC
++    if( !jrnlEnc ){
++      CODEC2(pPager, aData, pgno, 7, rc=pPager->errCode, aData);
++      if (rc == SQLITE_OK) {
++        rc = sqlite3OsWrite(pPager->fd, (u8 *)aData, pPager->pageSize, ofst);
++        CODEC1(pPager, aData, pgno, 3, rc=pPager->errCode);
++      }
++    }else
++#endif /* SQLITE_HAS_CODEC */
+     rc = sqlite3OsWrite(pPager->fd, (u8 *)aData, pPager->pageSize, ofst);
+ 
+     if( pgno>pPager->dbFileSize ){
+       pPager->dbFileSize = pgno;
+     }
+     if( pPager->pBackup ){
++#ifdef SQLITE_HAS_CODEC
++      if( jrnlEnc ){
++        CODEC1(pPager, aData, pgno, 3, rc=pPager->errCode);
++        if (rc == SQLITE_OK) {
++          sqlite3BackupUpdate(pPager->pBackup, pgno, (u8*)aData);
++          CODEC2(pPager, aData, pgno, 7, rc=pPager->errCode, aData);
++        }
++      }else
++#endif /* SQLITE_HAS_CODEC */
+       sqlite3BackupUpdate(pPager->pBackup, pgno, (u8*)aData);
+     }
+   }else if( !isMainJrnl && pPg==0 ){
+@@ -58968,6 +59180,10 @@ static int pager_playback_one_page(
+     if( pgno==1 ){
+       memcpy(&pPager->dbFileVers, &((u8*)pData)[24],sizeof(pPager->dbFileVers));
+     }
++#if SQLITE_HAS_CODEC
++    /* Decode the page just read from disk */
++    if( jrnlEnc ){ CODEC1(pPager, pData, pPg->pgno, 3, rc=pPager->errCode); }
++#endif /* SQLITE_HAS_CODEC */
+     sqlite3PcacheRelease(pPg);
+   }
+   return rc;
+@@ -59511,7 +59727,7 @@ static int readDbPage(PgHdr *pPg){
+   assert( isOpen(pPager->fd) );
+ 
+   if( pagerUseWal(pPager) ){
+-    rc = sqlite3WalFindFrame(pPager->pWal, pPg->pgno, &iFrame);
++    rc = sqlite3WalFindFrame(pPager->pWal, pPg->pgno, &iFrame);  // find in wal-index
+     if( rc ) return rc;
+   }
+   if( iFrame ){
+@@ -59546,6 +59762,8 @@ static int readDbPage(PgHdr *pPg){
+       memcpy(&pPager->dbFileVers, dbFileVers, sizeof(pPager->dbFileVers));
+     }
+   }
++  CODEC1(pPager, pPg->pData, pPg->pgno, 3, rc = pPager->errCode);
++
+   PAGER_INCR(sqlite3_pager_readdb_count);
+   PAGER_INCR(pPager->nRead);
+   IOTRACE(("PGIN %p %d\n", pPager, pPg->pgno));
+@@ -60691,6 +60909,10 @@ SQLITE_PRIVATE int sqlite3PagerClose(Pager *pPager, sqlite3 *db){
+   sqlite3OsClose(pPager->fd);
+   sqlite3PageFree(pTmp);
+   sqlite3PcacheClose(pPager->pPCache);
++#ifdef SQLITE_HAS_CODEC
++  if( pPager->xCodecFree ) pPager->xCodecFree(pPager->pCodec);
++#endif /* SQLITE_HAS_CODEC */
++
+   assert( !pPager->aSavepoint && !pPager->pInJournal );
+   assert( !isOpen(pPager->jfd) && !isOpen(pPager->sjfd) );
+ 
+@@ -60941,7 +61163,7 @@ static int pager_write_pagelist(Pager *pPager, PgHdr *pList){
+       assert( (pList->flags&PGHDR_NEED_SYNC)==0 );
+       if( pList->pgno==1 ) pager_write_changecounter(pList);
+ 
+-      pData = pList->pData;
++      CODEC2(pPager, pList->pData, pgno, 6, return pPager->errCode, pData);
+ 
+       /* Write out the page data. */
+       rc = sqlite3OsWrite(pPager->fd, pData, pPager->pageSize, offset);
+@@ -61030,6 +61252,11 @@ static int subjournalPage(PgHdr *pPg){
+       void *pData = pPg->pData;
+       i64 offset = (i64)pPager->nSubRec*(4+pPager->pageSize);
+       char *pData2;
++#if SQLITE_HAS_CODEC
++      if( !pPager->subjInMemory ){
++        CODEC2(pPager, pData, pPg->pgno, 7, return pPager->errCode, pData2);
++      }else
++#endif /* SQLITE_HAS_CODEC */
+       pData2 = pData;
+       PAGERTRACE(("STMT-JOURNAL %d page %d\n", PAGERID(pPager), pPg->pgno));
+       rc = write32bits(pPager->sjfd, offset, pPg->pgno);
+@@ -62122,6 +62349,9 @@ static int getPageMMap(
+   );
+ 
+   assert( USEFETCH(pPager) );
++#ifdef SQLITE_HAS_CODEC
++  assert( pPager->xCodec==0 );
++#endif /* SQLITE_HAS_CODEC */
+ 
+   /* Optimization note:  Adding the "pgno<=1" term before "pgno==0" here
+   ** allows the compiler optimizer to reuse the results of the "pgno>1"
+@@ -62466,7 +62696,7 @@ static SQLITE_NOINLINE int pagerAddPageToRollbackJournal(PgHdr *pPg){
+   assert( pPg->pgno!=PAGER_SJ_PGNO(pPager) );
+ 
+   assert( pPager->journalHdr<=pPager->journalOff );
+-  pData2 = pPg->pData;
++  CODEC2(pPager, pPg->pData, pPg->pgno, 7, return pPager->errCode, pData2);
+   cksum = pager_cksum(pPager, (u8*)pData2);
+ 
+   /* Even if an IO or diskfull error occurs while journalling the
+@@ -62831,7 +63061,7 @@ static int pager_incr_changecounter(Pager *pPager, int isDirectMode){
+       if( DIRECT_MODE ){
+         const void *zBuf;
+         assert( pPager->dbFileSize>0 );
+-        zBuf = pPgHdr->pData;
++        CODEC2(pPager, pPgHdr->pData, 1, 6, rc=pPager->errCode, zBuf);
+         if( rc==SQLITE_OK ){
+           rc = sqlite3OsWrite(pPager->fd, zBuf, pPager->pageSize, 0);
+           pPager->aStat[PAGER_STAT_WRITE]++;
+@@ -63594,6 +63824,48 @@ SQLITE_PRIVATE const char *sqlite3PagerJournalname(Pager *pPager){
+   return pPager->zJournal;
+ }
+ 
++#ifdef SQLITE_HAS_CODEC
++/*
++** Set or retrieve the codec for this pager
++*/
++SQLITE_PRIVATE void sqlite3PagerSetCodec(
++  Pager *pPager,
++  void *(*xCodec)(void*,void*,Pgno,int),
++  void (*xCodecSizeChng)(void*,int,int),
++  void (*xCodecFree)(void*),
++  void *pCodec
++){
++  if( pPager->xCodecFree ){
++    pPager->xCodecFree(pPager->pCodec);
++  }else{
++    pager_reset(pPager);
++  }
++  pPager->xCodec = pPager->memDb ? 0 : xCodec;
++  pPager->xCodecSizeChng = xCodecSizeChng;
++  pPager->xCodecFree = xCodecFree;
++  pPager->pCodec = pCodec;
++  setGetterMethod(pPager);
++  pagerReportSize(pPager);
++}
++SQLITE_PRIVATE void *sqlite3PagerGetCodec(Pager *pPager){
++  return pPager->pCodec;
++}
++
++/*
++** This function is called by the wal module when writing page content
++** into the log file.
++**
++** This function returns a pointer to a buffer containing the encrypted
++** page content. If a malloc fails, this function may return NULL.
++*/
++SQLITE_PRIVATE void *sqlite3PagerCodec(PgHdr *pPg){
++  void *aData = 0;
++  CODEC2(pPg->pPager, pPg->pData, pPg->pgno, 6, return 0, aData);
++  return aData;
++}
++
++#endif /* SQLITE_HAS_CODEC */
++
+ #ifndef SQLITE_OMIT_AUTOVACUUM
+ /*
+ ** Move the page pPg to location pgno in the file.
+@@ -68144,7 +68416,11 @@ static int walWriteOneFrame(
+   int rc;                         /* Result code from subfunctions */
+   void *pData;                    /* Data actually written */
+   u8 aFrame[WAL_FRAME_HDRSIZE];   /* Buffer to assemble frame-header in */
++#ifdef SQLITE_HAS_CODEC
++  if( (pData = sqlite3PagerCodec(pPage))==0 ) return SQLITE_NOMEM_BKPT;
++#else
+   pData = pPage->pData;
++#endif /* SQLITE_HAS_CODEC */
+   walEncodeFrame(p->pWal, pPage->pgno, nTruncate, pData, aFrame);
+   rc = walWriteToLog(p, aFrame, sizeof(aFrame), iOffset);
+   if( rc ) return rc;
+@@ -68329,7 +68605,11 @@ static int walFrames(
+         if( pWal->iReCksum==0 || iWrite<pWal->iReCksum ){
+           pWal->iReCksum = iWrite;
+         }
++#ifdef SQLITE_HAS_CODEC
++        if( (pData = sqlite3PagerCodec(p))==0 ) return SQLITE_NOMEM;
++#else
+         pData = p->pData;
++#endif /* SQLITE_HAS_CODEC */
+         rc = sqlite3OsWrite(pWal->pWalFd, pData, szPage, iOff);
+         if( rc ) return rc;
+         p->flags &= ~PGHDR_WAL_APPEND;
+@@ -81473,6 +81753,13 @@ static int backupOnePage(
+   int nDestPgsz = sqlite3BtreeGetPageSize(p->pDest);
+   const int nCopy = MIN(nSrcPgsz, nDestPgsz);
+   const i64 iEnd = (i64)iSrcPg*(i64)nSrcPgsz;
++#ifdef SQLITE_HAS_CODEC
++  /* Use BtreeGetReserveNoMutex() for the source b-tree, as although it is
++  ** guaranteed that the shared-mutex is held by this thread, handle
++  ** p->pSrc may not actually be the owner.  */
++  int nSrcReserve = sqlite3BtreeGetReserveNoMutex(p->pSrc);
++  int nDestReserve = sqlite3BtreeGetRequestedReserve(p->pDest);
++#endif /* SQLITE_HAS_CODEC */
+   int rc = SQLITE_OK;
+   i64 iOff;
+ 
+@@ -81483,6 +81770,26 @@ static int backupOnePage(
+   assert( zSrcData );
+   assert( nSrcPgsz==nDestPgsz || sqlite3PagerIsMemdb(pDestPager)==0 );
+ 
++#ifdef SQLITE_HAS_CODEC
++  /* Backup is not possible if the page size of the destination is changing
++  ** and a codec is in use.
++  */
++  if( nSrcPgsz!=nDestPgsz && sqlite3PagerGetCodec(pDestPager)!=0 ){
++    rc = SQLITE_READONLY;
++  }
++
++  /* Backup is not possible if the number of bytes of reserve space differ
++  ** between source and destination.  If there is a difference, try to
++  ** fix the destination to agree with the source.  If that is not possible,
++  ** then the backup cannot proceed.
++  */
++  if( nSrcReserve!=nDestReserve ){
++    u32 newPgsz = nSrcPgsz;
++    rc = sqlite3PagerSetPagesize(pDestPager, &newPgsz, nSrcReserve);
++    if( rc==SQLITE_OK && newPgsz!=(u32)nSrcPgsz ) rc = SQLITE_READONLY;
++  }
++#endif /* SQLITE_HAS_CODEC */
++
+   /* This loop runs once for each destination page spanned by the source
+   ** page. For each iteration, variable iOff is set to the byte offset
+   ** of the destination page.
+@@ -81981,6 +82288,10 @@ SQLITE_PRIVATE int sqlite3BtreeCopyFile(Btree *pTo, Btree *pFrom){
+   b.pDest = pTo;
+   b.iNext = 1;
+ 
++#ifdef SQLITE_HAS_CODEC
++  sqlite3PagerAlignReserve(sqlite3BtreePager(pTo), sqlite3BtreePager(pFrom));
++#endif /* SQLITE_HAS_CODEC */
++
+   /* 0x7FFFFFFF is the hard limit for the number of pages in a database
+   ** file. By passing this as the number of pages to copy to
+   ** sqlite3_backup_step(), we can guarantee that the copy finishes
+@@ -90447,6 +90758,15 @@ end_of_step:
+   return (rc&db->errMask);
+ }
+ 
++#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
++SQLITE_API int sqlite3_set_droptable_handle(sqlite3 *db, void (*xFunc)(sqlite3*, const char*, const char*)){
++  sqlite3_mutex_enter(db->mutex);
++  db->xDropTableHandle = xFunc;
++  sqlite3_mutex_leave(db->mutex);
++  return 0;
++}
++#endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
++
+ /*
+ ** This is the top-level implementation of sqlite3_step().  Call
+ ** sqlite3Step() to do most of the work.  If a schema error occurs,
+@@ -90466,6 +90786,13 @@ SQLITE_API int sqlite3_step(sqlite3_stmt *pStmt){
+   while( (rc = sqlite3Step(v))==SQLITE_SCHEMA
+          && cnt++ < SQLITE_MAX_SCHEMA_RETRY ){
+     int savedPc = v->pc;
++#ifdef SQLITE_SHARED_BLOCK_OPTIMIZATION
++    Sqlite3SharedBlockMethods *pSharedBlock = v->pSharedBlock;
++    int totalRows = v->totalRows;
++    int blockFull = v->blockFull;
++    int startPos = v->startPos;
++    int addedRows = v->addedRows;
++#endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
+     rc = sqlite3Reprepare(v);
+     if( rc!=SQLITE_OK ){
+       /* This case occurs after failing to recompile an sql statement.
+@@ -90487,6 +90814,15 @@ SQLITE_API int sqlite3_step(sqlite3_stmt *pStmt){
+       }
+       break;
+     }
++
++#ifdef SQLITE_SHARED_BLOCK_OPTIMIZATION
++    v->pSharedBlock = pSharedBlock;
++    v->totalRows = totalRows;
++    v->blockFull = blockFull;
++    v->startPos = startPos;
++    v->addedRows = addedRows;
++#endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
++
+     sqlite3_reset(pStmt);
+     if( savedPc>=0 ){
+       /* Setting minWriteFileFormat to 254 is a signal to the OP_Init and
+@@ -90497,6 +90833,20 @@ SQLITE_API int sqlite3_step(sqlite3_stmt *pStmt){
+     }
+     assert( v->expired==0 );
+   }
++#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
++  if( rc==SQLITE_DONE && db->xDropTableHandle!=NULL && db->isDropTable==1 ){
++    db->isDropTable = 0;
++    db->xDropTableHandle(db, db->mDropTableName, db->mDropSchemaName);
++  }
++  if( db->mDropTableName!=NULL ){
++    sqlite3_free(db->mDropTableName);
++    db->mDropTableName = NULL;
++  }
++  if( db->mDropSchemaName!=NULL ){
++    sqlite3_free(db->mDropSchemaName);
++    db->mDropSchemaName = NULL;
++  }
++#endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
+   sqlite3_mutex_leave(db->mutex);
+   return rc;
+ }
+@@ -92944,6 +93294,61 @@ static int checkSavepointCount(sqlite3 *db){
+ }
+ #endif
+ 
++#ifdef SQLITE_SHARED_BLOCK_OPTIMIZATION
++static int copySharedBlockRow(
++  Vdbe *p,                    /* The VDBE */
++  Op *pOp,                    /* Current operation */
++  Mem *pMem,
++  void *pCtx
++){
++  int i = 0;
++
++  int rc = p->pSharedBlock->xAddRow(pCtx, p->addedRows);
++  if( rc!=SQLITE_OK ){
++    return rc;
++  }
++
++  for(i=0; i<pOp->p2; i++){
++    switch (sqlite3_value_type(&pMem[i])) {
++      case SQLITE_INTEGER:{
++        rc = p->pSharedBlock->xPutLong(pCtx, p->addedRows, i, (sqlite3_int64)pMem[i].u.i);
++        break;
++      }
++      case SQLITE_FLOAT: {
++        rc = p->pSharedBlock->xPutDouble(pCtx, p->addedRows, i, pMem[i].u.r);
++        break;
++      }
++      case SQLITE_TEXT: {
++        Deephemeralize(&pMem[i]);
++        sqlite3VdbeMemNulTerminate(&pMem[i]);
++        sqlite3VdbeChangeEncoding(&pMem[i],SQLITE_UTF8);
++        rc = p->pSharedBlock->xPutString(pCtx, p->addedRows, i, pMem[i].z, pMem[i].n+1);
++        break;
++      }
++      case SQLITE_BLOB: {
++        rc = p->pSharedBlock->xPutBlob(pCtx, p->addedRows, i, pMem[i].z, pMem[i].n);
++        break;
++      }
++      case SQLITE_NULL: {
++        rc = p->pSharedBlock->xPutNull(pCtx, p->addedRows, i);
++        break;
++      }
++      default:
++        rc = p->pSharedBlock->xPutOther(pCtx, p->addedRows, i);
++        break;
++    }
++    if( rc!=SQLITE_OK ){
++        return rc;
++    }
++  }
++
++  return rc;
++no_mem:
++  rc = SQLITE_NOMEM;
++  return rc;
++}
++#endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
++
+ /*
+ ** Return the register of pOp->p2 after first preparing it to be
+ ** overwritten with an integer value.
+@@ -93542,6 +93947,12 @@ case OP_Halt: {
+   VdbeFrame *pFrame;
+   int pcx;
+ 
++#ifdef SQLITE_SHARED_BLOCK_OPTIMIZATION
++  if( p->pSharedBlock!=NULL ){
++    p->pSharedBlock->xFinish(p->pSharedBlock->pContext, p->addedRows, p->totalRows);
++  }
++#endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
++
+ #ifdef SQLITE_DEBUG
+   if( pOp->p2==OE_Abort ){ sqlite3VdbeAssertAbortable(p); }
+ #endif
+@@ -93991,6 +94402,43 @@ case OP_ResultRow: {
+   assert( pOp->p1>0 || CORRUPT_DB );
+   assert( pOp->p1+pOp->p2<=(p->nMem+1 - p->nCursor)+1 );
+ 
++#ifdef SQLITE_SHARED_BLOCK_OPTIMIZATION
++  if( p->pSharedBlock!=NULL ){
++    void *pCtx = p->pSharedBlock->pContext;
++    p->totalRows++;
++    if( p->totalRows<=p->startPos || p->blockFull ){
++      break;
++    }
++    Mem *pMem = &aMem[pOp->p1];
++    rc = copySharedBlockRow(p, pOp, pMem, pCtx);
++    if( rc==SQLITE_FULL && p->addedRows && (p->startPos + p->addedRows) <= p->pSharedBlock->requiredPos ){
++      p->startPos += p->addedRows;
++      p->addedRows = 0;
++      p->pSharedBlock->xReset(pCtx,p->startPos);
++      p->blockFull = 0;
++      rc = copySharedBlockRow(p, pOp, pMem, pCtx);
++    }
++
++    if( rc==SQLITE_OK ){
++      p->addedRows++;
++    }else if( rc==SQLITE_FULL ){
++      p->blockFull = 1;
++    }else{
++      //SQLITE_NOMEM
++      goto no_mem;
++    }
++
++    if( p->blockFull && p->pSharedBlock->countAllRows==0 ){
++      p->pSharedBlock->xFinish(pCtx, p->addedRows, p->totalRows);
++      rc = SQLITE_DONE;
++      goto vdbe_return;
++    }else if( p->blockFull && p->pSharedBlock->countAllRows==1 ){
++      rc = SQLITE_OK;
++    }
++    break;
++  }
++#endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
++
+   p->cacheCtr = (p->cacheCtr + 2)|1;
+   p->pResultRow = &aMem[pOp->p1];
+ #ifdef SQLITE_DEBUG
+@@ -94793,6 +95241,17 @@ case OP_Compare: {
+ ** This opcode must immediately follow an OP_Compare opcode.
+ */
+ case OP_Jump: {             /* jump */
++#ifdef SQLITE_SHARED_BLOCK_OPTIMIZATION
++  if( pOp->p5&0x80 ){
++    if( p->pSharedBlock!=NULL ){
++      if( p->totalRows < p->startPos || p->blockFull ){
++        p->totalRows++;
++        pOp = &aOp[pOp->p2 - 1];
++      }
++    }
++    break;
++  }
++#endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
+   assert( pOp>aOp && pOp[-1].opcode==OP_Compare );
+   assert( iCompareIsInit );
+   if( iCompare<0 ){
+@@ -99867,6 +100326,20 @@ case OP_IfNotZero: {        /* jump, in1 */
+ ** and jump to P2 if the new value is exactly zero.
+ */
+ case OP_DecrJumpZero: {      /* jump, in1 */
++#ifdef SQLITE_SHARED_BLOCK_OPTIMIZATION
++  if( pOp->p5&0x80 ){
++    if( p->pSharedBlock!=NULL ){
++      if( p->totalRows < p->startPos || p->blockFull ){
++         pIn1 = &aMem[pOp->p1];
++         assert( pIn1->flags&MEM_Int );
++         if( pIn1->u.i>SMALLEST_INT64 ) pIn1->u.i--;
++         VdbeBranchTaken(pIn1->u.i==-1, 2);
++         if( pIn1->u.i==-1 ) goto jump_to_p2;
++      }
++    }
++    break;
++  }
++#endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
+   pIn1 = &aMem[pOp->p1];
+   assert( pIn1->flags&MEM_Int );
+   if( pIn1->u.i>SMALLEST_INT64 ) pIn1->u.i--;
+@@ -119592,6 +120065,40 @@ static void attachFunc(
+   if( rc==SQLITE_OK && pNew->zDbSName==0 ){
+     rc = SQLITE_NOMEM_BKPT;
+   }
++#ifdef SQLITE_HAS_CODEC
++  if( rc==SQLITE_OK ){
++    extern int sqlite3CodecAttach(sqlite3*, int, const void*, int);
++    extern void sqlite3CodecGetKey(sqlite3*, int, void**, int*);
++    int nKey;
++    char *zKey;
++    int t = sqlite3_value_type(argv[2]);
++    switch( t ){
++      case SQLITE_INTEGER:
++      case SQLITE_FLOAT:
++        zErrDyn = sqlite3DbStrDup(db, "Invalid key value");
++        rc = SQLITE_ERROR;
++        break;
++
++      case SQLITE_TEXT:
++      case SQLITE_BLOB:
++        nKey = sqlite3_value_bytes(argv[2]);
++        zKey = (char *)sqlite3_value_blob(argv[2]);
++        rc = sqlite3CodecAttach(db, db->nDb-1, zKey, nKey);
++        break;
++
++      case SQLITE_NULL:
++        /* No key specified.  Use the key from URI filename, or if none,
++        ** use the key from the main database. */
++        if( sqlite3CodecQueryParameters(db, zName, zPath)==0 ){
++          sqlite3CodecGetKey(db, 0, (void**)&zKey, &nKey);
++          if( nKey || sqlite3BtreeGetRequestedReserve(db->aDb[0].pBt)>0 ){
++            rc = sqlite3CodecAttach(db, db->nDb-1, zKey, nKey);
++          }
++        }
++        break;
++    }
++  }
++#endif /* SQLITE_HAS_CODEC */
+   sqlite3_free_filename( zPath );
+ 
+   /* If the file was opened successfully, read the schema for the new database.
+@@ -121163,8 +121670,24 @@ SQLITE_PRIVATE void sqlite3UnlinkAndDeleteTable(sqlite3 *db, int iDb, const char
+   testcase( zTabName[0]==0 );  /* Zero-length table names are allowed */
+   pDb = &db->aDb[iDb];
+   p = sqlite3HashInsert(&pDb->pSchema->tblHash, zTabName, 0);
++#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
++  u8 tableType = p->eTabType;
++#endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
+   sqlite3DeleteTable(db, p);
+   db->mDbFlags |= DBFLAG_SchemaChange;
++#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
++  if( tableType!=TABTYP_VIEW ){
++    db->isDropTable = 1;
++    db->mDropTableName = sqlite3_malloc(strlen(zTabName) + 1);
++    if( db->mDropTableName!=NULL ){
++      memcpy(db->mDropTableName, zTabName, strlen(zTabName) + 1);
++    }
++    db->mDropSchemaName = sqlite3_malloc(strlen(db->aDb[iDb].zDbSName) + 1);
++    if( db->mDropSchemaName!=NULL ){
++      memcpy(db->mDropSchemaName, db->aDb[iDb].zDbSName, strlen(db->aDb[iDb].zDbSName) + 1);
++    }
++  }
++#endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
+ }
+ 
+ /*
+@@ -129771,10 +130294,16 @@ static void groupConcatValue(sqlite3_context *context){
+ */
+ SQLITE_PRIVATE void sqlite3RegisterPerConnectionBuiltinFunctions(sqlite3 *db){
+   int rc = sqlite3_overload_function(db, "MATCH", 2);
++#ifdef SQLITE_HAS_CODEC
++  extern void sqlite3CodecExportData(sqlite3_context *, int, sqlite3_value **);
++#endif /* SQLITE_HAS_CODEC */
+   assert( rc==SQLITE_NOMEM || rc==SQLITE_OK );
+   if( rc==SQLITE_NOMEM ){
+     sqlite3OomFault(db);
+   }
++#ifdef SQLITE_HAS_CODEC
++  sqlite3CreateFunc(db, "export_database", 1, SQLITE_TEXT, 0, sqlite3CodecExportData, 0, 0, 0, 0, 0);
++#endif /* SQLITE_HAS_CODEC */
+ }
+ 
+ /*
+@@ -135492,6 +136021,10 @@ struct sqlite3_api_routines {
+   /* Version 3.44.0 and later */
+   void *(*get_clientdata)(sqlite3*,const char*);
+   int (*set_clientdata)(sqlite3*, const char*, void*, void(*)(void*));
++#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
++  /* handle after drop table done */
++  int (*set_droptable_handle)(sqlite3*,void(*)(sqlite3*,const char*,const char*));
++#endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
+ };
+ 
+ /*
+@@ -135825,6 +136358,10 @@ typedef int (*sqlite3_loadext_entry)(
+ /* Version 3.44.0 and later */
+ #define sqlite3_get_clientdata         sqlite3_api->get_clientdata
+ #define sqlite3_set_clientdata         sqlite3_api->set_clientdata
++#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
++/* handle after drop table done */
++#define sqlite3_set_droptable_handle   sqlite3_api->set_droptable_handle
++#endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
+ #endif /* !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION) */
+ 
+ #if !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION)
+@@ -135848,7 +136385,7 @@ typedef int (*sqlite3_loadext_entry)(
+ /************** Continuing where we left off in loadext.c ********************/
+ /* #include "sqliteInt.h" */
+ 
+-#ifndef SQLITE_OMIT_LOAD_EXTENSION
++#if !defined(SQLITE_OMIT_LOAD_EXTENSION) || defined(SQLITE_EXPORT_SYMBOLS)
+ /*
+ ** Some API routines are omitted when various features are
+ ** excluded from a build of SQLite.  Substitute a NULL pointer
+@@ -135862,7 +136399,9 @@ typedef int (*sqlite3_loadext_entry)(
+ # define sqlite3_column_origin_name     0
+ # define sqlite3_column_origin_name16   0
+ #endif
++#endif /* !defined(SQLITE_OMIT_LOAD_EXTENSION) || defined(SQLITE_EXPORT_SYMBOLS) */
+ 
++#ifndef SQLITE_OMIT_LOAD_EXTENSION
+ #ifdef SQLITE_OMIT_AUTHORIZATION
+ # define sqlite3_set_authorizer         0
+ #endif
+@@ -135943,6 +136482,7 @@ typedef int (*sqlite3_loadext_entry)(
+ #if defined(SQLITE_OMIT_TRACE)
+ # define sqlite3_trace_v2      0
+ #endif
++#endif /* !SQLITE_OMIT_LOAD_EXTENSION */
+ 
+ /*
+ ** The following structure contains pointers to all SQLite API routines.
+@@ -135959,6 +136499,7 @@ typedef int (*sqlite3_loadext_entry)(
+ ** also check to make sure that the pointer to the function is
+ ** not NULL before calling it.
+ */
++#if !defined(SQLITE_OMIT_LOAD_EXTENSION) || defined(SQLITE_EXPORT_SYMBOLS)
+ static const sqlite3_api_routines sqlite3Apis = {
+   sqlite3_aggregate_context,
+ #ifndef SQLITE_OMIT_DEPRECATED
+@@ -136228,7 +136769,11 @@ static const sqlite3_api_routines sqlite3Apis = {
+   sqlite3_bind_blob64,
+   sqlite3_bind_text64,
+   sqlite3_cancel_auto_extension,
++#ifndef SQLITE_OMIT_LOAD_EXTENSION
+   sqlite3_load_extension,
++#else
++  0,
++#endif /* !SQLITE_OMIT_LOAD_EXTENSION */
+   sqlite3_malloc64,
+   sqlite3_msize,
+   sqlite3_realloc64,
+@@ -136346,7 +136891,10 @@ static const sqlite3_api_routines sqlite3Apis = {
+   sqlite3_stmt_explain,
+   /* Version 3.44.0 and later */
+   sqlite3_get_clientdata,
+-  sqlite3_set_clientdata
++  sqlite3_set_clientdata,
++#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
++  sqlite3_set_droptable_handle
++#endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
+ };
+ 
+ /* True if x is the directory separator character
+@@ -136357,6 +136905,9 @@ static const sqlite3_api_routines sqlite3Apis = {
+ # define DirSep(X)  ((X)=='/')
+ #endif
+ 
++#endif /* !defined(SQLITE_OMIT_LOAD_EXTENSION) || defined(SQLITE_EXPORT_SYMBOLS) */
++
++#ifndef SQLITE_OMIT_LOAD_EXTENSION
+ /*
+ ** Attempt to load an SQLite extension library contained in the file
+ ** zFile.  The entry point is zProc.  zProc may be 0 in which case a
+@@ -136836,6 +137387,9 @@ SQLITE_PRIVATE void sqlite3AutoLoadExtensions(sqlite3 *db){
+ #define PragTyp_WAL_CHECKPOINT                43
+ #define PragTyp_LOCK_STATUS                   44
+ #define PragTyp_STATS                         45
++#ifdef SQLITE_HAS_CODEC
++#define PragTyp_KEY                          255
++#endif /* SQLITE_HAS_CODEC */
+ 
+ /* Property flags associated with various pragma. */
+ #define PragFlg_NeedSchema 0x01 /* Force schema load before running */
+@@ -137126,6 +137680,18 @@ static const PragmaName aPragmaName[] = {
+   /* ePragFlg:  */ PragFlg_Result0,
+   /* ColNames:  */ 0, 0,
+   /* iArg:      */ 0 },
++#if defined(SQLITE_HAS_CODEC)
++ {/* zName:     */ "hexkey",
++  /* ePragTyp:  */ PragTyp_KEY,
++  /* ePragFlg:  */ 0,
++  /* ColNames:  */ 0, 0,
++  /* iArg:      */ 2 },
++ {/* zName:     */ "hexrekey",
++  /* ePragTyp:  */ PragTyp_KEY,
++  /* ePragFlg:  */ 0,
++  /* ColNames:  */ 0, 0,
++  /* iArg:      */ 3 },
++#endif
+ #if !defined(SQLITE_OMIT_FLAG_PRAGMAS)
+ #if !defined(SQLITE_OMIT_CHECK)
+  {/* zName:     */ "ignore_check_constraints",
+@@ -137178,6 +137744,13 @@ static const PragmaName aPragmaName[] = {
+   /* ColNames:  */ 0, 0,
+   /* iArg:      */ 0 },
+ #endif
++#if defined(SQLITE_HAS_CODEC)
++ {/* zName:     */ "key",
++  /* ePragTyp:  */ PragTyp_KEY,
++  /* ePragFlg:  */ 0,
++  /* ColNames:  */ 0, 0,
++  /* iArg:      */ 0 },
++#endif
+ #if !defined(SQLITE_OMIT_FLAG_PRAGMAS)
+  {/* zName:     */ "legacy_alter_table",
+   /* ePragTyp:  */ PragTyp_FLAG,
+@@ -137285,6 +137858,15 @@ static const PragmaName aPragmaName[] = {
+   /* ePragFlg:  */ PragFlg_Result0|PragFlg_NoColumns1,
+   /* ColNames:  */ 0, 0,
+   /* iArg:      */ SQLITE_RecTriggers },
++#endif
++#if defined(SQLITE_HAS_CODEC)
++ {/* zName:     */ "rekey",
++  /* ePragTyp:  */ PragTyp_KEY,
++  /* ePragFlg:  */ 0,
++  /* ColNames:  */ 0, 0,
++  /* iArg:      */ 1 },
++#endif
++#if !defined(SQLITE_OMIT_FLAG_PRAGMAS)
+  {/* zName:     */ "reverse_unordered_selects",
+   /* ePragTyp:  */ PragTyp_FLAG,
+   /* ePragFlg:  */ PragFlg_Result0|PragFlg_NoColumns1,
+@@ -137373,6 +137955,18 @@ static const PragmaName aPragmaName[] = {
+   /* ePragFlg:  */ PragFlg_NoColumns1,
+   /* ColNames:  */ 0, 0,
+   /* iArg:      */ 0 },
++#endif
++#if defined(SQLITE_HAS_CODEC)
++ {/* zName:     */ "textkey",
++  /* ePragTyp:  */ PragTyp_KEY,
++  /* ePragFlg:  */ 0,
++  /* ColNames:  */ 0, 0,
++  /* iArg:      */ 4 },
++ {/* zName:     */ "textrekey",
++  /* ePragTyp:  */ PragTyp_KEY,
++  /* ePragFlg:  */ 0,
++  /* ColNames:  */ 0, 0,
++  /* iArg:      */ 5 },
+ #endif
+  {/* zName:     */ "threads",
+   /* ePragTyp:  */ PragTyp_THREADS,
+@@ -137814,6 +138408,10 @@ SQLITE_PRIVATE void sqlite3Pragma(
+   Vdbe *v = sqlite3GetVdbe(pParse);  /* Prepared statement */
+   const PragmaName *pPragma;   /* The pragma */
+ 
++#ifdef SQLITE_HAS_CODEC
++  extern int sqlite3CodecPragma(sqlite3*, int, Parse *, const char *, const char *);
++#endif /* SQLITE_HAS_CODEC */
++
+   if( v==0 ) return;
+   sqlite3VdbeRunOnlyOnce(v);
+   pParse->nMem = 2;
+@@ -137883,6 +138481,14 @@ SQLITE_PRIVATE void sqlite3Pragma(
+     goto pragma_out;
+   }
+ 
++#ifdef SQLITE_HAS_CODEC
++  if(sqlite3CodecPragma(db, iDb, pParse, zLeft, zRight)) {
++    /* sqlite3CodecPragma executes internal */
++    goto pragma_out;
++  }
++#endif
++  /* END CODEC */
++
+   /* Locate the pragma in the lookup table */
+   pPragma = pragmaLocate(zLeft);
+   if( pPragma==0 ){
+@@ -140023,6 +140629,48 @@ SQLITE_PRIVATE void sqlite3Pragma(
+   }
+ #endif
+ 
++#ifdef SQLITE_HAS_CODEC
++  /* Pragma        iArg
++  ** ----------   ------
++  **  key           0
++  **  rekey         1
++  **  hexkey        2
++  **  hexrekey      3
++  **  textkey       4
++  **  textrekey     5
++  */
++  case PragTyp_KEY: {
++    if( zRight ){
++      char zBuf[40];
++      const char *zKey = zRight;
++      int n;
++      if( pPragma->iArg==2 || pPragma->iArg==3 ){
++        u8 iByte;
++        int i;
++        for(i=0, iByte=0; i<(int)(sizeof(zBuf)*2) && sqlite3Isxdigit(zRight[i]); i++){
++          iByte = (iByte<<4) + sqlite3HexToInt(zRight[i]);
++          if( (i&1)!=0 ) zBuf[i/2] = iByte;
++        }
++        zKey = zBuf;
++        n = i/2;
++      }else{
++        n = pPragma->iArg<4 ? sqlite3Strlen30(zRight) : -1;
++      }
++      if( (pPragma->iArg & 1)==0 ){
++        rc = sqlite3_key_v2(db, zDb, zKey, n);
++      }else{
++        rc = sqlite3_rekey_v2(db, zDb, zKey, n);
++      }
++      if( rc==SQLITE_OK && n!=0 ){
++        sqlite3VdbeSetNumCols(v, 1);
++        sqlite3VdbeSetColName(v, 0, COLNAME_NAME, "ok", SQLITE_STATIC);
++        returnSingleText(v, "ok");
++      }
++    }
++    break;
++  }
++#endif /* SQLITE_HAS_CODEC */
++
+ #if defined(SQLITE_ENABLE_CEROD)
+   case PragTyp_ACTIVATE_EXTENSIONS: if( zRight ){
+     if( sqlite3StrNICmp(zRight, "cerod-", 6)==0 ){
+@@ -142579,9 +143227,25 @@ static void selectInnerLoop(
+   assert( p->pEList!=0 );
+   hasDistinct = pDistinct ? pDistinct->eTnctType : WHERE_DISTINCT_NOOP;
+   if( pSort && pSort->pOrderBy==0 ) pSort = 0;
++#ifdef SQLITE_SHARED_BLOCK_OPTIMIZATION
++  if( hasDistinct && (pDistinct->eTnctType==WHERE_DISTINCT_UNIQUE) ){
++    hasDistinct = WHERE_DISTINCT_NOOP;
++    sqlite3VdbeChangeToNoop(v, pDistinct->addrTnct);
++  }
++#endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
+   if( pSort==0 && !hasDistinct ){
+     assert( iContinue!=0 );
+     codeOffset(v, p->iOffset, iContinue);
++#ifdef SQLITE_SHARED_BLOCK_OPTIMIZATION
++    if( eDest==SRT_Output ){
++      if( p->iLimit ){
++        sqlite3VdbeAddOp2(v, OP_DecrJumpZero, p->iLimit, iBreak);
++        sqlite3VdbeChangeP5(v, 128);
++      }
++      sqlite3VdbeAddOp2(v, OP_Jump, 0, iContinue);
++      sqlite3VdbeChangeP5(v, 128);
++    }
++#endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
+   }
+ 
+   /* Pull the requested columns.
+@@ -142710,6 +143374,16 @@ static void selectInnerLoop(
+     fixDistinctOpenEph(pParse, eType, iTab, pDistinct->addrTnct);
+     if( pSort==0 ){
+       codeOffset(v, p->iOffset, iContinue);
++#ifdef SQLITE_SHARED_BLOCK_OPTIMIZATION
++      if( eDest==SRT_Output ){
++        if( p->iLimit ){
++          sqlite3VdbeAddOp2(v, OP_DecrJumpZero, p->iLimit, iBreak);
++          sqlite3VdbeChangeP5(v, 128);
++        }
++        sqlite3VdbeAddOp2(v, OP_Jump, 0, iContinue);
++        sqlite3VdbeChangeP5(v, 128);
++      }
++#endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
+     }
+   }
+ 
+@@ -143173,11 +143847,23 @@ static void generateSortTail(
+     addr = 1 + sqlite3VdbeAddOp2(v, OP_SorterSort, iTab, addrBreak);
+     VdbeCoverage(v);
+     assert( p->iLimit==0 && p->iOffset==0 );
++#ifdef SQLITE_SHARED_BLOCK_OPTIMIZATION
++    if( eDest==SRT_Output ){
++      sqlite3VdbeAddOp2(v, OP_Jump, 0, addrContinue);
++      sqlite3VdbeChangeP5(v, 128);
++    }
++#endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
+     sqlite3VdbeAddOp3(v, OP_SorterData, iTab, regSortOut, iSortTab);
+     bSeq = 0;
+   }else{
+     addr = 1 + sqlite3VdbeAddOp2(v, OP_Sort, iTab, addrBreak); VdbeCoverage(v);
+     codeOffset(v, p->iOffset, addrContinue);
++#ifdef SQLITE_SHARED_BLOCK_OPTIMIZATION
++    if( eDest==SRT_Output ){
++      sqlite3VdbeAddOp2(v, OP_Jump, 0, addrContinue);
++      sqlite3VdbeChangeP5(v, 128);
++    }
++#endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
+     iSortTab = iTab;
+     bSeq = 1;
+     if( p->iOffset>0 ){
+@@ -153658,6 +154344,17 @@ SQLITE_PRIVATE SQLITE_NOINLINE int sqlite3RunVacuum(
+   }
+   nRes = sqlite3BtreeGetRequestedReserve(pMain);
+ 
++#ifdef SQLITE_HAS_CODEC
++  /* A VACUUM cannot change the pagesize of an encrypted database. */
++  if( db->nextPagesize ){
++    extern void sqlite3CodecGetKey(sqlite3*, int, void**, int*);
++    int nKey;
++    char *zKey;
++    sqlite3CodecGetKey(db, iDb, (void**)&zKey, &nKey);
++    if( nKey ) db->nextPagesize = 0;
++  }
++#endif /* SQLITE_HAS_CODEC */
++
+   sqlite3BtreeSetCacheSize(pTemp, db->aDb[iDb].pSchema->cache_size);
+   sqlite3BtreeSetSpillSize(pTemp, sqlite3BtreeSetSpillSize(pMain,0));
+   sqlite3BtreeSetPagerFlags(pTemp, pgflags|PAGER_CACHESPILL);
+@@ -177753,6 +178450,7 @@ SQLITE_PRIVATE int sqlite3RtreeInit(sqlite3 *db);
+ /************** End of rtree.h ***********************************************/
+ /************** Continuing where we left off in main.c ***********************/
+ #endif
++#include "sqlite3tokenizer.h"
+ #if defined(SQLITE_ENABLE_ICU) || defined(SQLITE_ENABLE_ICU_COLLATIONS)
+ /************** Include sqliteicu.h in the middle of main.c ******************/
+ /************** Begin file sqliteicu.h ***************************************/
+@@ -178752,6 +179450,29 @@ SQLITE_API int sqlite3_db_config(sqlite3 *db, int op, ...){
+       rc = setupLookaside(db, pBuf, sz, cnt);
+       break;
+     }
++#ifdef SQLITE_SHARED_BLOCK_OPTIMIZATION
++    case SQLITE_DBCONFIG_SET_SHAREDBLOCK: {
++      Vdbe *pVdbe = (Vdbe *)va_arg(ap, sqlite3_stmt*);
++      Sqlite3SharedBlockMethods *pSharedBlock = va_arg(ap, Sqlite3SharedBlockMethods*);
++      if( pVdbe==NULL ){
++        rc = SQLITE_MISUSE;
++        break;
++      }
++      pVdbe->pSharedBlock = pSharedBlock;
++      if( pSharedBlock!=NULL ){
++        pVdbe->startPos = pSharedBlock->startPos;
++      }
++      pVdbe->totalRows = 0;
++      pVdbe->blockFull = 0;
++      pVdbe->addedRows = 0;
++      rc = SQLITE_OK;
++      break;
++    }
++    case SQLITE_DBCONFIG_USE_SHAREDBLOCK: {
++      rc = SQLITE_OK;
++      break;
++    }
++#endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
+     default: {
+       static const struct {
+         int op;      /* The opcode */
+@@ -181006,7 +181727,41 @@ static const char *uriParameter(const char *zFilename, const char *zParam){
+   return 0;
+ }
+ 
+-
++#ifdef SQLITE_HAS_CODEC
++/*
++** Process URI filename query parameters relevant to the SQLite Encryption
++** Extension.  Return true if any of the relevant query parameters are
++** seen and return false if not.
++*/
++SQLITE_PRIVATE int sqlite3CodecQueryParameters(
++  sqlite3 *db,           /* Database connection */
++  const char *zDb,       /* Which schema is being created/attached */
++  const char *zUri       /* URI filename */
++){
++  const char *zKey;
++  if( zUri==0 ){
++    return 0;
++  }else if( (zKey = uriParameter(zUri, "hexkey"))!=0 && zKey[0] ){
++    u8 iByte;
++    int i;
++    char zDecoded[40];
++    for(i=0, iByte=0; i<(int)(sizeof(zDecoded)*2) && sqlite3Isxdigit(zKey[i]); i++){
++      iByte = (iByte<<4) + sqlite3HexToInt(zKey[i]);
++      if( (i&1)!=0 ) zDecoded[i/2] = iByte;
++    }
++    sqlite3_key_v2(db, zDb, zDecoded, i/2);
++    return 1;
++  }else if( (zKey = uriParameter(zUri, "key"))!=0 ){
++    sqlite3_key_v2(db, zDb, zKey, sqlite3Strlen30(zKey));
++    return 1;
++  }else if( (zKey = uriParameter(zUri, "textkey"))!=0 ){
++    sqlite3_key_v2(db, zDb, zKey, -1);
++    return 1;
++  }else{
++    return 0;
++  }
++}
++#endif /* SQLITE_HAS_CODEC */
+ 
+ /*
+ ** This routine does the work of opening a database on behalf of
+@@ -181354,6 +182109,12 @@ opendb_out:
+   }else if( rc!=SQLITE_OK ){
+     db->eOpenState = SQLITE_STATE_SICK;
+   }
++#ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
++  db->isDropTable = 0;
++  db->mDropTableName = NULL;
++  db->mDropSchemaName = NULL;
++  db->xDropTableHandle = NULL;
++#endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
+   *ppDb = db;
+ #ifdef SQLITE_ENABLE_SQLLOG
+   if( sqlite3GlobalConfig.xSqllog ){
+@@ -181362,6 +182123,14 @@ opendb_out:
+     sqlite3GlobalConfig.xSqllog(pArg, db, zFilename, 0);
+   }
+ #endif
++#ifdef SQLITE_HAS_CODEC
++  if( rc==SQLITE_OK ) {
++#ifdef SQLITE_CODEC_ATTACH_CHANGED
++    sqlite3CodecResetParameters(&db->codecParm);
++#endif /* SQLITE_CODEC_ATTACH_CHANGED */
++    sqlite3CodecQueryParameters(db, 0, zOpen);
++  }
++#endif /* SQLITE_HAS_CODEC */
+   sqlite3_free_filename(zOpen);
+   return rc;
+ }
+@@ -234858,7 +235627,7 @@ static void sqlite3Fts5ParseSetDistance(
+               );
+           return;
+         }
+-        nNear = nNear * 10 + (p->p[i] - '0');
++        if( nNear<214748363 ) nNear = nNear * 10 + (p->p[i] - '0');
+       }
+     }else{
+       nNear = FTS5_DEFAULT_NEARDIST;
+@@ -252924,3 +253693,1659 @@ SQLITE_API int sqlite3_stmt_init(
+ /* Return the source-id for this library */
+ SQLITE_API const char *sqlite3_sourceid(void){ return SQLITE_SOURCE_ID; }
+ /************************** End of sqlite3.c ******************************/
++
++#ifdef SQLITE_HAS_CODEC
++/************** Begin file hw_codec_openssl.h *******************************/
++#ifndef EXPOSE_INTERNAL_FUNC
++#define CODEC_STATIC static
++#else
++#define CODEC_STATIC
++#endif
++
++#define DEFAULT_CIPHER "aes-256-gcm"
++
++typedef struct{
++  unsigned char *buffer;
++  int bufferSize;
++}Buffer;
++/************** End file hw_codec_openssl.h *********************************/
++/************** Begin file hw_codec.h ***************************************/
++#define DEFAULT_PAGE_SIZE 1024
++#define DEFAULT_ITER 10000
++#define FILE_HEADER_SIZE 16
++#define SALT_SIZE FILE_HEADER_SIZE
++#define HMAC_SALT_MASK 0x3a
++#define HMAC_ITER 2
++#define MAX_HMAC_SIZE 64
++#define MAX_INIT_VECTOR_SIZE 16
++#define MIN_BLOCK_SIZE 16
++
++#define CODEC_OPERATION_ENCRYPT 1
++#define CODEC_OPERATION_DECRYPT 0
++
++#define KEY_CONTEXT_HEAD_SIZE (sizeof(CodecConstant) + 3 * sizeof(int))
++
++typedef struct{
++  void *cipher;
++  int keySize;
++  int keyInfoSize;
++  int cipherPageSize;
++  int initVectorSize;
++  int hmacSize;
++  int reserveSize;
++  int hmacAlgo;
++  int kdfAlgo;
++  int rekeyHmacAlgo;
++}CodecConstant;
++
++typedef struct{
++  CodecConstant codecConst;
++  int deriveFlag;
++  int iter;
++  int passwordSize;
++  unsigned char *password;
++  unsigned char *key;
++  unsigned char *hmacKey;
++  unsigned char *keyInfo;
++}KeyContext;
++
++typedef struct{
++  Btree *pBt;
++  int savePassword;
++  unsigned char salt[SALT_SIZE];
++  unsigned char hmacSalt[SALT_SIZE];
++  unsigned char *buffer;
++  KeyContext *readCtx;
++  KeyContext *writeCtx;
++}CodecContext;
++
++/************** End file hw_codec.h *****************************************/
++/************** Begin file hw_codec_openssl.c *******************************/
++#include <openssl/rand.h>
++#include <openssl/evp.h>
++#include <openssl/hmac.h>
++#include <openssl/crypto.h>
++
++unsigned int openssl_init_count = 0;
++unsigned int openssl_external_init_flag = 0;
++sqlite3_mutex *openssl_random_mutex = NULL;
++
++CODEC_STATIC void opensslActive(){
++  sqlite3_mutex_enter(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++
++  if(openssl_init_count == 0){
++    if(EVP_get_cipherbyname(DEFAULT_CIPHER) == NULL){
++      OpenSSL_add_all_algorithms();
++    }else{
++      openssl_external_init_flag = 1;
++    }
++  }
++
++  if(openssl_random_mutex == NULL){
++    openssl_random_mutex = sqlite3_mutex_alloc(SQLITE_MUTEX_FAST);
++  }
++  openssl_init_count++;
++
++  sqlite3_mutex_leave(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++  return;
++}
++
++CODEC_STATIC void opensslDeactive(){
++  sqlite3_mutex_enter(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++
++  openssl_init_count--;
++  if(openssl_init_count == 0){
++    if(openssl_external_init_flag){
++      openssl_external_init_flag = 0;
++    }else{
++      EVP_cleanup();
++    }
++  }
++
++  sqlite3_mutex_leave(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++  return;
++}
++
++CODEC_STATIC int opensslGetRandom(Buffer *buffer){
++  sqlite3_mutex_enter(openssl_random_mutex);
++  int rc = RAND_bytes(buffer->buffer, buffer->bufferSize);
++  sqlite3_mutex_leave(openssl_random_mutex);
++  if(rc != 1){
++    return SQLITE_ERROR;
++  }
++  return SQLITE_OK;
++}
++
++CODEC_STATIC void *opensslGetCipher(const char *cipherName){
++  return (void *)EVP_get_cipherbyname(cipherName);
++}
++
++CODEC_STATIC int opensslFreeCipher(void *cipher){
++  return SQLITE_OK;
++}
++
++CODEC_STATIC const char *opensslGetCipherName(void *cipher){
++  return EVP_CIPHER_name((EVP_CIPHER *)cipher);
++}
++
++CODEC_STATIC int opensslGetKeySize(void *cipher){
++  return EVP_CIPHER_key_length((EVP_CIPHER *)cipher);
++}
++
++CODEC_STATIC int opensslGetInitVectorSize(void *cipher){
++  return EVP_CIPHER_iv_length((EVP_CIPHER *)cipher);
++}
++
++#define CIPHER_HMAC_ALGORITHM_SHA1 1
++#define CIPHER_HMAC_ALGORITHM_SHA256 2
++#define CIPHER_HMAC_ALGORITHM_SHA512 3
++
++#define DEFAULT_HMAC_ALGORITHM CIPHER_HMAC_ALGORITHM_SHA1
++
++#define CIPHER_HMAC_ALGORITHM_NAME_SHA1 "SHA1"
++#define CIPHER_HMAC_ALGORITHM_NAME_SHA256 "SHA256"
++#define CIPHER_HMAC_ALGORITHM_NAME_SHA512 "SHA512"
++
++#define CIPHER_KDF_ALGORITHM_SHA1 1
++#define CIPHER_KDF_ALGORITHM_SHA256 2
++#define CIPHER_KDF_ALGORITHM_SHA512 3
++
++#define DEFAULT_KDF_ALGORITHM CIPHER_KDF_ALGORITHM_SHA1
++
++#define CIPHER_KDF_ALGORITHM_NAME_SHA1 "KDF_SHA1"
++#define CIPHER_KDF_ALGORITHM_NAME_SHA256 "KDF_SHA256"
++#define CIPHER_KDF_ALGORITHM_NAME_SHA512 "KDF_SHA512"
++
++
++CODEC_STATIC int opensslGetHmacSize(KeyContext *keyCtx){
++  if( keyCtx==NULL ){
++    return 0;
++  }
++  if( keyCtx->codecConst.hmacAlgo==CIPHER_HMAC_ALGORITHM_SHA1 ){
++    return EVP_MD_size(EVP_sha1());
++  }else if( keyCtx->codecConst.hmacAlgo==CIPHER_HMAC_ALGORITHM_SHA256 ){
++    return EVP_MD_size(EVP_sha256());
++  }else if( keyCtx->codecConst.hmacAlgo==CIPHER_HMAC_ALGORITHM_SHA512 ){
++    return EVP_MD_size(EVP_sha512());
++  }
++  return 0;
++}
++
++CODEC_STATIC int opensslGetBlockSize(void *cipher){
++  return EVP_CIPHER_block_size((EVP_CIPHER *)cipher);
++}
++
++CODEC_STATIC void *opensslGetCtx(void *cipher, int mode, unsigned char *key, unsigned char *initVector){
++  EVP_CIPHER_CTX *tmpCtx = EVP_CIPHER_CTX_new();
++  if(tmpCtx == NULL){
++    return (void *)tmpCtx;
++  }
++  EVP_CipherInit_ex(tmpCtx, (EVP_CIPHER *)cipher, NULL, NULL, NULL, mode);
++  EVP_CIPHER_CTX_set_padding(tmpCtx, 0);
++  EVP_CipherInit_ex(tmpCtx, NULL, NULL, key, initVector, mode);
++  return (void *)tmpCtx;
++}
++
++CODEC_STATIC int opensslCipher(void *iCtx, Buffer *input, unsigned char *output){
++  int outputLength = 0;
++  int cipherLength;
++  EVP_CIPHER_CTX *ctx = (EVP_CIPHER_CTX *)iCtx;
++  EVP_CipherUpdate(ctx, output, &cipherLength, input->buffer, input->bufferSize);
++  outputLength += cipherLength;
++  output += cipherLength;
++  EVP_CipherFinal_ex(ctx, output, &cipherLength);
++  outputLength += cipherLength;
++  if(outputLength != input->bufferSize){
++    return SQLITE_ERROR;
++  }
++  return SQLITE_OK;
++}
++
++CODEC_STATIC void opensslFreeCtx(void *ctx){
++  EVP_CIPHER_CTX_free((EVP_CIPHER_CTX *)ctx);
++}
++
++CODEC_STATIC int opensslHmac(Buffer *key, Buffer *input1, Buffer *input2, Buffer *output, int hmacAlgo){
++  HMAC_CTX *ctx = HMAC_CTX_new();
++  if(ctx == NULL){
++    return SQLITE_ERROR;
++  }
++  if( hmacAlgo==CIPHER_HMAC_ALGORITHM_SHA1 ){
++    HMAC_Init_ex(ctx, key->buffer, key->bufferSize, EVP_sha1(), NULL);
++  }else if( hmacAlgo==CIPHER_HMAC_ALGORITHM_SHA256 ){
++    HMAC_Init_ex(ctx, key->buffer, key->bufferSize, EVP_sha256(), NULL);
++  }else if( hmacAlgo==CIPHER_HMAC_ALGORITHM_SHA512 ){
++    HMAC_Init_ex(ctx, key->buffer, key->bufferSize, EVP_sha512(), NULL);
++  }
++  HMAC_Update(ctx, input1->buffer, input1->bufferSize);
++  HMAC_Update(ctx, input2->buffer, input2->bufferSize);
++  HMAC_Final(ctx, output->buffer, (unsigned int *)(&output->bufferSize));
++
++  HMAC_CTX_free(ctx);
++  return SQLITE_OK;
++}
++
++CODEC_STATIC void opensslKdf(Buffer *password, Buffer *salt, int workfactor, Buffer *key, int kdfAlgo){
++  if( kdfAlgo==CIPHER_KDF_ALGORITHM_SHA1 ){
++    PKCS5_PBKDF2_HMAC((const char *)(password->buffer), password->bufferSize, salt->buffer, salt->bufferSize,
++      workfactor, EVP_sha1(), key->bufferSize, key->buffer);
++  }else if( kdfAlgo==CIPHER_KDF_ALGORITHM_SHA256 ){
++    PKCS5_PBKDF2_HMAC((const char *)(password->buffer), password->bufferSize, salt->buffer, salt->bufferSize,
++      workfactor, EVP_sha256(), key->bufferSize, key->buffer);
++  }else if( kdfAlgo==CIPHER_KDF_ALGORITHM_SHA512 ){
++    PKCS5_PBKDF2_HMAC((const char *)(password->buffer), password->bufferSize, salt->buffer, salt->bufferSize,
++      workfactor, EVP_sha512(), key->bufferSize, key->buffer);
++  }
++}
++
++/************** End file hw_codec_openssl.c *********************************/
++/************** Begin file hw_codec.c ***************************************/
++
++#include "securec.h"
++
++typedef enum{
++  OPERATE_CONTEXT_READ = 0,
++  OPERATE_CONTEXT_WRITE,
++  OPERATE_CONTEXT_BOTH
++}OperateContext;
++
++CODEC_STATIC int sqlite3CodecIsHex(const unsigned char *buffer, int bufferSize){
++  int i;
++  for(i = 0; i < bufferSize; i++){
++    if((buffer[i] < '0' || buffer[i] > '9') &&
++      (buffer[i] < 'a' || buffer[i] > 'f') &&
++      (buffer[i] < 'A' || buffer[i] > 'F')){
++      return 0;
++    }
++  }
++  return 1;
++}
++
++CODEC_STATIC int sqlite3CodecHex2int(char input){
++  if(input >= '0' && input <= '9'){
++    return (int)(input - '0');
++  }else if(input >= 'a' && input <= 'f'){
++    return (int)(input - 'a') + 10;
++  }else if(input >= 'A' && input <= 'F'){
++    return (int)(input - 'A') + 10;
++  }else{
++    return 0;
++  }
++}
++
++CODEC_STATIC void sqlite3CodecHex2Bin(unsigned char *inputBuffer, int inputBuffersize, unsigned char *outputBuffer){
++  int i;
++  for(i = 0; i < inputBuffersize - 1; i += 2){
++    outputBuffer[i / 2] = sqlite3CodecHex2int(inputBuffer[i]) << 4 | sqlite3CodecHex2int(inputBuffer[i + 1]);
++  }
++  return;
++}
++
++CODEC_STATIC void sqlite3CodecBin2Hex(unsigned char *inputBuffer, int inputBuffersize, unsigned char *outputBuffer){
++  char *buffer = NULL;
++  int i;
++  for(i = 0; i < inputBuffersize; i++){
++    buffer = (char *)(outputBuffer + i * 2);
++    sqlite3_snprintf(3, buffer, "%02x ", inputBuffer[i]);
++  }
++  return;
++}
++
++CODEC_STATIC int sqlite3CodecIfMemset(unsigned char *input, unsigned char val, int len){
++  int i;
++  for(i = 0; i < len; i++){
++    if(input[i] != val){
++      return 0;
++    }
++  }
++  return 1;
++}
++
++CODEC_STATIC int sqlite3CodecIsKeyInfoFormat(const unsigned char *input, int inputSize){
++  return (input[0] == 'x') && (input[1] == '\'') && (input[inputSize - 1] == '\'') && (sqlite3CodecIsHex(input + 2, inputSize - 3)) ? 1 : 0;
++}
++
++CODEC_STATIC void sqlite3CodecSetError(CodecContext *ctx, int error){
++  if(ctx->pBt){
++    ctx->pBt->pBt->pPager->errCode = error;
++    ctx->pBt->pBt->db->errCode = error;
++  }
++  return;
++}
++
++CODEC_STATIC void sqlite3CodecClearDeriveKey(KeyContext *keyCtx){
++  if(keyCtx->key != NULL){
++    (void)memset_s(keyCtx->key, keyCtx->codecConst.keySize, 0, keyCtx->codecConst.keySize);
++    sqlite3_free(keyCtx->key);
++    keyCtx->key = NULL;
++  }
++  if(keyCtx->hmacKey != NULL){
++    (void)memset_s(keyCtx->hmacKey, keyCtx->codecConst.keySize, 0, keyCtx->codecConst.keySize);
++    sqlite3_free(keyCtx->hmacKey);
++    keyCtx->hmacKey = NULL;
++  }
++  if(keyCtx->keyInfo != NULL){
++    (void)memset_s(keyCtx->keyInfo, keyCtx->codecConst.keyInfoSize, 0, keyCtx->codecConst.keyInfoSize);
++    sqlite3_free(keyCtx->keyInfo);
++    keyCtx->keyInfo = NULL;
++  }
++  keyCtx->deriveFlag = 0;
++}
++
++CODEC_STATIC void sqlite3CodecClearPassword(KeyContext *keyCtx){
++  if(keyCtx->password != NULL){
++    (void)memset_s(keyCtx->password, keyCtx->passwordSize, 0, keyCtx->passwordSize);
++    sqlite3_free(keyCtx->password);
++    keyCtx->password = NULL;
++  }
++  keyCtx->passwordSize = 0;
++}
++
++CODEC_STATIC void sqlite3CodecInitDeriveKeyMemory(KeyContext *keyCtx){
++  keyCtx->key = (unsigned char *)sqlite3Malloc(keyCtx->codecConst.keySize);
++  keyCtx->hmacKey = (unsigned char *)sqlite3Malloc(keyCtx->codecConst.keySize);
++  keyCtx->keyInfo = (unsigned char *)sqlite3Malloc(keyCtx->codecConst.keyInfoSize);
++  return;
++}
++
++CODEC_STATIC int sqlite3CodecKeyCtxCmp(KeyContext *first, KeyContext *second){
++  if(memcmp((unsigned char *)first, (unsigned char *)second, sizeof(CodecConstant))){
++    return 0;
++  }
++  if(first->iter != second->iter){
++    return 0;
++  }
++  if(first->passwordSize != second->passwordSize){
++    return 0;
++  }
++  if((first->password != second->password) && memcmp(first->password, second->password, first->passwordSize)){
++    return 0;
++  }
++  return 1;
++}
++
++// This function will free all resources of key context, except it self.
++CODEC_STATIC void sqlite3CodecFreeKeyContext(KeyContext *keyCtx){
++  sqlite3CodecClearDeriveKey(keyCtx);
++  sqlite3CodecClearPassword(keyCtx);
++  (void)opensslFreeCipher(keyCtx->codecConst.cipher);
++  (void)memset_s(keyCtx, sizeof(KeyContext), 0, KEY_CONTEXT_HEAD_SIZE);
++}
++
++// You should clear key derive result of output before you call this function
++CODEC_STATIC int sqlite3CodecCopyDeriveKey(KeyContext *input, KeyContext *output){
++  errno_t rc = EOK;
++  if(input->key != NULL && input->codecConst.keySize > 0){
++    output->key = (unsigned char *)sqlite3Malloc(output->codecConst.keySize);
++    if(output->key == NULL){
++      sqlite3CodecFreeKeyContext(output);
++      return SQLITE_NOMEM;
++    }
++    rc = memcpy_s(output->key, output->codecConst.keySize, input->key, input->codecConst.keySize);
++    if(rc != EOK){
++      sqlite3CodecFreeKeyContext(output);
++      return SQLITE_ERROR;
++    }
++  }
++  if(input->hmacKey != NULL && input->codecConst.keySize > 0){
++    output->hmacKey = (unsigned char *)sqlite3Malloc(output->codecConst.keySize);
++    if(output->hmacKey == NULL){
++      sqlite3CodecFreeKeyContext(output);
++      return SQLITE_NOMEM;
++    }
++    rc = memcpy_s(output->hmacKey, output->codecConst.keySize, input->hmacKey, input->codecConst.keySize);
++    if(rc != EOK){
++      sqlite3CodecFreeKeyContext(output);
++      return SQLITE_ERROR;
++    }
++  }
++  if(input->keyInfo != NULL && input->codecConst.keyInfoSize > 0){
++    output->keyInfo = (unsigned char *)sqlite3Malloc(output->codecConst.keyInfoSize);
++    if(output->keyInfo == NULL){
++      sqlite3CodecFreeKeyContext(output);
++      return SQLITE_NOMEM;
++    }
++    rc = memcpy_s(output->keyInfo, output->codecConst.keyInfoSize, input->keyInfo, input->codecConst.keyInfoSize);
++    if(rc != EOK){
++      sqlite3CodecFreeKeyContext(output);
++      return SQLITE_ERROR;
++    }
++  }
++  return SQLITE_OK;
++}
++
++// You should set all key infos including salt before you call this function
++CODEC_STATIC int sqlite3CodecDeriveKey(CodecContext *ctx, OperateContext whichKey){
++  KeyContext *keyCtx = NULL;
++  KeyContext *secondKeyCtx = NULL;
++  switch(whichKey){
++    case OPERATE_CONTEXT_READ:
++      keyCtx = ctx->readCtx;
++      secondKeyCtx = ctx->writeCtx;
++      break;
++    case OPERATE_CONTEXT_WRITE:
++      keyCtx = ctx->writeCtx;
++      secondKeyCtx = ctx->readCtx;
++      break;
++    default:
++      return SQLITE_ERROR;
++  }
++  if(keyCtx->password == NULL || keyCtx->passwordSize <= 0){
++    return SQLITE_ERROR;
++  }
++  if(keyCtx->deriveFlag){
++    return SQLITE_OK;
++  }
++  errno_t memcpyRc = EOK;
++  unsigned char salt[SALT_SIZE];
++  if (ctx->pBt != NULL && sqlite3OsRead(ctx->pBt->pBt->pPager->fd, salt, SALT_SIZE, 0) == SQLITE_OK) {
++    assert(SALT_SIZE == FILE_HEADER_SIZE);
++    if (memcmp(SQLITE_FILE_HEADER, salt, SALT_SIZE) != 0 && memcmp(ctx->salt, salt, SALT_SIZE) != 0) {
++      memcpyRc = memcpy_s(ctx->salt, FILE_HEADER_SIZE, salt, SALT_SIZE);
++      if(memcpyRc != EOK){
++        return SQLITE_ERROR;
++      }
++    }
++  }
++  sqlite3CodecInitDeriveKeyMemory(keyCtx);
++  if(keyCtx->key == NULL || keyCtx->hmacKey == NULL || keyCtx->keyInfo == NULL){
++    sqlite3CodecClearDeriveKey(keyCtx);
++    return SQLITE_NOMEM;
++  }
++  if((keyCtx->passwordSize == keyCtx->codecConst.keyInfoSize) &&
++    (sqlite3CodecIsKeyInfoFormat(keyCtx->password, keyCtx->passwordSize))){
++    sqlite3CodecHex2Bin(keyCtx->password + 2, keyCtx->codecConst.keySize * 2, keyCtx->key);
++    sqlite3CodecHex2Bin(keyCtx->password + 2 + keyCtx->codecConst.keySize * 2, SALT_SIZE * 2, ctx->salt);
++    memcpyRc = memcpy_s(keyCtx->keyInfo, keyCtx->codecConst.keyInfoSize, keyCtx->password, keyCtx->passwordSize);
++    if(memcpyRc != EOK){
++      return SQLITE_ERROR;
++    }
++  }else if((keyCtx->passwordSize == keyCtx->codecConst.keyInfoSize - SALT_SIZE * 2) &&
++    (sqlite3CodecIsKeyInfoFormat(keyCtx->password, keyCtx->passwordSize))){
++    sqlite3CodecHex2Bin(keyCtx->password + 2, keyCtx->codecConst.keySize * 2, keyCtx->key);
++    memcpyRc = memcpy_s(keyCtx->keyInfo, keyCtx->codecConst.keyInfoSize, keyCtx->password, keyCtx->passwordSize);
++    if(memcpyRc != EOK){
++      return SQLITE_ERROR;
++    }
++    sqlite3CodecBin2Hex(ctx->salt, SALT_SIZE, keyCtx->keyInfo + 2 + keyCtx->codecConst.keySize * 2);
++    keyCtx->keyInfo[keyCtx->codecConst.keyInfoSize - 1] = '\'';
++  }else{
++    Buffer password;
++    Buffer salt;
++    Buffer key;
++    password.buffer = keyCtx->password;
++    password.bufferSize = keyCtx->passwordSize;
++    salt.buffer = ctx->salt;
++    salt.bufferSize = SALT_SIZE;
++    key.buffer = keyCtx->key;
++    key.bufferSize = keyCtx->codecConst.keySize;
++    opensslKdf(&password, &salt, keyCtx->iter, &key, keyCtx->codecConst.kdfAlgo);
++    keyCtx->keyInfo[0] = 'x';
++    keyCtx->keyInfo[1] = '\'';
++    sqlite3CodecBin2Hex(keyCtx->key, keyCtx->codecConst.keySize, keyCtx->keyInfo + 2);
++    sqlite3CodecBin2Hex(ctx->salt, SALT_SIZE, keyCtx->keyInfo + 2 + keyCtx->codecConst.keySize * 2);
++    keyCtx->keyInfo[keyCtx->codecConst.keyInfoSize - 1] = '\'';
++  }
++  int i;
++  for(i = 0; i < SALT_SIZE; i++){
++    ctx->hmacSalt[i] = ctx->salt[i] ^ HMAC_SALT_MASK;
++  }
++  Buffer hmacPassword;
++  Buffer hmacSalt;
++  Buffer hmacKey;
++  hmacPassword.buffer = keyCtx->key;
++  hmacPassword.bufferSize = keyCtx->codecConst.keySize;
++  hmacSalt.buffer = ctx->hmacSalt;
++  hmacSalt.bufferSize = SALT_SIZE;
++  hmacKey.buffer = keyCtx->hmacKey;
++  hmacKey.bufferSize = keyCtx->codecConst.keySize;
++  opensslKdf(&hmacPassword, &hmacSalt, HMAC_ITER, &hmacKey, keyCtx->codecConst.kdfAlgo);
++  keyCtx->deriveFlag = 1;
++  if(sqlite3CodecKeyCtxCmp(keyCtx, secondKeyCtx)){
++    sqlite3CodecClearDeriveKey(secondKeyCtx);
++    int rc = sqlite3CodecCopyDeriveKey(keyCtx, secondKeyCtx);
++    if(rc == SQLITE_OK){
++      secondKeyCtx->deriveFlag = 1;
++      // clear password
++      if(!(ctx->savePassword)){
++        sqlite3CodecClearPassword(secondKeyCtx);
++      }
++    }
++  }
++  // clear password
++  if(!(ctx->savePassword)){
++    sqlite3CodecClearPassword(keyCtx);
++  }
++  return SQLITE_OK;
++}
++
++// This function may clear key derive infos
++CODEC_STATIC int sqlite3CodecSetCodecConstant(KeyContext *keyCtx, const char *cipherName){
++  if(keyCtx->codecConst.cipher){
++    if(sqlite3StrICmp(cipherName, opensslGetCipherName(keyCtx->codecConst.cipher)) == 0){
++      return SQLITE_OK;
++    }
++  }
++  sqlite3CodecClearDeriveKey(keyCtx);
++  void *cipher = opensslGetCipher(cipherName);
++  if(cipher != NULL){
++    keyCtx->codecConst.cipher = cipher;
++  } else {
++    return SQLITE_ERROR;
++  }
++  keyCtx->codecConst.keySize = opensslGetKeySize(keyCtx->codecConst.cipher);
++  keyCtx->codecConst.keyInfoSize = (keyCtx->codecConst.keySize + SALT_SIZE) * 2 + 3;
++  keyCtx->codecConst.initVectorSize = opensslGetInitVectorSize(keyCtx->codecConst.cipher);
++  return SQLITE_OK;
++}
++
++// You should clear key derive infos before you call this function
++CODEC_STATIC int sqlite3CodecSetIter(KeyContext *keyCtx, int iter){
++  keyCtx->iter = iter;
++  return SQLITE_OK;
++}
++
++#ifdef SQLITE_CODEC_ATTACH_CHANGED
++#define CIPHER_ID_AES_256_CBC 0
++#define CIPHER_ID_AES_256_GCM 1
++
++#define CIPHER_TOTAL_NUM 2
++
++#define CIPHER_NAME_AES_256_CBC "aes-256-cbc"
++#define CIPHER_NAME_AES_256_GCM "aes-256-gcm"
++
++struct CodecCipherNameId {
++  int cipherId;
++  const char *cipherName;
++};
++
++static const struct CodecCipherNameId g_cipherNameIdMap[CIPHER_TOTAL_NUM] = {
++  { CIPHER_ID_AES_256_CBC, CIPHER_NAME_AES_256_CBC },
++  { CIPHER_ID_AES_256_GCM, CIPHER_NAME_AES_256_GCM }
++};
++
++SQLITE_PRIVATE void sqlite3CodecResetParameters(CodecParameter *p)
++{
++  p->kdfIter = DEFAULT_ITER;
++  p->pageSize = DEFAULT_PAGE_SIZE;
++  p->cipher = CIPHER_ID_AES_256_GCM;
++  p->hmacAlgo = DEFAULT_HMAC_ALGORITHM;
++  p->kdfAlgo = DEFAULT_KDF_ALGORITHM;
++}
++
++CODEC_STATIC void sqlite3CodecSetDefaultAttachCipher(CodecParameter *parm, const char *cipherName){
++  int i;
++  for( i=0; i<CIPHER_TOTAL_NUM; i++ ){
++    if( sqlite3StrICmp(cipherName, g_cipherNameIdMap[i].cipherName)==0 ){
++      sqlite3_mutex_enter(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++      parm->cipher = g_cipherNameIdMap[i].cipherId;
++      sqlite3_mutex_leave(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++      return;
++    }
++  }
++  sqlite3_log(SQLITE_WARNING, "invalid attach cipher algorithm");
++}
++
++CODEC_STATIC const char *sqlite3CodecGetDefaultAttachCipher(CodecParameter *parm){
++  const char *attachedCipher = CIPHER_NAME_AES_256_GCM;
++  sqlite3_mutex_enter(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++  if( (parm->cipher>=0) && (parm->cipher<CIPHER_TOTAL_NUM) ){
++    attachedCipher = g_cipherNameIdMap[parm->cipher].cipherName;
++  }
++  sqlite3_mutex_leave(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++  return attachedCipher;
++}
++
++CODEC_STATIC void sqlite3CodecSetDefaultAttachKdfIter(CodecParameter *parm, int iter){
++  if( iter<=0 ){
++    return;
++  }
++  sqlite3_mutex_enter(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++  parm->kdfIter = iter;
++  sqlite3_mutex_leave(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++}
++
++CODEC_STATIC int sqlite3CodecGetDefaultAttachKdfIter(CodecParameter *parm){
++  sqlite3_mutex_enter(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++  int iterNum = parm->kdfIter;
++  sqlite3_mutex_leave(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++  return iterNum;
++}
++
++CODEC_STATIC void sqlite3CodecSetDefaultAttachHmacAlgo(CodecParameter *parm, int hmacAlgo){
++  sqlite3_mutex_enter(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++  parm->hmacAlgo = hmacAlgo;
++  sqlite3_mutex_leave(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++}
++
++CODEC_STATIC int sqlite3CodecGetDefaultAttachHmacAlgo(CodecParameter *parm){
++  sqlite3_mutex_enter(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++  int hmacAlgo = parm->hmacAlgo;
++  sqlite3_mutex_leave(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++  return hmacAlgo;
++}
++
++CODEC_STATIC void sqlite3CodecSetDefaultAttachKdfAlgo(CodecParameter *parm, int kdfAlgo){
++  sqlite3_mutex_enter(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++  parm->kdfAlgo = kdfAlgo;
++  sqlite3_mutex_leave(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++}
++
++CODEC_STATIC int sqlite3CodecGetDefaultAttachKdfAlgo(CodecParameter *parm){
++  sqlite3_mutex_enter(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++  int kdfAlgo = parm->kdfAlgo;
++  sqlite3_mutex_leave(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++  return kdfAlgo;
++}
++
++CODEC_STATIC void sqlite3CodecSetDefaultAttachPageSize(CodecParameter *parm, int pageSize){
++  sqlite3_mutex_enter(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++  parm->pageSize = pageSize;
++  sqlite3_mutex_leave(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++}
++
++CODEC_STATIC int sqlite3CodecGetDefaultAttachPageSize(CodecParameter *parm){
++  sqlite3_mutex_enter(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++  int pageSize = parm->pageSize;
++  sqlite3_mutex_leave(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++  return pageSize;
++}
++
++#endif /* SQLITE_CODEC_ATTACH_CHANGED */
++
++// You should clear key derive infos and password infos before you call this function
++CODEC_STATIC int sqlite3CodecSetPassword(KeyContext *keyCtx, const void *zKey, int nKey){
++  keyCtx->passwordSize = nKey;
++  keyCtx->password = (unsigned char *)sqlite3Malloc(keyCtx->passwordSize);
++  if(keyCtx->password == NULL){
++    return SQLITE_NOMEM;
++  }
++  errno_t rc = memcpy_s(keyCtx->password, keyCtx->passwordSize, zKey, nKey);
++  if(rc != EOK){
++    sqlite3CodecClearPassword(keyCtx);
++    return SQLITE_ERROR;
++  }
++  return SQLITE_OK;
++}
++
++// You should clear key derive infos and password infos before you call this function
++CODEC_STATIC int sqlite3CodecSetHmacAlgorithm(KeyContext *keyCtx, int hmacAlgo){
++  keyCtx->codecConst.hmacAlgo = hmacAlgo;
++  keyCtx->codecConst.hmacSize = opensslGetHmacSize(keyCtx);
++  int cipherBlockSize = opensslGetBlockSize(keyCtx->codecConst.cipher);
++  int blockSize = cipherBlockSize;
++  while(blockSize < MIN_BLOCK_SIZE){
++    blockSize += cipherBlockSize;
++  }
++  int reserveSize = MAX_INIT_VECTOR_SIZE + keyCtx->codecConst.hmacSize;
++  if(reserveSize % blockSize == 0){
++    keyCtx->codecConst.reserveSize = reserveSize;
++  }else{
++    keyCtx->codecConst.reserveSize = (reserveSize / blockSize + 1) * blockSize;
++  }
++  return SQLITE_OK;
++}
++
++CODEC_STATIC int sqlite3CodecSetKdfAlgorithm(KeyContext *keyCtx, int kdfAlgo){
++  keyCtx->codecConst.kdfAlgo = kdfAlgo;
++  return SQLITE_OK;
++}
++
++CODEC_STATIC int sqlite3CodecSetCipherPageSize(CodecContext *ctx, int size){
++  if(!((size != 0) && ((size & (size - 1)) == 0)) || size < 512 || size > 65536) {
++    sqlite3_log(SQLITE_ERROR, "codec: cipher_page_size not a power of 2 and between 512 and 65536 inclusive(%d).", size);
++    return SQLITE_ERROR;
++  }
++  int cipherPageSize = ctx->readCtx->codecConst.cipherPageSize;
++  (void)memset_s(ctx->buffer, cipherPageSize, 0, cipherPageSize);
++  sqlite3_free(ctx->buffer);
++  ctx->readCtx->codecConst.cipherPageSize = size;
++  ctx->writeCtx->codecConst.cipherPageSize = size;
++
++  ctx->buffer = (unsigned char *)sqlite3Malloc(size);
++  if (ctx->buffer == NULL) {
++    sqlite3_log(SQLITE_NOMEM, "codec: alloc mem failed when set cipher page size(%d).", size);
++    return SQLITE_NOMEM;
++  }
++  return SQLITE_OK;
++}
++
++// You should clear output before you call this function
++CODEC_STATIC int sqlite3CodecCopyKeyContext(KeyContext *input, KeyContext *output){
++  errno_t rc = memcpy_s(output, sizeof(KeyContext), input, KEY_CONTEXT_HEAD_SIZE);
++  if(rc != EOK){
++    return SQLITE_ERROR;
++  }
++  if(input->password != NULL && input->passwordSize > 0){
++    output->password = (unsigned char *)sqlite3Malloc(output->passwordSize);
++    if(output->password == NULL){
++      sqlite3CodecFreeKeyContext(output);
++      return SQLITE_NOMEM;
++    }
++    rc = memcpy_s(output->password, output->passwordSize, input->password, input->passwordSize);
++    if(rc != EOK){
++      sqlite3CodecFreeKeyContext(output);
++      return SQLITE_ERROR;
++    }
++  }
++  return sqlite3CodecCopyDeriveKey(input, output);
++}
++
++// You should clear key context before you call this function
++#ifdef SQLITE_CODEC_ATTACH_CHANGED
++CODEC_STATIC int sqlite3CodecInitKeyContext(CodecContext *ctx, Btree *p, const void *zKey, int nKey, int attachFlag){
++#else
++CODEC_STATIC int sqlite3CodecInitKeyContext(CodecContext *ctx, Btree *p, const void *zKey, int nKey){
++#endif /* SQLITE_CODEC_ATTACH_CHANGED */
++  int rc = SQLITE_OK;
++  KeyContext *keyCtx = ctx->readCtx;
++#ifdef SQLITE_CODEC_ATTACH_CHANGED
++  if( attachFlag!=0 ){
++    CodecParameter *parm = &p->db->codecParm;
++    int hmacAlgo = sqlite3CodecGetDefaultAttachHmacAlgo(parm);
++    rc = sqlite3CodecSetCodecConstant(keyCtx, sqlite3CodecGetDefaultAttachCipher(parm));
++    rc += sqlite3CodecSetIter(keyCtx, sqlite3CodecGetDefaultAttachKdfIter(parm));
++    if( hmacAlgo!=0 ){
++      rc += sqlite3CodecSetHmacAlgorithm(keyCtx, hmacAlgo);
++    }
++    int attachKdfAlgo = sqlite3CodecGetDefaultAttachKdfAlgo(parm);
++    if( attachKdfAlgo!=0 ){
++      rc += sqlite3CodecSetKdfAlgorithm(keyCtx, attachKdfAlgo);
++    }
++    int cipherPageSize = sqlite3CodecGetDefaultAttachPageSize(parm);
++    if( cipherPageSize!=0 ){
++      rc += sqlite3CodecSetCipherPageSize(ctx, cipherPageSize);
++      if ( rc != SQLITE_OK ) {
++        sqlite3CodecFreeKeyContext(keyCtx);
++        return SQLITE_ERROR;
++      }
++      rc += sqlite3BtreeSetPageSize(p, cipherPageSize, keyCtx->codecConst.reserveSize, 0);
++    }
++  }else{
++    rc = sqlite3CodecSetCodecConstant(keyCtx, DEFAULT_CIPHER);
++    rc += sqlite3CodecSetIter(keyCtx, DEFAULT_ITER);
++    rc += sqlite3CodecSetHmacAlgorithm(keyCtx, DEFAULT_HMAC_ALGORITHM);
++    rc += sqlite3CodecSetKdfAlgorithm(keyCtx, DEFAULT_KDF_ALGORITHM);
++  }
++#else
++  rc = sqlite3CodecSetCodecConstant(keyCtx, DEFAULT_CIPHER);
++  rc += sqlite3CodecSetIter(keyCtx, DEFAULT_ITER);
++  rc += sqlite3CodecSetHmacAlgorithm(keyCtx, DEFAULT_HMAC_ALGORITHM);
++  rc += sqlite3CodecSetKdfAlgorithm(keyCtx, DEFAULT_KDF_ALGORITHM);
++#endif /* SQLITE_CODEC_ATTACH_CHANGED */
++  keyCtx->codecConst.rekeyHmacAlgo = DEFAULT_HMAC_ALGORITHM;
++  rc += sqlite3CodecSetPassword(keyCtx, zKey, nKey);
++  if(rc != SQLITE_OK){
++    sqlite3CodecFreeKeyContext(keyCtx);
++    return SQLITE_ERROR;
++  }
++  return SQLITE_OK;
++}
++
++// This function will free all resources of codec context, except it self.
++CODEC_STATIC void sqlite3CodecFreeContext(CodecContext *ctx){
++  if(ctx->buffer){
++    int cipherPageSize = ctx->readCtx->codecConst.cipherPageSize;
++    (void)memset_s(ctx->buffer, cipherPageSize, 0, cipherPageSize);
++    sqlite3_free(ctx->buffer);
++    ctx->buffer = NULL;
++  }
++  if(ctx->readCtx){
++    sqlite3CodecFreeKeyContext(ctx->readCtx);
++    sqlite3_free(ctx->readCtx);
++    ctx->readCtx = NULL;
++  }
++  if(ctx->writeCtx){
++    sqlite3CodecFreeKeyContext(ctx->writeCtx);
++    sqlite3_free(ctx->writeCtx);
++    ctx->writeCtx = NULL;
++  }
++  (void)memset_s(ctx, sizeof(CodecContext), 0, sizeof(CodecContext));
++  return;
++}
++#ifdef SQLITE_CODEC_ATTACH_CHANGED
++CODEC_STATIC int sqlite3CodecInitContext(CodecContext *ctx, Btree *p, const void *zKey, int nKey, int nDb){
++  int attachFlag = (nDb > 1) ? 1 : 0;
++  int defaultPageSz = attachFlag ? p->db->codecParm.pageSize : DEFAULT_PAGE_SIZE;
++#else
++CODEC_STATIC int sqlite3CodecInitContext(CodecContext *ctx, Btree *p, const void *zKey, int nKey){
++  int defaultPageSz = DEFAULT_PAGE_SIZE;
++#endif /* SQLITE_CODEC_ATTACH_CHANGED */
++  sqlite3_file *fd = p->pBt->pPager->fd;
++  ctx->pBt = p;
++  ctx->savePassword = 0;
++  ctx->buffer = (unsigned char *)sqlite3Malloc(defaultPageSz);
++  ctx->readCtx = (KeyContext *)sqlite3Malloc(sizeof(KeyContext));
++  ctx->writeCtx = (KeyContext *)sqlite3Malloc(sizeof(KeyContext));
++  if(ctx->buffer == NULL || ctx->readCtx == NULL || ctx->writeCtx == NULL){
++    sqlite3CodecFreeContext(ctx);
++    return SQLITE_NOMEM;
++  }
++  errno_t memsetRc = memset_s(ctx->buffer, defaultPageSz, 0, defaultPageSz);
++  memsetRc += memset_s(ctx->readCtx, sizeof(KeyContext), 0, sizeof(KeyContext));
++  memsetRc += memset_s(ctx->writeCtx, sizeof(KeyContext), 0, sizeof(KeyContext));
++  if(memsetRc != EOK){
++    sqlite3CodecFreeContext(ctx);
++    return SQLITE_ERROR;
++  }
++  ctx->readCtx->codecConst.cipherPageSize = defaultPageSz;
++  ctx->writeCtx->codecConst.cipherPageSize = defaultPageSz;
++#ifdef SQLITE_CODEC_ATTACH_CHANGED
++  int rc = sqlite3CodecInitKeyContext(ctx, p, zKey, nKey, attachFlag);
++#else
++  int rc = sqlite3CodecInitKeyContext(ctx, p, zKey, nKey);
++#endif /* SQLITE_CODEC_ATTACH_CHANGED */
++  if(rc != SQLITE_OK){
++    sqlite3CodecFreeContext(ctx);
++    return SQLITE_ERROR;
++  }
++  rc = sqlite3CodecCopyKeyContext(ctx->readCtx, ctx->writeCtx);
++  if(rc != SQLITE_OK){
++    sqlite3CodecFreeContext(ctx);
++    return SQLITE_ERROR;
++  }
++  if(fd == NULL || !(isOpen(fd)) || sqlite3OsRead(fd, ctx->salt, SALT_SIZE, 0) != SQLITE_OK){
++    Buffer salt;
++    salt.buffer = ctx->salt;
++    salt.bufferSize = SALT_SIZE;
++    rc = opensslGetRandom(&salt);
++    if(rc != SQLITE_OK){
++      sqlite3CodecFreeContext(ctx);
++      return rc;
++    }
++  }
++  return SQLITE_OK;
++}
++
++CODEC_STATIC int sqlite3CodecGetDbIndex(sqlite3 *db, const char *zDb){
++  int nDbIndex;
++  if(zDb == NULL){
++    return 0;
++  }
++  for(nDbIndex = 0; nDbIndex < db->nDb; nDbIndex++){
++    const char *zDbSName = db->aDb[nDbIndex].zDbSName;
++    if(strcmp(zDbSName, zDb) == 0){
++      return nDbIndex;
++    }
++  }
++  return 0;
++}
++
++CODEC_STATIC void sqlite3CodecTransPgno(Pgno input, unsigned char *output){
++#ifdef CIPHER_BIG_ENDAIN
++  sqlite3Put4byte(output, input);
++#else
++  output[0] = (u8)input;
++  output[1] = (u8)(input>>8);
++  output[2] = (u8)(input>>16);
++  output[3] = (u8)(input>>24);
++#endif
++}
++
++CODEC_STATIC int sqlite3CodecHmac(KeyContext *ctx, Pgno pgno, int bufferSize, unsigned char *input, unsigned char *output){
++  Buffer key;
++  key.buffer = ctx->hmacKey;
++  key.bufferSize = ctx->codecConst.keySize;
++  Buffer input1;
++  input1.buffer = input;
++  input1.bufferSize = bufferSize;
++  Buffer input2;
++  unsigned char pgnoBuffer[sizeof(Pgno)];
++  sqlite3CodecTransPgno(pgno, pgnoBuffer);
++  input2.buffer = pgnoBuffer;
++  input2.bufferSize = sizeof(Pgno);
++  Buffer outputBuffer;
++  outputBuffer.buffer = output;
++  outputBuffer.bufferSize = 0;
++  int rc = opensslHmac(&key, &input1, &input2, &outputBuffer, ctx->codecConst.hmacAlgo);
++  if(rc != SQLITE_OK || outputBuffer.bufferSize != ctx->codecConst.hmacSize){
++    return SQLITE_ERROR;
++  }
++  return SQLITE_OK;
++}
++
++CODEC_STATIC int sqlite3CodecCheckHmac(KeyContext *ctx, Pgno pgno, int bufferSize, unsigned char *input, unsigned char *expectResult){
++  if (ctx->codecConst.hmacSize <= 0) {
++    return 1;
++  }
++  int rc = SQLITE_OK;
++  if (ctx->codecConst.hmacSize <= MAX_HMAC_SIZE) {
++    unsigned char buffer[MAX_HMAC_SIZE];
++    rc = sqlite3CodecHmac(ctx, pgno, bufferSize, input, buffer);
++    if(rc != SQLITE_OK){
++      return 1;
++    }
++    return memcmp(buffer, expectResult, ctx->codecConst.hmacSize);
++  } else {
++    unsigned char *output = (unsigned char *)malloc(ctx->codecConst.hmacSize);
++    if (output == NULL) {
++      return 1;
++    }
++    rc = sqlite3CodecHmac(ctx, pgno, bufferSize, input, output);
++    if(rc != SQLITE_OK){
++      free(output);
++      return 1;
++    }
++    rc = memcmp(output, expectResult, ctx->codecConst.hmacSize);
++    free(output);
++    return rc;
++  }
++}
++
++CODEC_STATIC int sqlite3CodecEncryptData(CodecContext *ctx, OperateContext whichKey, Pgno pgno, int bufferSize, unsigned char *input, unsigned char *output){
++  KeyContext *keyCtx = NULL;
++  switch(whichKey){
++    case OPERATE_CONTEXT_READ:
++      keyCtx = ctx->readCtx;
++      break;
++    case OPERATE_CONTEXT_WRITE:
++      keyCtx = ctx->writeCtx;
++      break;
++    default:
++      return SQLITE_ERROR;
++  }
++  int rc = SQLITE_OK;
++  if(!(keyCtx->deriveFlag)){
++    rc = sqlite3CodecDeriveKey(ctx, whichKey);
++    if(rc != SQLITE_OK){
++      return rc;
++    }
++  }
++  if(keyCtx->codecConst.keySize == 0){
++    return SQLITE_ERROR;
++  }
++  Buffer inputBuffer;
++  inputBuffer.buffer = input;
++  inputBuffer.bufferSize = bufferSize - keyCtx->codecConst.reserveSize;
++  Buffer initVector;
++  initVector.buffer = output + inputBuffer.bufferSize;
++  initVector.bufferSize = keyCtx->codecConst.initVectorSize;
++  rc = opensslGetRandom(&initVector);
++  if(rc != SQLITE_OK){
++    return rc;
++  }
++  void *cipherCtx = opensslGetCtx(keyCtx->codecConst.cipher, CODEC_OPERATION_ENCRYPT, keyCtx->key, initVector.buffer);
++  if(cipherCtx == NULL){
++    return SQLITE_ERROR;
++  }
++  rc = opensslCipher(cipherCtx, &inputBuffer, output);
++  opensslFreeCtx(cipherCtx);
++  if(rc != SQLITE_OK){
++    return rc;
++  }
++  rc = sqlite3CodecHmac(keyCtx, pgno, inputBuffer.bufferSize + keyCtx->codecConst.initVectorSize, output, output + inputBuffer.bufferSize + keyCtx->codecConst.initVectorSize);
++  if(rc != SQLITE_OK){
++    return rc;
++  }
++  return SQLITE_OK;
++}
++
++CODEC_STATIC int sqlite3CodecDecryptData(CodecContext *ctx, OperateContext whichKey, Pgno pgno, int bufferSize, unsigned char *input, unsigned char *output){
++  KeyContext *keyCtx = NULL;
++  switch(whichKey){
++    case OPERATE_CONTEXT_READ:
++      keyCtx = ctx->readCtx;
++      break;
++    case OPERATE_CONTEXT_WRITE:
++      keyCtx = ctx->writeCtx;
++      break;
++    default:
++      return SQLITE_ERROR;
++  }
++  int rc = SQLITE_OK;
++  if(!(keyCtx->deriveFlag)){
++    rc = sqlite3CodecDeriveKey(ctx, whichKey);
++    if(rc != SQLITE_OK){
++      return rc;
++    }
++  }
++  if(keyCtx->codecConst.keySize == 0){
++    return SQLITE_ERROR;
++  }
++  if(sqlite3CodecIfMemset(input, 0, bufferSize)){
++    errno_t memsetRc = memset_s(output, bufferSize, 0, bufferSize);
++    if(memsetRc != EOK){
++      return SQLITE_ERROR;
++    }
++    return SQLITE_OK;
++  }else{
++    Buffer inputBuffer;
++    inputBuffer.buffer = input;
++    inputBuffer.bufferSize = bufferSize - keyCtx->codecConst.reserveSize;
++    if(sqlite3CodecCheckHmac(keyCtx, pgno, inputBuffer.bufferSize + keyCtx->codecConst.initVectorSize, input, input + inputBuffer.bufferSize + keyCtx->codecConst.initVectorSize)){
++      sqlite3_log(SQLITE_ERROR, "codec: check hmac error at page %d, hmac %d, kdf %d, pageSize %d, iter %d.",
++        pgno, keyCtx->codecConst.hmacAlgo, keyCtx->codecConst.kdfAlgo, keyCtx->codecConst.cipherPageSize, keyCtx->iter);
++      return pgno == 1 ? SQLITE_NOTADB : SQLITE_CORRUPT;
++    }
++    unsigned char *initVector = input + inputBuffer.bufferSize;
++    void *cipherCtx = opensslGetCtx(keyCtx->codecConst.cipher, CODEC_OPERATION_DECRYPT, keyCtx->key, initVector);
++    if(cipherCtx == NULL){
++      return SQLITE_ERROR;
++    }
++    rc = opensslCipher(cipherCtx, &inputBuffer, output);
++    opensslFreeCtx(cipherCtx);
++    if(rc != SQLITE_OK){
++      return rc;
++    }
++  }
++  return SQLITE_OK;
++}
++
++void* sqlite3Codec(void *ctx, void *data, Pgno pgno, int mode){
++  CodecContext *pCtx = (CodecContext *)ctx;
++  unsigned char *pData = (unsigned char *)data;
++  int offset = 0;
++  int rc = SQLITE_OK;
++  errno_t memcpyRc = EOK;
++  if(ctx == NULL || data == NULL){
++    return NULL;
++  }
++  if(pgno == 1){
++    offset = FILE_HEADER_SIZE;
++  }
++  int cipherPageSize = pCtx->readCtx->codecConst.cipherPageSize;
++  switch(mode){
++    case 0:
++    case 2:
++    case 3:
++      if(pgno == 1){
++        memcpyRc = memcpy_s(pCtx->buffer, cipherPageSize, SQLITE_FILE_HEADER, FILE_HEADER_SIZE);
++        if(memcpyRc != EOK){
++          sqlite3CodecSetError(pCtx, SQLITE_ERROR);
++          return NULL;
++        }
++      }
++      rc = sqlite3CodecDecryptData(pCtx, OPERATE_CONTEXT_READ, pgno, cipherPageSize - offset, (unsigned char *)(pData + offset), pCtx->buffer + offset);
++      if(rc != SQLITE_OK){
++        sqlite3CodecSetError(pCtx, rc);
++        return NULL;
++      }
++      (void)memcpy_s(pData, cipherPageSize, pCtx->buffer, cipherPageSize);
++      return pData;
++      break;
++    case 6:
++      if(pgno == 1){
++        memcpyRc = memcpy_s(pCtx->buffer, cipherPageSize, pCtx->salt, FILE_HEADER_SIZE);
++        if(memcpyRc != EOK){
++          sqlite3CodecSetError(pCtx, SQLITE_ERROR);
++          return NULL;
++        }
++      }
++      rc = sqlite3CodecEncryptData(pCtx, OPERATE_CONTEXT_WRITE, pgno, cipherPageSize - offset, (unsigned char *)(pData + offset), pCtx->buffer + offset);
++      if(rc != SQLITE_OK){
++        sqlite3CodecSetError(pCtx, rc);
++        return NULL;
++      }
++      return pCtx->buffer;
++      break;
++    case 7:
++      if(pgno == 1){
++        memcpyRc = memcpy_s(pCtx->buffer, cipherPageSize, pCtx->salt, FILE_HEADER_SIZE);
++        if(memcpyRc != EOK){
++          sqlite3CodecSetError(pCtx, SQLITE_ERROR);
++          return NULL;
++        }
++      }
++      rc = sqlite3CodecEncryptData(pCtx, OPERATE_CONTEXT_READ, pgno, cipherPageSize - offset, (unsigned char *)(pData + offset), pCtx->buffer + offset);
++      if(rc != SQLITE_OK){
++        sqlite3CodecSetError(pCtx, rc);
++        return NULL;
++      }
++      return pCtx->buffer;
++      break;
++    default:
++      return NULL;
++      break;
++  }
++}
++
++void sqlite3CodecDetach(void *ctx){
++  if(ctx != NULL){
++    sqlite3CodecFreeContext((CodecContext *)ctx);
++    sqlite3_free(ctx);
++    opensslDeactive();
++  }
++  return;
++}
++
++int sqlite3CodecAttach(sqlite3* db, int nDb, const void *pKey, int nKey){
++  if(db == NULL){
++    return SQLITE_ERROR;
++  }
++  Btree *p = db->aDb[nDb].pBt;
++  if(p == NULL || pKey == NULL || nKey <= 0){
++    return SQLITE_OK;
++  }
++  opensslActive();
++  CodecContext *ctx = (CodecContext *)sqlite3Malloc(sizeof(CodecContext));
++  if(ctx == NULL){
++    return SQLITE_NOMEM;
++  }
++  errno_t memsetRc = memset_s(ctx, sizeof(CodecContext), 0, sizeof(CodecContext));
++  if(memsetRc != EOK){
++    sqlite3_free(ctx);
++    return SQLITE_ERROR;
++  }
++  sqlite3_mutex_enter(db->mutex);
++#ifdef SQLITE_CODEC_ATTACH_CHANGED
++  int rc = sqlite3CodecInitContext(ctx, p, pKey, nKey, nDb);
++#else
++  int rc = sqlite3CodecInitContext(ctx, p, pKey, nKey);
++#endif /* SQLITE_CODEC_ATTACH_CHANGED */
++  if(rc != SQLITE_OK){
++    sqlite3_free(ctx);
++    return rc;
++  }
++  sqlite3PagerSetCodec(sqlite3BtreePager(p), sqlite3Codec, NULL, sqlite3CodecDetach, (void *)ctx);
++
++  db->nextPagesize = ctx->readCtx->codecConst.cipherPageSize;
++  p->pBt->btsFlags &= ~BTS_PAGESIZE_FIXED;
++  sqlite3BtreeSetPageSize(p, ctx->readCtx->codecConst.cipherPageSize, ctx->readCtx->codecConst.reserveSize, 0);
++  sqlite3BtreeSecureDelete(p, 1);
++  if(isOpen(p->pBt->pPager->fd)){
++    sqlite3BtreeSetAutoVacuum(p, SQLITE_DEFAULT_AUTOVACUUM);
++  }
++
++  sqlite3_mutex_leave(db->mutex);
++
++  return SQLITE_OK;
++}
++
++void sqlite3CodecGetKey(sqlite3* db, int nDb, void **pKey, int *nKey)
++{
++  Btree *p = db->aDb[nDb].pBt;
++  if(p == NULL){
++    return;
++  }
++  CodecContext *ctx = (CodecContext *)(p->pBt->pPager->pCodec);
++  if(ctx){
++    if(ctx->savePassword){
++      *pKey = ctx->readCtx->password;
++      *nKey = ctx->readCtx->passwordSize;
++    }else{
++      *pKey = ctx->readCtx->keyInfo;
++      *nKey = ctx->readCtx->codecConst.keyInfoSize;
++    }
++  }else{
++    *pKey = NULL;
++    *nKey = 0;
++  }
++  return;
++}
++
++int sqlite3_key(sqlite3 *db, const void *pKey, int nKey){
++  return sqlite3_key_v2(db, "main", pKey, nKey);
++}
++
++int sqlite3_key_v2(sqlite3 *db, const char *zDb, const void *pKey, int nKey){
++  if(db == NULL || pKey == NULL || nKey <= 0){
++    return SQLITE_ERROR;
++  }
++  int iDb = sqlite3CodecGetDbIndex(db, zDb);
++  return sqlite3CodecAttach(db, iDb, pKey, nKey);
++}
++
++int sqlite3_rekey(sqlite3 *db, const void *pKey, int nKey){
++  return sqlite3_rekey_v2(db, "main", pKey, nKey);
++}
++
++int sqlite3_rekey_v2(sqlite3 *db, const char *zDb, const void *pKey, int nKey){
++  if(db == NULL || pKey == NULL || nKey == 0){
++    return SQLITE_ERROR;
++  }
++  int iDb = sqlite3CodecGetDbIndex(db, zDb);
++  Btree *p = db->aDb[iDb].pBt;
++  if(p == NULL){
++    return SQLITE_OK;
++  }
++  int pageCount;
++  Pgno pgno;
++  PgHdr *page = NULL;
++  Pager *pPager = p->pBt->pPager;
++  CodecContext *ctx = (CodecContext *)(p->pBt->pPager->pCodec);
++  if(ctx == NULL){
++    return SQLITE_OK;
++  }
++  sqlite3CodecClearDeriveKey(ctx->writeCtx);
++  sqlite3CodecClearPassword(ctx->writeCtx);
++  int rc = sqlite3CodecSetPassword(ctx->writeCtx, pKey, nKey);
++  if(rc != SQLITE_OK){
++    return rc;
++  }
++  sqlite3_mutex_enter(db->mutex);
++  (void)sqlite3BtreeBeginTrans(p, 1, 0);
++  sqlite3PagerPagecount(pPager, &pageCount);
++  // support hmac algo changed by using rekey operation
++  int oldHmacAlgo = ctx->writeCtx->codecConst.hmacAlgo;
++  if( ctx->writeCtx->codecConst.rekeyHmacAlgo!=ctx->writeCtx->codecConst.hmacAlgo ){
++    sqlite3CodecSetHmacAlgorithm(ctx->writeCtx, ctx->writeCtx->codecConst.rekeyHmacAlgo);
++    sqlite3CodecSetKdfAlgorithm(ctx->writeCtx, ctx->writeCtx->codecConst.rekeyHmacAlgo);
++  }
++
++  for(pgno = 1; pgno <= (unsigned int)pageCount; pgno++){
++    if(PAGER_SJ_PGNO(pPager) != pgno){
++      rc = sqlite3PagerGet(pPager, pgno, &page, 0);
++      if(rc == SQLITE_OK){
++        rc = sqlite3PagerWrite(page);
++        if(rc == SQLITE_OK){
++          sqlite3PagerUnref(page);
++        }else{
++          sqlite3_log(SQLITE_WARNING, "sqlite3_rekey_v2: error when writing page %d: errno = %d.", pgno, rc);
++        }
++      }else{
++        sqlite3_log(SQLITE_WARNING, "sqlite3_rekey_v2: error when reading page %d: errno = %d.", pgno, rc);
++      }
++    }
++  }
++  if(rc == SQLITE_OK){
++    (void)sqlite3BtreeCommit(p);
++    sqlite3CodecFreeKeyContext(ctx->readCtx);
++    (void)sqlite3CodecCopyKeyContext(ctx->writeCtx, ctx->readCtx);
++  }else{
++    if( ctx->writeCtx->codecConst.rekeyHmacAlgo!=oldHmacAlgo ){
++      sqlite3CodecSetHmacAlgorithm(ctx->writeCtx, oldHmacAlgo);
++      sqlite3CodecSetKdfAlgorithm(ctx->writeCtx, oldHmacAlgo);
++    }
++    (void)sqlite3BtreeRollback(p, SQLITE_ABORT_ROLLBACK, 0);
++  }
++  sqlite3_mutex_leave(db->mutex);
++
++  return rc;
++}
++
++void sqlite3_activate_see(const char* zPassPhrase){
++  return;
++}
++
++CODEC_STATIC void sqlite3CodecReturnPragmaResult(Parse *parse, const char *label, const char *value){
++  Vdbe *v = sqlite3GetVdbe(parse);
++  sqlite3VdbeSetNumCols(v, 1);
++  sqlite3VdbeSetColName(v, 0, COLNAME_NAME, label, SQLITE_STATIC);
++  sqlite3VdbeAddOp4(v, OP_String8, 0, 1, 0, value, 0);
++  sqlite3VdbeAddOp2(v, OP_ResultRow, 1, 1);
++  return;
++}
++
++// Each configuration setting operation should be done before read/write DB file or there might be some error.
++int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, const char *zRight){
++  Btree *p = db->aDb[iDb].pBt;
++  if(p == NULL){
++    return 0;
++  }
++  CodecContext *ctx = (CodecContext *)(p->pBt->pPager->pCodec);
++#ifdef SQLITE_CODEC_ATTACH_CHANGED
++  CodecParameter *parm = &db->codecParm;
++  if(sqlite3StrICmp(zLeft, "cipher_default_attach_cipher") == 0 && zRight != NULL){
++    (void)sqlite3CodecSetDefaultAttachCipher(parm, zRight);
++    return 1;
++  }else if(sqlite3StrICmp(zLeft, "cipher_default_attach_kdf_iter") == 0 && zRight != NULL){
++    (void)sqlite3CodecSetDefaultAttachKdfIter(parm, atoi(zRight));
++    return 1;
++  }else if( sqlite3StrICmp(zLeft, "cipher_default_attach_hmac_algo")==0 && zRight!=NULL ){
++    /*
++    ** Make sure to set the Kdf algorithm after setting the Hmac algorithm, or it will not take effect.
++    ** This behavior is to ensure backward compatible.
++    */
++    if( sqlite3_stricmp(zRight, CIPHER_HMAC_ALGORITHM_NAME_SHA1)==0 ){
++      sqlite3CodecSetDefaultAttachHmacAlgo(parm, CIPHER_HMAC_ALGORITHM_SHA1);
++      sqlite3CodecSetDefaultAttachKdfAlgo(parm, CIPHER_KDF_ALGORITHM_SHA1);
++    }else if( sqlite3_stricmp(zRight, CIPHER_HMAC_ALGORITHM_NAME_SHA256)==0 ){
++      sqlite3CodecSetDefaultAttachHmacAlgo(parm, CIPHER_HMAC_ALGORITHM_SHA256);
++      sqlite3CodecSetDefaultAttachKdfAlgo(parm, CIPHER_KDF_ALGORITHM_SHA256);
++    }else if( sqlite3_stricmp(zRight, CIPHER_HMAC_ALGORITHM_NAME_SHA512)==0 ){
++      sqlite3CodecSetDefaultAttachHmacAlgo(parm, CIPHER_HMAC_ALGORITHM_SHA512);
++      sqlite3CodecSetDefaultAttachKdfAlgo(parm, CIPHER_KDF_ALGORITHM_SHA512);
++    }else{
++      return 0;
++    }
++    return 1;
++  }else if( sqlite3StrICmp(zLeft, "cipher_default_attach_kdf_algo")==0 && zRight!=NULL ){
++    if( sqlite3_stricmp(zRight, CIPHER_KDF_ALGORITHM_NAME_SHA1)==0 ){
++      sqlite3CodecSetDefaultAttachKdfAlgo(parm, CIPHER_KDF_ALGORITHM_SHA1);
++    }else if( sqlite3_stricmp(zRight, CIPHER_KDF_ALGORITHM_NAME_SHA256)==0 ){
++      sqlite3CodecSetDefaultAttachKdfAlgo(parm, CIPHER_KDF_ALGORITHM_SHA256);
++    }else if( sqlite3_stricmp(zRight, CIPHER_KDF_ALGORITHM_NAME_SHA512)==0 ){
++      sqlite3CodecSetDefaultAttachKdfAlgo(parm, CIPHER_KDF_ALGORITHM_SHA512);
++    }else{
++      return 0;
++    }
++    return 1;
++  }else if( sqlite3StrICmp(zLeft, "cipher_default_attach_page_size")==0 && zRight!=NULL ){
++    (void)sqlite3CodecSetDefaultAttachPageSize(parm, atoi(zRight));
++    return 1;
++  }
++#endif /* SQLITE_CODEC_ATTACH_CHANGED */
++  if(ctx == NULL){
++    return 0;
++  }
++  if(sqlite3StrICmp(zLeft, "codec_cipher") == 0){
++    if(zRight){
++      sqlite3_mutex_enter(db->mutex);
++      (void)sqlite3CodecSetCodecConstant(ctx->readCtx, zRight);
++      (void)sqlite3CodecSetHmacAlgorithm(ctx->readCtx, ctx->readCtx->codecConst.hmacAlgo);
++      (void)sqlite3CodecSetKdfAlgorithm(ctx->readCtx, ctx->readCtx->codecConst.hmacAlgo);
++      sqlite3CodecFreeKeyContext(ctx->writeCtx);
++      (void)sqlite3CodecCopyKeyContext(ctx->readCtx, ctx->writeCtx);
++      sqlite3BtreeSetPageSize(p, ctx->readCtx->codecConst.cipherPageSize, ctx->readCtx->codecConst.reserveSize, 0);
++      sqlite3_mutex_leave(db->mutex);
++    }else{
++      sqlite3CodecReturnPragmaResult(parse, "codec_cipher", opensslGetCipherName(ctx->writeCtx->codecConst.cipher));
++    }
++  }else if(sqlite3StrICmp(zLeft, "codec_kdf_iter") == 0){
++    if(zRight){
++      (void)sqlite3CodecSetIter(ctx->readCtx, atoi(zRight));
++      (void)sqlite3CodecSetIter(ctx->writeCtx, atoi(zRight));
++    }else{
++      char *iter = sqlite3_mprintf("%d", ctx->writeCtx->iter);
++      if(iter != NULL){
++        sqlite3CodecReturnPragmaResult(parse, "codec_kdf_iter", iter);
++        sqlite3_free(iter);
++      }
++    }
++  }else if( sqlite3StrICmp(zLeft, "codec_hmac_algo")==0 ){
++    /*
++    ** Make sure to set the Kdf algorithm after setting the Hmac algorithm, or it will not take effect. 
++    ** This behavior is to ensure backward compatible.
++    */
++    if(zRight){
++      sqlite3_mutex_enter(db->mutex);
++      if( sqlite3_stricmp(zRight, CIPHER_HMAC_ALGORITHM_NAME_SHA1)==0 ){
++        (void)sqlite3CodecSetHmacAlgorithm(ctx->readCtx, CIPHER_HMAC_ALGORITHM_SHA1);
++        (void)sqlite3CodecSetHmacAlgorithm(ctx->writeCtx, CIPHER_HMAC_ALGORITHM_SHA1);
++        (void)sqlite3CodecSetKdfAlgorithm(ctx->readCtx, CIPHER_KDF_ALGORITHM_SHA1);
++        (void)sqlite3CodecSetKdfAlgorithm(ctx->writeCtx, CIPHER_KDF_ALGORITHM_SHA1);
++      }else if( sqlite3_stricmp(zRight, CIPHER_HMAC_ALGORITHM_NAME_SHA256)==0 ){
++        (void)sqlite3CodecSetHmacAlgorithm(ctx->readCtx, CIPHER_HMAC_ALGORITHM_SHA256);
++        (void)sqlite3CodecSetHmacAlgorithm(ctx->writeCtx, CIPHER_HMAC_ALGORITHM_SHA256);
++        (void)sqlite3CodecSetKdfAlgorithm(ctx->readCtx, CIPHER_KDF_ALGORITHM_SHA256);
++        (void)sqlite3CodecSetKdfAlgorithm(ctx->writeCtx, CIPHER_KDF_ALGORITHM_SHA256);
++      }else if( sqlite3_stricmp(zRight, CIPHER_HMAC_ALGORITHM_NAME_SHA512)==0 ){
++        (void)sqlite3CodecSetHmacAlgorithm(ctx->readCtx, CIPHER_HMAC_ALGORITHM_SHA512);
++        (void)sqlite3CodecSetHmacAlgorithm(ctx->writeCtx, CIPHER_HMAC_ALGORITHM_SHA512);
++        (void)sqlite3CodecSetKdfAlgorithm(ctx->readCtx, CIPHER_KDF_ALGORITHM_SHA512);
++        (void)sqlite3CodecSetKdfAlgorithm(ctx->writeCtx, CIPHER_KDF_ALGORITHM_SHA512);
++      }else{
++        sqlite3_mutex_leave(db->mutex);
++        return 0;
++      }
++      sqlite3BtreeSetPageSize(p, ctx->readCtx->codecConst.cipherPageSize, ctx->readCtx->codecConst.reserveSize, 0);
++      sqlite3_mutex_leave(db->mutex);
++    }else{
++      if( ctx->writeCtx->codecConst.hmacAlgo==CIPHER_HMAC_ALGORITHM_SHA1 ){
++        sqlite3CodecReturnPragmaResult(parse, "codec_hmac_algo", CIPHER_HMAC_ALGORITHM_NAME_SHA1);
++      }else if( ctx->writeCtx->codecConst.hmacAlgo==CIPHER_HMAC_ALGORITHM_SHA256 ){
++        sqlite3CodecReturnPragmaResult(parse, "codec_hmac_algo", CIPHER_HMAC_ALGORITHM_NAME_SHA256);
++      }else if( ctx->writeCtx->codecConst.hmacAlgo==CIPHER_HMAC_ALGORITHM_SHA512 ){
++        sqlite3CodecReturnPragmaResult(parse, "codec_hmac_algo", CIPHER_HMAC_ALGORITHM_NAME_SHA512);
++      }
++    }
++  }else if( sqlite3StrICmp(zLeft, "codec_kdf_algo")==0 ){
++    if(zRight){
++      sqlite3_mutex_enter(db->mutex);
++      if( sqlite3_stricmp(zRight, CIPHER_KDF_ALGORITHM_NAME_SHA1)==0 ){
++        (void)sqlite3CodecSetKdfAlgorithm(ctx->readCtx, CIPHER_KDF_ALGORITHM_SHA1);
++        (void)sqlite3CodecSetKdfAlgorithm(ctx->writeCtx, CIPHER_KDF_ALGORITHM_SHA1);
++      }else if( sqlite3_stricmp(zRight, CIPHER_KDF_ALGORITHM_NAME_SHA256)==0 ){
++        (void)sqlite3CodecSetKdfAlgorithm(ctx->readCtx, CIPHER_KDF_ALGORITHM_SHA256);
++        (void)sqlite3CodecSetKdfAlgorithm(ctx->writeCtx, CIPHER_KDF_ALGORITHM_SHA256);
++      }else if( sqlite3_stricmp(zRight, CIPHER_KDF_ALGORITHM_NAME_SHA512)==0 ){
++        (void)sqlite3CodecSetKdfAlgorithm(ctx->readCtx, CIPHER_KDF_ALGORITHM_SHA512);
++        (void)sqlite3CodecSetKdfAlgorithm(ctx->writeCtx, CIPHER_KDF_ALGORITHM_SHA512);
++      }else{
++        sqlite3_mutex_leave(db->mutex);
++        return 0;
++      }
++      sqlite3BtreeSetPageSize(p, ctx->readCtx->codecConst.cipherPageSize, ctx->readCtx->codecConst.reserveSize, 0);
++      sqlite3_mutex_leave(db->mutex);
++    }else{
++      if( ctx->writeCtx->codecConst.kdfAlgo==CIPHER_KDF_ALGORITHM_SHA1 ){
++        sqlite3CodecReturnPragmaResult(parse, "codec_kdf_algo", CIPHER_KDF_ALGORITHM_NAME_SHA1);
++      }else if( ctx->writeCtx->codecConst.kdfAlgo==CIPHER_KDF_ALGORITHM_SHA256 ){
++        sqlite3CodecReturnPragmaResult(parse, "codec_kdf_algo", CIPHER_KDF_ALGORITHM_NAME_SHA256);
++      }else if( ctx->writeCtx->codecConst.kdfAlgo==CIPHER_KDF_ALGORITHM_SHA512 ){
++        sqlite3CodecReturnPragmaResult(parse, "codec_kdf_algo", CIPHER_KDF_ALGORITHM_NAME_SHA512);
++      }
++    }
++  }else if( sqlite3StrICmp(zLeft, "codec_page_size")==0 ){
++    if(zRight){
++      sqlite3_mutex_enter(db->mutex);
++      int rc = sqlite3CodecSetCipherPageSize(ctx, atoi(zRight));
++      if (rc != SQLITE_OK){
++        sqlite3_mutex_leave(db->mutex);
++        return 0;
++      }
++      sqlite3BtreeSetPageSize(p, ctx->readCtx->codecConst.cipherPageSize, ctx->readCtx->codecConst.reserveSize, 0);
++      sqlite3_mutex_leave(db->mutex);
++    } else {
++      char *pageSize = sqlite3_mprintf("%d", ctx->readCtx->codecConst.cipherPageSize);
++      if (pageSize != NULL) {
++        sqlite3CodecReturnPragmaResult(parse, "codec_page_size", pageSize);
++        sqlite3_free(pageSize);
++      }
++    }
++  }else if(sqlite3StrICmp(zLeft, "codec_rekey_hmac_algo") == 0){
++    if(zRight){
++      sqlite3_mutex_enter(db->mutex);
++      if( sqlite3_stricmp(zRight, CIPHER_HMAC_ALGORITHM_NAME_SHA1)==0 ){
++        ctx->writeCtx->codecConst.rekeyHmacAlgo = CIPHER_HMAC_ALGORITHM_SHA1;
++      }else if( sqlite3_stricmp(zRight, CIPHER_HMAC_ALGORITHM_NAME_SHA256)==0 ){
++        ctx->writeCtx->codecConst.rekeyHmacAlgo = CIPHER_HMAC_ALGORITHM_SHA256;
++      }else if( sqlite3_stricmp(zRight, CIPHER_HMAC_ALGORITHM_NAME_SHA512)==0 ){
++        ctx->writeCtx->codecConst.rekeyHmacAlgo = CIPHER_HMAC_ALGORITHM_SHA512;
++      }else{
++        sqlite3_mutex_leave(db->mutex);
++        return 0;
++      }
++      sqlite3_mutex_leave(db->mutex);
++    }else{
++      if( ctx->writeCtx->codecConst.rekeyHmacAlgo==CIPHER_HMAC_ALGORITHM_SHA1 ){
++        sqlite3CodecReturnPragmaResult(parse, "codec_rekey_hmac_algo", CIPHER_HMAC_ALGORITHM_NAME_SHA1);
++      }else if( ctx->writeCtx->codecConst.rekeyHmacAlgo==CIPHER_HMAC_ALGORITHM_SHA256 ){
++        sqlite3CodecReturnPragmaResult(parse, "codec_rekey_hmac_algo", CIPHER_HMAC_ALGORITHM_NAME_SHA256);
++      }else if( ctx->writeCtx->codecConst.rekeyHmacAlgo==CIPHER_HMAC_ALGORITHM_SHA512 ){
++        sqlite3CodecReturnPragmaResult(parse, "codec_rekey_hmac_algo", CIPHER_HMAC_ALGORITHM_NAME_SHA512);
++      }
++    }
++  }else{
++    return 0;
++  }
++  return 1;
++}
++
++CODEC_STATIC int sqlite3CodecExportMetadata(sqlite3 *db, const char *dbName, const char *metaName){
++  char *sql = sqlite3_mprintf("PRAGMA %s;", metaName);
++  if(sql == NULL){
++    return SQLITE_NOMEM;
++  }
++  sqlite3_stmt *statement = NULL;
++  int rc = sqlite3_prepare_v2(db, sql, -1, &statement, NULL);
++  sqlite3_free(sql);
++  if(rc != SQLITE_OK){
++    return rc;
++  }
++  rc = sqlite3_step(statement);
++  if(rc != SQLITE_ROW){
++    sqlite3_finalize(statement);
++    return rc;
++  }
++  int metadata = sqlite3_column_int(statement, 0);
++  sqlite3_finalize(statement);
++
++  sql = sqlite3_mprintf("PRAGMA %s.%s=%d;", dbName, metaName, metadata);
++  if(sql == NULL){
++    return SQLITE_NOMEM;
++  }
++  rc = sqlite3_exec(db, sql, NULL, NULL, NULL);
++  sqlite3_free(sql);
++  return rc;
++}
++
++CODEC_STATIC int sqlite3CodecBatchExportSql(sqlite3 *db, const char *sql, char **errMsg){
++  sqlite3_stmt *statement = NULL;
++  int rc = sqlite3_prepare_v2(db, sql, -1, &statement, NULL);
++  if(rc != SQLITE_OK){
++    return rc;
++  }
++  while(sqlite3_step(statement) == SQLITE_ROW){
++    rc = sqlite3_exec(db, (char*)sqlite3_column_text(statement, 0), NULL, NULL, errMsg);
++    if(rc != SQLITE_OK){
++      sqlite3_finalize(statement);
++      return rc;
++    }
++  }
++  sqlite3_finalize(statement);
++  return rc;
++}
++
++void sqlite3CodecExportData(sqlite3_context *context, int argc, sqlite3_value **argv){
++  sqlite3 *db = sqlite3_context_db_handle(context);
++  const char *dbName = (const char*) sqlite3_value_text(argv[0]);
++
++  int rc = SQLITE_OK;
++  char *sql = NULL;
++  char *errMsg = NULL;
++
++  u64 flagsBackup = db->flags;
++  u32 mDbFlagsBackup = db->mDbFlags;
++  int nChangeBackup = db->nChange;
++  int nTotalChangeBackup = db->nTotalChange;
++  int (*xTraceBackup)(u32,void*,void*,void*) = db->trace.xV2;
++
++  db->flags |= SQLITE_WriteSchema | SQLITE_IgnoreChecks;
++  db->flags &= ~(SQLITE_ForeignKeys | SQLITE_ReverseOrder);
++  db->mDbFlags |= DBFLAG_PreferBuiltin;
++  db->trace.xV2 = 0;
++
++  rc = sqlite3CodecExportMetadata(db, dbName, "schema_version");
++  if(rc != SQLITE_OK){
++    goto export_finish;
++  }
++  rc = sqlite3CodecExportMetadata(db, dbName, "user_version");
++  if(rc != SQLITE_OK){
++    goto export_finish;
++  }
++  rc = sqlite3CodecExportMetadata(db, dbName, "application_id");
++  if(rc != SQLITE_OK){
++    goto export_finish;
++  }
++  sql = sqlite3_mprintf("SELECT 'CREATE TABLE %s.' || substr(sql,14) FROM sqlite_master WHERE type='table' AND name!='sqlite_sequence' AND rootpage>0;", dbName);
++  if(sql == NULL){
++    rc = SQLITE_NOMEM;
++    goto export_finish;
++  }
++  rc = sqlite3CodecBatchExportSql(db, sql, &errMsg);
++  sqlite3_free(sql);
++  if(rc != SQLITE_OK){
++    goto export_finish;
++  }
++  sql = sqlite3_mprintf("SELECT 'CREATE INDEX %s.' || substr(sql,14) FROM sqlite_master WHERE sql LIKE 'CREATE INDEX %%';", dbName);
++  if(sql == NULL){
++    rc = SQLITE_NOMEM;
++    goto export_finish;
++  }
++  rc = sqlite3CodecBatchExportSql(db, sql, &errMsg);
++  sqlite3_free(sql);
++  if(rc != SQLITE_OK){
++    goto export_finish;
++  }
++  sql = sqlite3_mprintf("SELECT 'CREATE UNIQUE INDEX %s.' || substr(sql,21) FROM sqlite_master WHERE sql LIKE 'CREATE UNIQUE INDEX %%';", dbName);
++  if(sql == NULL){
++    rc = SQLITE_NOMEM;
++    goto export_finish;
++  }
++  rc = sqlite3CodecBatchExportSql(db, sql, &errMsg);
++  sqlite3_free(sql);
++  if(rc != SQLITE_OK){
++    goto export_finish;
++  }
++  sql = sqlite3_mprintf("SELECT 'INSERT INTO %s.' || quote(name) || ' SELECT * FROM main.' || quote(name) || ';' FROM main.sqlite_master WHERE type = 'table' AND name!='sqlite_sequence' AND rootpage>0;", dbName);
++  if(sql == NULL){
++    rc = SQLITE_NOMEM;
++    goto export_finish;
++  }
++  rc = sqlite3CodecBatchExportSql(db, sql, &errMsg);
++  sqlite3_free(sql);
++  if(rc != SQLITE_OK){
++    goto export_finish;
++  }
++  sql = sqlite3_mprintf("SELECT 'DELETE FROM %s.' || quote(name) || ';' FROM %s.sqlite_master WHERE name='sqlite_sequence';", dbName, dbName);
++  if(sql == NULL){
++    rc = SQLITE_NOMEM;
++    goto export_finish;
++  }
++  rc = sqlite3CodecBatchExportSql(db, sql, &errMsg);
++  sqlite3_free(sql);
++  if(rc != SQLITE_OK){
++    goto export_finish;
++  }
++  sql = sqlite3_mprintf("SELECT 'INSERT INTO %s.' || quote(name) || ' SELECT * FROM main.' || quote(name) || ';' FROM %s.sqlite_master WHERE name=='sqlite_sequence';", dbName, dbName);
++  if(sql == NULL){
++    rc = SQLITE_NOMEM;
++    goto export_finish;
++  }
++  rc = sqlite3CodecBatchExportSql(db, sql, &errMsg);
++  sqlite3_free(sql);
++  if(rc != SQLITE_OK){
++    goto export_finish;
++  }
++  sql = sqlite3_mprintf("INSERT INTO %s.sqlite_master SELECT type, name, tbl_name, rootpage, sql FROM main.sqlite_master WHERE type='view' OR type='trigger' OR (type='table' AND rootpage=0);", dbName, dbName);
++  if(sql == NULL){
++    rc = SQLITE_NOMEM;
++    goto export_finish;
++  }
++  rc = sqlite3_exec(db, sql, NULL, NULL, &errMsg);
++  sqlite3_free(sql);
++  if(rc != SQLITE_OK){
++    goto export_finish;
++  }
++export_finish:
++  db->flags = flagsBackup;
++  db->mDbFlags = mDbFlagsBackup;
++  db->nChange = nChangeBackup;
++  db->nTotalChange = nTotalChangeBackup;
++  db->trace.xV2 = xTraceBackup;
++  if(rc != SQLITE_OK){
++    if(errMsg != NULL) {
++      sqlite3_result_error(context, errMsg, -1);
++      sqlite3DbFree(db, errMsg);
++    } else {
++      sqlite3_result_error(context, sqlite3ErrStr(rc), -1);
++    }
++  }
++  return;
++}
++/************** End file hw_codec.c *****************************************/
++#endif
++
++// hw export the symbols
++#ifdef SQLITE_EXPORT_SYMBOLS
++struct sqlite3_api_routines_hw {
++  int (*initialize)();
++  int (*config)(int,...);
++  int (*key)(sqlite3*,const void*,int);
++  int (*key_v2)(sqlite3*,const char*,const void*,int);
++  int (*rekey)(sqlite3*,const void*,int);
++  int (*rekey_v2)(sqlite3*,const char*,const void*,int);
++};
++
++typedef struct sqlite3_api_routines_hw sqlite3_api_routines_hw;
++static const sqlite3_api_routines_hw sqlite3HwApis = {
++  sqlite3_initialize,
++  sqlite3_config,
++#ifdef SQLITE_HAS_CODEC
++  sqlite3_key,
++  sqlite3_key_v2,
++  sqlite3_rekey,
++  sqlite3_rekey_v2
++#else
++  0,
++  0,
++  0,
++  0
++#endif /* SQLITE_HAS_CODEC */
++};
++
++EXPORT_SYMBOLS const sqlite3_api_routines *sqlite3_export_symbols = &sqlite3Apis;
++EXPORT_SYMBOLS const sqlite3_api_routines_hw *sqlite3_export_hw_symbols = &sqlite3HwApis;
++/************** End hw export the symbols *****************************************/
++#endif /* SQLITE_EXPORT_SYMBOLS */
+-- 
+2.34.1
+

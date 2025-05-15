@@ -32,6 +32,7 @@ public:
 
 void LibSQLiteTest::SetUpTestCase(void)
 {
+    // permission 0770
     mkdir("./sqlitetest", 0770);
 }
 
