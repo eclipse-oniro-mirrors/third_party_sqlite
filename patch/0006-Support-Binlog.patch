@@ -1,14 +1,14 @@
-From 71534219f865058cc99445f45bb98587dc5af6b3 Mon Sep 17 00:00:00 2001
-From: zeng <chuanrui123@126.com>
-Date: Sun, 18 May 2025 23:41:00 +0800
-Subject: [PATCH] Support binlog
+From 759ae762933810cd476838f4b41afc52a9317d0c Mon Sep 17 00:00:00 2001
+From: Liu Hongyang <liuhongyang4@huawei.com>
+Date: Mon, 19 May 2025 22:18:58 +0800
+Subject: [PATCH] Support-Binlog
 
 ---
- src/sqlite3.c | 1288 ++++++++++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 1279 insertions(+), 9 deletions(-)
+ src/sqlite3.c | 1313 ++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 1304 insertions(+), 9 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 2a4e87f..01c8b5b 100644
+index 2a4e87f..2f26487 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -2938,7 +2938,9 @@ SQLITE_API sqlite3_int64 sqlite3_last_insert_rowid(sqlite3*);
@@ -42,7 +42,7 @@ index 2a4e87f..01c8b5b 100644
  /*
  ** CAPI3REF: Number of columns in a result set
  ** METHOD: sqlite3_stmt
-@@ -17617,6 +17632,195 @@ typedef struct CodecParameter {
+@@ -17617,6 +17632,196 @@ typedef struct CodecParameter {
  } CodecParameter;
  #endif /* defined(SQLITE_HAS_CODEC) && defined(SQLITE_CODEC_ATTACH_CHANGED) */
  
@@ -62,8 +62,8 @@ index 2a4e87f..01c8b5b 100644
 +} BinlogErrnoE;
 + 
 +typedef int BinlogErrno;
-+typedef void (*BinlogOnErrorFuncT)(void *pCtx, BinlogErrno errNo, char *errMsg);
-+typedef void (*BinlogOnLogFullFuncT)(void *pCtx, u16 currentCount);
++typedef void (*BinlogOnErrorFuncT)(void *pCtx, BinlogErrno errNo, char *errMsg, const char *dbPath);
++typedef void (*BinlogOnLogFullFuncT)(void *pCtx, u16 currentCount, const char *dbPath);
 +typedef int (*BinlogOnErrnoTransFuncT)(BinlogErrno errNo);
 + 
 +typedef struct BinlogConfig {
@@ -135,8 +135,8 @@ index 2a4e87f..01c8b5b 100644
 +  Sqlite3BinlogMode mode;
 +  u16 fullCallbackThreshold;
 +  u32 maxFileSize;
-+  void (*xErrorCallback)(void *pCtx, int errNo, char *errMsg);
-+  void (*xLogFullCallback)(void *pCtx, u16 currentCount);
++  void (*xErrorCallback)(void *pCtx, int errNo, char *errMsg, const char *dbPath);
++  void (*xLogFullCallback)(void *pCtx, u16 currentCount, const char *dbPath);
 +  void *callbackCtx;
 +} Sqlite3BinlogConfig;
 +
@@ -173,10 +173,11 @@ index 2a4e87f..01c8b5b 100644
 +  void *callbackCtx;
 +  u64 flags;
 +  u8 xTid[SQLITE_UUID_BLOB_LENGTH];
-+  void (*xErrorCallback)(void *pCtx, int errNo, char *errMsg);
-+  void (*xLogFullCallback)(void *pCtx, u16 currentCount);
++  void (*xErrorCallback)(void *pCtx, int errNo, char *errMsg, const char *dbPath);
++  void (*xLogFullCallback)(void *pCtx, u16 currentCount, const char *dbPath);
 +  BinlogInstanceT *binlogConn;
 +  BinlogApi binlogApi;
++  u8 isSkipTrigger;
 +} Sqlite3BinlogHandle;
 + 
 +typedef enum {
@@ -238,7 +239,7 @@ index 2a4e87f..01c8b5b 100644
  /*
  ** Each database connection is an instance of the following structure.
  */
-@@ -17770,6 +17974,9 @@ struct sqlite3 {
+@@ -17770,6 +17975,9 @@ struct sqlite3 {
  #if defined(SQLITE_HAS_CODEC) && defined(SQLITE_CODEC_ATTACH_CHANGED)
    CodecParameter codecParm;
  #endif /* defined(SQLITE_HAS_CODEC) && defined(SQLITE_CODEC_ATTACH_CHANGED) */
@@ -248,7 +249,7 @@ index 2a4e87f..01c8b5b 100644
  };
  
  /*
-@@ -23666,6 +23873,12 @@ struct Vdbe {
+@@ -23666,6 +23874,12 @@ struct Vdbe {
    int startPos;
    int addedRows;
  #endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
@@ -261,7 +262,7 @@ index 2a4e87f..01c8b5b 100644
  };
  
  /*
-@@ -88435,7 +88648,11 @@ static int vdbeCommit(sqlite3 *db, Vdbe *p){
+@@ -88435,7 +88649,11 @@ static int vdbeCommit(sqlite3 *db, Vdbe *p){
          rc = sqlite3BtreeCommitPhaseOne(pBt, 0);
        }
      }
@@ -274,7 +275,7 @@ index 2a4e87f..01c8b5b 100644
      /* Do the commit only if all databases successfully complete phase 1.
      ** If one of the BtreeCommitPhaseOne() calls fails, this indicates an
      ** IO error while deleting or truncating a journal file. It is unlikely,
-@@ -88583,6 +88800,9 @@ static int vdbeCommit(sqlite3 *db, Vdbe *p){
+@@ -88583,6 +88801,9 @@ static int vdbeCommit(sqlite3 *db, Vdbe *p){
      ** transaction is already guaranteed, but some stray 'cold' journals
      ** may be lying around. Returning an error code won't help matters.
      */
@@ -284,7 +285,7 @@ index 2a4e87f..01c8b5b 100644
      disable_simulated_io_errors();
      sqlite3BeginBenignMalloc();
      for(i=0; i<db->nDb; i++){
-@@ -88868,6 +89088,9 @@ SQLITE_PRIVATE int sqlite3VdbeHalt(Vdbe *p){
+@@ -88868,6 +89089,9 @@ SQLITE_PRIVATE int sqlite3VdbeHalt(Vdbe *p){
      }else if( eStatementOp==0 ){
        if( p->rc==SQLITE_OK || p->errorAction==OE_Fail ){
          eStatementOp = SAVEPOINT_RELEASE;
@@ -294,7 +295,7 @@ index 2a4e87f..01c8b5b 100644
        }else if( p->errorAction==OE_Abort ){
          eStatementOp = SAVEPOINT_ROLLBACK;
        }else{
-@@ -89090,6 +89313,9 @@ SQLITE_PRIVATE int sqlite3VdbeReset(Vdbe *p){
+@@ -89090,6 +89314,9 @@ SQLITE_PRIVATE int sqlite3VdbeReset(Vdbe *p){
        fclose(out);
      }
    }
@@ -304,7 +305,7 @@ index 2a4e87f..01c8b5b 100644
  #endif
    return p->rc & db->errMask;
  }
-@@ -89194,6 +89420,9 @@ static void sqlite3VdbeClearObject(sqlite3 *db, Vdbe *p){
+@@ -89194,6 +89421,9 @@ static void sqlite3VdbeClearObject(sqlite3 *db, Vdbe *p){
      sqlite3DbFree(db, p->aScan);
    }
  #endif
@@ -314,7 +315,7 @@ index 2a4e87f..01c8b5b 100644
  }
  
  /*
-@@ -91886,6 +92115,44 @@ SQLITE_API int sqlite3_set_droptable_handle(sqlite3 *db, void (*xFunc)(sqlite3*,
+@@ -91886,6 +92116,44 @@ SQLITE_API int sqlite3_set_droptable_handle(sqlite3 *db, void (*xFunc)(sqlite3*,
  }
  #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
  
@@ -359,7 +360,7 @@ index 2a4e87f..01c8b5b 100644
  /*
  ** This is the top-level implementation of sqlite3_step().  Call
  ** sqlite3Step() to do most of the work.  If a schema error occurs,
-@@ -99584,6 +99851,15 @@ case OP_Insert: {
+@@ -99584,6 +99852,15 @@ case OP_Insert: {
    }
    x.pKey = 0;
    assert( BTREE_PREFORMAT==OPFLAG_PREFORMAT );
@@ -375,7 +376,7 @@ index 2a4e87f..01c8b5b 100644
    rc = sqlite3BtreeInsert(pC->uc.pCursor, &x,
        (pOp->p5 & (OPFLAG_APPEND|OPFLAG_SAVEPOSITION|OPFLAG_PREFORMAT)),
        seekResult
-@@ -99699,6 +99975,21 @@ case OP_Delete: {
+@@ -99699,6 +99976,21 @@ case OP_Delete: {
      assert( CORRUPT_DB || pC->movetoTarget==iKey );
    }
  #endif
@@ -397,7 +398,7 @@ index 2a4e87f..01c8b5b 100644
  
    /* If the update-hook or pre-update-hook will be invoked, set zDb to
    ** the name of the db to pass as to it. Also set local pTab to a copy
-@@ -100322,6 +100613,14 @@ case OP_IdxInsert: {        /* in2 */
+@@ -100322,6 +100614,14 @@ case OP_IdxInsert: {        /* in2 */
    x.pKey = pIn2->z;
    x.aMem = aMem + pOp->p3;
    x.nMem = (u16)pOp->p4.i;
@@ -412,7 +413,7 @@ index 2a4e87f..01c8b5b 100644
    rc = sqlite3BtreeInsert(pC->uc.pCursor, &x,
         (pOp->p5 & (OPFLAG_APPEND|OPFLAG_SAVEPOSITION|OPFLAG_PREFORMAT)),
        ((pOp->p5 & OPFLAG_USESEEKRESULT) ? pC->seekResult : 0)
-@@ -116953,7 +117252,11 @@ SQLITE_PRIVATE void sqlite3AlterRenameTable(
+@@ -116953,7 +117253,11 @@ SQLITE_PRIVATE void sqlite3AlterRenameTable(
  
    renameReloadSchema(pParse, iDb, INITFLAG_AlterRename);
    renameTestSchema(pParse, zDb, iDb==1, "after rename", 0);
@@ -425,7 +426,7 @@ index 2a4e87f..01c8b5b 100644
  exit_rename_table:
    sqlite3SrcListDelete(db, pSrc);
    sqlite3DbFree(db, zName);
-@@ -117135,6 +117438,9 @@ SQLITE_PRIVATE void sqlite3AlterFinishAddColumn(Parse *pParse, Token *pColDef){
+@@ -117135,6 +117439,9 @@ SQLITE_PRIVATE void sqlite3AlterFinishAddColumn(Parse *pParse, Token *pColDef){
          zTab, zDb
        );
      }
@@ -435,7 +436,7 @@ index 2a4e87f..01c8b5b 100644
    }
  }
  
-@@ -117346,7 +117652,13 @@ SQLITE_PRIVATE void sqlite3AlterRenameColumn(
+@@ -117346,7 +117653,13 @@ SQLITE_PRIVATE void sqlite3AlterRenameColumn(
    /* Drop and reload the database schema. */
    renameReloadSchema(pParse, iSchema, INITFLAG_AlterRename);
    renameTestSchema(pParse, zDb, iSchema==1, "after rename", 1);
@@ -450,7 +451,7 @@ index 2a4e87f..01c8b5b 100644
   exit_rename_column:
    sqlite3SrcListDelete(db, pSrc);
    sqlite3DbFree(db, zOld);
-@@ -118957,7 +119269,13 @@ SQLITE_PRIVATE void sqlite3AlterDropColumn(Parse *pParse, SrcList *pSrc, const T
+@@ -118957,7 +119270,13 @@ SQLITE_PRIVATE void sqlite3AlterDropColumn(Parse *pParse, SrcList *pSrc, const T
      sqlite3VdbeAddOp2(v, OP_Next, iCur, addr+1); VdbeCoverage(v);
      sqlite3VdbeJumpHere(v, addr);
    }
@@ -465,7 +466,7 @@ index 2a4e87f..01c8b5b 100644
  exit_drop_column:
    sqlite3DbFree(db, zCol);
    sqlite3SrcListDelete(db, pSrc);
-@@ -123295,6 +123613,9 @@ SQLITE_PRIVATE void sqlite3StartTable(
+@@ -123295,6 +123614,9 @@ SQLITE_PRIVATE void sqlite3StartTable(
      sqlite3VdbeAddOp3(v, OP_Insert, 0, reg3, reg1);
      sqlite3VdbeChangeP5(v, OPFLAG_APPEND);
      sqlite3VdbeAddOp0(v, OP_Close);
@@ -475,7 +476,7 @@ index 2a4e87f..01c8b5b 100644
    }
  
    /* Normal (non-error) return. */
-@@ -124963,7 +125284,13 @@ SQLITE_PRIVATE void sqlite3CreateView(
+@@ -124963,7 +125285,13 @@ SQLITE_PRIVATE void sqlite3CreateView(
  
    /* Use sqlite3EndTable() to add the view to the schema table */
    sqlite3EndTable(pParse, 0, &sEnd, 0, 0);
@@ -490,7 +491,7 @@ index 2a4e87f..01c8b5b 100644
  create_view_fail:
    sqlite3SelectDelete(db, pSelect);
    if( IN_RENAME_OBJECT ){
-@@ -125486,6 +125813,9 @@ SQLITE_PRIVATE void sqlite3DropTable(Parse *pParse, SrcList *pName, int isView,
+@@ -125486,6 +125814,9 @@ SQLITE_PRIVATE void sqlite3DropTable(Parse *pParse, SrcList *pName, int isView,
        sqlite3FkDropTable(pParse, pName, pTab);
      }
      sqlite3CodeDropTable(pParse, pTab, iDb, isView);
@@ -500,7 +501,7 @@ index 2a4e87f..01c8b5b 100644
    }
  
  exit_drop_table:
-@@ -126344,6 +126674,9 @@ SQLITE_PRIVATE void sqlite3CreateIndex(
+@@ -126344,6 +126675,9 @@ SQLITE_PRIVATE void sqlite3CreateIndex(
          /* A named index with an explicit CREATE INDEX statement */
          zStmt = sqlite3MPrintf(db, "CREATE%s INDEX %.*s",
              onError==OE_None ? "" : " UNIQUE", n, pName->z);
@@ -510,7 +511,7 @@ index 2a4e87f..01c8b5b 100644
        }else{
          /* An automatic index created by a PRIMARY KEY or UNIQUE constraint */
          /* zStmt = sqlite3MPrintf(""); */
-@@ -126546,6 +126879,9 @@ SQLITE_PRIVATE void sqlite3DropIndex(Parse *pParse, SrcList *pName, int ifExists
+@@ -126546,6 +126880,9 @@ SQLITE_PRIVATE void sqlite3DropIndex(Parse *pParse, SrcList *pName, int ifExists
      sqlite3ChangeCookie(pParse, iDb);
      destroyRootPage(pParse, pIndex->tnum, iDb);
      sqlite3VdbeAddOp4(v, OP_DropIndex, iDb, 0, 0, pIndex->zName, 0);
@@ -520,7 +521,7 @@ index 2a4e87f..01c8b5b 100644
    }
  
  exit_drop_index:
-@@ -127070,6 +127406,9 @@ SQLITE_PRIVATE void sqlite3BeginTransaction(Parse *pParse, int type){
+@@ -127070,6 +127407,9 @@ SQLITE_PRIVATE void sqlite3BeginTransaction(Parse *pParse, int type){
      }
    }
    sqlite3VdbeAddOp0(v, OP_AutoCommit);
@@ -530,7 +531,7 @@ index 2a4e87f..01c8b5b 100644
  }
  
  /*
-@@ -127092,6 +127431,9 @@ SQLITE_PRIVATE void sqlite3EndTransaction(Parse *pParse, int eType){
+@@ -127092,6 +127432,9 @@ SQLITE_PRIVATE void sqlite3EndTransaction(Parse *pParse, int eType){
    v = sqlite3GetVdbe(pParse);
    if( v ){
      sqlite3VdbeAddOp2(v, OP_AutoCommit, 1, isRollback);
@@ -540,7 +541,7 @@ index 2a4e87f..01c8b5b 100644
    }
  }
  
-@@ -127112,6 +127454,9 @@ SQLITE_PRIVATE void sqlite3Savepoint(Parse *pParse, int op, Token *pName){
+@@ -127112,6 +127455,9 @@ SQLITE_PRIVATE void sqlite3Savepoint(Parse *pParse, int op, Token *pName){
        return;
      }
      sqlite3VdbeAddOp4(v, OP_Savepoint, op, 0, 0, zName, P4_DYNAMIC);
@@ -550,7 +551,7 @@ index 2a4e87f..01c8b5b 100644
    }
  }
  
-@@ -137480,6 +137825,13 @@ typedef int (*sqlite3_loadext_entry)(
+@@ -137480,6 +137826,13 @@ typedef int (*sqlite3_loadext_entry)(
  /* handle after drop table done */
  #define sqlite3_set_droptable_handle   sqlite3_api->set_droptable_handle
  #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
@@ -564,7 +565,7 @@ index 2a4e87f..01c8b5b 100644
  #endif /* !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION) */
  
  #if !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION)
-@@ -139533,6 +139885,9 @@ SQLITE_PRIVATE void sqlite3Pragma(
+@@ -139533,6 +139886,9 @@ SQLITE_PRIVATE void sqlite3Pragma(
    if( v==0 ) return;
    sqlite3VdbeRunOnlyOnce(v);
    pParse->nMem = 2;
@@ -574,7 +575,7 @@ index 2a4e87f..01c8b5b 100644
  
    /* Interpret the [schema.] part of the pragma statement. iDb is the
    ** index of the database this pragma is being applied to in db.aDb[]. */
-@@ -152286,7 +152641,13 @@ SQLITE_PRIVATE void sqlite3BeginTrigger(
+@@ -152286,7 +152642,13 @@ SQLITE_PRIVATE void sqlite3BeginTrigger(
    if (tr_tm == TK_INSTEAD){
      tr_tm = TK_BEFORE;
    }
@@ -589,7 +590,7 @@ index 2a4e87f..01c8b5b 100644
    /* Build the Trigger object */
    pTrigger = (Trigger*)sqlite3DbMallocZero(db, sizeof(Trigger));
    if( pTrigger==0 ) goto trigger_cleanup;
-@@ -152681,6 +153042,13 @@ SQLITE_PRIVATE void sqlite3DropTrigger(Parse *pParse, SrcList *pName, int noErr)
+@@ -152681,6 +153043,13 @@ SQLITE_PRIVATE void sqlite3DropTrigger(Parse *pParse, SrcList *pName, int noErr)
      goto drop_trigger_cleanup;
    }
    sqlite3DropTriggerPtr(pParse, pTrigger);
@@ -603,7 +604,23 @@ index 2a4e87f..01c8b5b 100644
  
  drop_trigger_cleanup:
    sqlite3SrcListDelete(db, pName);
-@@ -180656,6 +181024,13 @@ SQLITE_API int sqlite3_db_config(sqlite3 *db, int op, ...){
+@@ -153427,6 +153796,15 @@ SQLITE_PRIVATE void sqlite3CodeRowTrigger(
+   assert( tr_tm==TRIGGER_BEFORE || tr_tm==TRIGGER_AFTER );
+   assert( (op==TK_UPDATE)==(pChanges!=0) );
+ 
++#ifdef SQLITE_ENABLE_BINLOG
++  /* If this db is a replica for a row-based binlog, the trigger operations
++  ** will be recorded by the row statements. Therefore, we need to skip the
++  ** trigger operations on replica database.
++  */
++  if (pParse->db->xBinlogHandle.isSkipTrigger) {
++    return;
++  } 
++#endif
+   for(p=pTrigger; p; p=p->pNext){
+ 
+     /* Sanity checking:  The schema for the trigger and for the table are
+@@ -180656,6 +181034,13 @@ SQLITE_API int sqlite3_db_config(sqlite3 *db, int op, ...){
        break;
      }
  #endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
@@ -617,7 +634,7 @@ index 2a4e87f..01c8b5b 100644
      default: {
        static const struct {
          int op;      /* The opcode */
-@@ -181083,6 +181458,9 @@ SQLITE_PRIVATE void sqlite3LeaveMutexAndCloseZombie(sqlite3 *db){
+@@ -181083,6 +181468,9 @@ SQLITE_PRIVATE void sqlite3LeaveMutexAndCloseZombie(sqlite3 *db){
    sqlite3CollapseDatabaseArray(db);
    assert( db->nDb<=2 );
    assert( db->aDb==db->aDbStatic );
@@ -627,7 +644,7 @@ index 2a4e87f..01c8b5b 100644
  
    /* Tell the code in notify.c that the connection no longer holds any
    ** locks and does not require any further unlock-notify callbacks.
-@@ -183308,6 +183686,9 @@ opendb_out:
+@@ -183308,6 +183696,9 @@ opendb_out:
    db->mDropSchemaName = NULL;
    db->xDropTableHandle = NULL;
  #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
@@ -637,7 +654,7 @@ index 2a4e87f..01c8b5b 100644
    *ppDb = db;
  #ifdef SQLITE_ENABLE_SQLLOG
    if( sqlite3GlobalConfig.xSqllog ){
-@@ -256913,6 +257294,883 @@ static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime
+@@ -256913,6 +257304,898 @@ static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime
  }
  #endif
  
@@ -723,6 +740,7 @@ index 2a4e87f..01c8b5b 100644
 +  db->xBinlogHandle.xLogFullCallback = bConfig->xLogFullCallback;
 +  db->xBinlogHandle.callbackCtx = bConfig->callbackCtx;
 +  db->xBinlogHandle.binlogConn = inst;
++  db->xBinlogHandle.isSkipTrigger = 0;
 +  return SQLITE_OK;
 +}
 + 
@@ -1371,6 +1389,7 @@ index 2a4e87f..01c8b5b 100644
 +    sqlite3OsDlClose(db->pVfs, db->xBinlogHandle.binlogApi.binlogLib);
 +    db->xBinlogHandle.binlogApi.binlogLib = NULL;
 +  }
++  db->xBinlogHandle.isSkipTrigger = 0;
 +}
 + 
 +SQLITE_PRIVATE int sqlite3BinlogStmtPrepare(sqlite3 *db, Sqlite3BinlogStmt *bStmt)
@@ -1455,9 +1474,15 @@ index 2a4e87f..01c8b5b 100644
 +  }
 +  int res =
 +    sqlite3TransferBinlogErrno(srcDb->xBinlogHandle.binlogApi.binlogLockReadApi(srcDb->xBinlogHandle.binlogConn));
-+  if (res != SQLITE_OK) {
++  if (res == SQLITE_BUSY) {
 +    return res;
 +  }
++  if (res != SQLITE_OK) {
++    sqlite3BinlogClose(srcDb);
++    return res;
++  }
++  u8 oldIsSkipTrigger = destDb->xBinlogHandle.isSkipTrigger;
++  destDb->xBinlogHandle.isSkipTrigger = 1;
 +  do {
 +    Sqlite3BinlogStmt bStmt;
 +    bStmt.curIdx = 0;
@@ -1489,6 +1514,7 @@ index 2a4e87f..01c8b5b 100644
 +      break;
 +    }
 +  } while (1);
++  destDb->xBinlogHandle.isSkipTrigger = oldIsSkipTrigger;
 +  (void)srcDb->xBinlogHandle.binlogApi.binlogUnlockReadApi(srcDb->xBinlogHandle.binlogConn);
 +  if (res != SQLITE_OK) {
 +    sqlite3BinlogClose(srcDb);
@@ -1513,7 +1539,13 @@ index 2a4e87f..01c8b5b 100644
 +  if (db == NULL || db->xBinlogHandle.xErrorCallback == NULL) {
 +    return;
 +  }
-+  db->xBinlogHandle.xErrorCallback(db->xBinlogHandle.callbackCtx, errNo, errMsg);
++
++  const char *zFile = sqlite3_db_filename(db, 0);
++  if (zFile == NULL || (db->xBinlogHandle.flags & BINLOG_FLAG_ENABLE)) {
++    sqlite3_log(SQLITE_ERROR, "binlog db has no file path");
++    return;
++  }
++  db->xBinlogHandle.xErrorCallback(db->xBinlogHandle.callbackCtx, errNo, errMsg, zFile);
 +}
 +/************** End of binlog implement ************************************/
 +#endif /* SQLITE_ENABLE_BINLOG */
@@ -1521,7 +1553,7 @@ index 2a4e87f..01c8b5b 100644
  // hw export the symbols
  #ifdef SQLITE_EXPORT_SYMBOLS
  #ifndef SQLITE_CKSUMVFS_STATIC
-@@ -256942,6 +258200,9 @@ struct sqlite3_api_routines_hw {
+@@ -256942,6 +258225,9 @@ struct sqlite3_api_routines_hw {
    int (*key_v2)(sqlite3*,const char*,const void*,int);
    int (*rekey)(sqlite3*,const void*,int);
    int (*rekey_v2)(sqlite3*,const char*,const void*,int);
@@ -1531,7 +1563,7 @@ index 2a4e87f..01c8b5b 100644
  };
  
  typedef struct sqlite3_api_routines_hw sqlite3_api_routines_hw;
-@@ -256952,13 +258213,22 @@ static const sqlite3_api_routines_hw sqlite3HwApis = {
+@@ -256952,13 +258238,22 @@ static const sqlite3_api_routines_hw sqlite3HwApis = {
    sqlite3_key,
    sqlite3_key_v2,
    sqlite3_rekey,
@@ -1557,5 +1589,5 @@ index 2a4e87f..01c8b5b 100644
  
  EXPORT_SYMBOLS const sqlite3_api_routines *sqlite3_export_symbols = &sqlite3Apis;
 -- 
-2.21.0.windows.1
+2.25.1
 
