@@ -1,17 +1,17 @@
-From d74c8eab96ed96bef1d8763254468c6eb4b9fc8b Mon Sep 17 00:00:00 2001
-From: zeng <chuanrui123@126.com>
-Date: Sun, 18 May 2025 22:37:42 +0800
-Subject: [PATCH 2/2] Bugfix on current version
+From 0e77f5e895b98c691daf7794882b200feb0a8cc5 Mon Sep 17 00:00:00 2001
+From: Liu Hongyang <liuhongyang4@huawei.com>
+Date: Tue, 20 May 2025 09:13:04 +0800
+Subject: [PATCH] bugfix
 
 ---
  src/sqlite3.c | 39 +++++++++++++++++++++++++++++++++++++++
  1 file changed, 39 insertions(+)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 9af08d0..8f6a199 100644
+index 2f26487..e5c38dc 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
-@@ -204125,6 +204125,39 @@ static int fts3ExprTermOffsetInit(Fts3Expr *pExpr, int iPhrase, void *ctx){
+@@ -204144,6 +204144,39 @@ static int fts3ExprTermOffsetInit(Fts3Expr *pExpr, int iPhrase, void *ctx){
    return rc;
  }
  
@@ -51,7 +51,7 @@ index 9af08d0..8f6a199 100644
  /*
  ** Implementation of offsets() function.
  */
-@@ -204161,6 +204194,12 @@ SQLITE_PRIVATE void sqlite3Fts3Offsets(
+@@ -204180,6 +204213,12 @@ SQLITE_PRIVATE void sqlite3Fts3Offsets(
    sCtx.iDocid = pCsr->iPrevId;
    sCtx.pCsr = pCsr;
  
@@ -65,5 +65,5 @@ index 9af08d0..8f6a199 100644
    ** string-buffer res for each column.
    */
 -- 
-2.21.0.windows.1
+2.25.1
 

@@ -41,8 +41,8 @@ typedef struct Sqlite3BinlogConfig {
     Sqlite3BinlogMode mode;
     unsigned short fullCallbackThreshold;
     unsigned int maxFileSize;
-    void (*xErrorCallback)(void *pCtx, int errNo, char *errMsg);
-    void (*xLogFullCallback)(void *pCtx, unsigned short currentCount);
+    void (*xErrorCallback)(void *pCtx, int errNo, char *errMsg, const char *dbPath);
+    void (*xLogFullCallback)(void *pCtx, unsigned short currentCount, const char *dbPath);
     void *callbackCtx;
 } Sqlite3BinlogConfig;
 /*
