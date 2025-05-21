@@ -13,4 +13,6 @@
 
 declare_args() {
   sqlite_support_check_pages = false
+  sqlite_feature_enable_pgo = false
+  sqlite_feature_pgo_path = ""
 }
