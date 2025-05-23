@@ -125,7 +125,6 @@ ohos_shared_library("sqlite") {
     "SQLITE_ENABLE_BINLOG",
   ]
   if (sqlite_support_check_pages) {
-    defines += [ "SQLITE_CHECK_PAGES" ]
   }
   cflags_c = [
     "-fvisibility=hidden",
