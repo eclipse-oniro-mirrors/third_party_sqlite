@@ -1,17 +1,45 @@
-From 0e77f5e895b98c691daf7794882b200feb0a8cc5 Mon Sep 17 00:00:00 2001
-From: Liu Hongyang <liuhongyang4@huawei.com>
-Date: Tue, 20 May 2025 09:13:04 +0800
-Subject: [PATCH] bugfix
+From 8d6efba6380ce511d82898451884835aba14dd3d Mon Sep 17 00:00:00 2001
+From: ryne3366 <zengchuanrui@huawei.com>
+Date: Sat, 24 May 2025 16:18:20 +0800
+Subject: [PATCH] attach no key specified, use null key
 
+Signed-off-by: ryne3366 <zengchuanrui@huawei.com>
 ---
- src/sqlite3.c | 39 +++++++++++++++++++++++++++++++++++++++
- 1 file changed, 39 insertions(+)
+ src/sqlite3.c | 52 +++++++++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 42 insertions(+), 10 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 2f26487..e5c38dc 100644
+index 2f26487..fac1ec2 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
-@@ -204144,6 +204144,39 @@ static int fts3ExprTermOffsetInit(Fts3Expr *pExpr, int iPhrase, void *ctx){
+@@ -121506,8 +121506,8 @@ static void attachFunc(
+   if( rc==SQLITE_OK ){
+     extern int sqlite3CodecAttach(sqlite3*, int, const void*, int);
+     extern void sqlite3CodecGetKey(sqlite3*, int, void**, int*);
+-    int nKey;
+-    char *zKey;
++    int nKey = 0;
++    char *zKey = NULL;
+     int t = sqlite3_value_type(argv[2]);
+     switch( t ){
+       case SQLITE_INTEGER:
+@@ -121524,14 +121524,7 @@ static void attachFunc(
+         break;
+ 
+       case SQLITE_NULL:
+-        /* No key specified.  Use the key from URI filename, or if none,
+-        ** use the key from the main database. */
+-        if( sqlite3CodecQueryParameters(db, zName, zPath)==0 ){
+-          sqlite3CodecGetKey(db, 0, (void**)&zKey, &nKey);
+-          if( nKey || sqlite3BtreeGetRequestedReserve(db->aDb[0].pBt)>0 ){
+-            rc = sqlite3CodecAttach(db, db->nDb-1, zKey, nKey);
+-          }
+-        }
++        /* No key specified. just use null key. */
+         break;
+     }
+   }
+@@ -204144,6 +204137,39 @@ static int fts3ExprTermOffsetInit(Fts3Expr *pExpr, int iPhrase, void *ctx){
    return rc;
  }
  
@@ -51,7 +79,7 @@ index 2f26487..e5c38dc 100644
  /*
  ** Implementation of offsets() function.
  */
-@@ -204180,6 +204213,12 @@ SQLITE_PRIVATE void sqlite3Fts3Offsets(
+@@ -204180,6 +204206,12 @@ SQLITE_PRIVATE void sqlite3Fts3Offsets(
    sCtx.iDocid = pCsr->iPrevId;
    sCtx.pCsr = pCsr;
  
@@ -65,5 +93,5 @@ index 2f26487..e5c38dc 100644
    ** string-buffer res for each column.
    */
 -- 
-2.25.1
+2.34.1
 
