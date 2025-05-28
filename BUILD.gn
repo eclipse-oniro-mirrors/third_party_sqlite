@@ -112,6 +112,7 @@ ohos_shared_library("sqlite") {
     "SQLITE_DIRECT_OVERFLOW_READ",
     "SQLITE_HAS_CODEC",
     "SQLITE_EXPORT_SYMBOLS",
+    "SQLITE_API=SQLITE_EXPORT", 
     "SQLITE_SHARED_BLOCK_OPTIMIZATION",
     "SQLITE_CODEC_ATTACH_CHANGED",
     "SQLITE_ENABLE_DROPTABLE_CALLBACK",
@@ -155,31 +156,11 @@ ohos_shared_library("sqlite") {
       "openssl:libcrypto_shared",
     ]
   }
-  if (is_ohos && is_clang && enhanced_opt &&
-      (target_cpu == "arm" || target_cpu == "arm64")) {
-    ldflags += [ "-Wl,-Bsymbolic" ]
-    if (sqlite_feature_enable_pgo) {
-      cflags_c += [
-        "-fprofile-use=" +
-          rebase_path("${sqlite_feature_pgo_path}/libsqlite.profdata",
-                      root_build_dir),
-        "-Wno-error=backend_plugin",
-        "-Wno-profile-instr-out-of-date",
-        "-Wno-profile-instr-unprofiled",
-      ]
-      if(target_cpu == "arm64" && enable_enhanced_opt) {
-        ldflags += [ "-Wl,--aarch64-inline-plt" ]
-      }
-    }
-  }
 }
 
 ohos_executable("sqlite3") {
   include_dirs = [ "$sqlite_patched_dir/include" ]
-  sources = [
-    "$sqlite_patched_dir/src/shell.c",
-    "$sqlite_patched_dir/src/sqlite3.c",
-  ]
+  sources = [ "$sqlite_patched_dir/src/shell.c" ]
 
   defines = [
     "NDEBUG=1",
@@ -210,10 +191,20 @@ ohos_executable("sqlite3") {
 
   cflags = [
     "-Wno-error=implicit-function-declaration",
+    "-Wno-macro-redefined",
     "-Wno-implicit-fallthrough",
   ]
 
-  deps = [ "//third_party/sqlite/patch:apply_patch" ]
+  deps = [
+    ":sqlite",
+    "//third_party/sqlite/patch:apply_patch",
+  ]
+
+  public_configs = [ ":sqlite_config" ]
+  external_deps = [ "c_utils:utils" ]
+  configs = [ ":sqlite3_private_config" ]
+  part_name = "sqlite"
+  subsystem_name = "thirdparty"
 }
 
 if (is_mingw || is_mac) {

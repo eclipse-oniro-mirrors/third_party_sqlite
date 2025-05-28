@@ -14,11 +14,7 @@
         "name": "sqlite",
         "subsystem": "thirdparty",
         "syscap": [],
-        "features": [
-            "sqlite_support_check_pages",
-            "sqlite_feature_enable_pgo",
-            "sqlite_feature_pgo_path"
-        ],
+        "features": [ "sqlite_support_check_pages" ],
         "adapted_system_type": [ "standard" ],
         "rom": "2200KB",
         "ram": "1024KB",
@@ -35,6 +31,7 @@
         "build": {
             "sub_component": [
                 "//third_party/sqlite:sqlite",
+                "//third_party/sqlite:sqlite3",
                 "//third_party/sqlite:sqliteicu"
             ],
             "inner_kits": [
@@ -50,6 +47,9 @@
                 },
                 {
                     "name": "//third_party/sqlite:sqliteicu"
+                },
+                {
+                    "name": "//third_party/sqlite:sqlite3"
                 }
             ],
             "test": [
