@@ -1,17 +1,28 @@
-From d96edfb55be3895eb2468ac461772df2855e79b6 Mon Sep 17 00:00:00 2001
+From c345d90710d07dc32a29cfbf917c1420acd2479e Mon Sep 17 00:00:00 2001
 From: ryne3366 <zengchuanrui@huawei.com>
-Date: Tue, 27 May 2025 16:18:04 +0800
-Subject: [PATCH] add corrupt log
+Date: Thu, 29 May 2025 17:18:58 +0800
+Subject: [PATCH] Bugfix on current version
 
 ---
- src/sqlite3.c | 203 +++++++++++++++++++++++++++++++++++++++++---------
- 1 file changed, 168 insertions(+), 35 deletions(-)
+ src/sqlite3.c | 219 ++++++++++++++++++++++++++++++++++++++++----------
+ 1 file changed, 177 insertions(+), 42 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 3ae7a1a..abe918d 100644
+index 6530284..5fb5efb 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
-@@ -57775,6 +57775,8 @@ static void MetaDwrCheckVacuum(BtShared *pBt);
+@@ -38781,8 +38781,8 @@ static void enableDbFileDelMonitor(int32_t fd)
+     }
+     flags |= HMFS_MONITOR_FL;
+     ret = ioctl(fd, HMFS_IOCTL_HW_SET_FLAGS, &flags);
+-    if (ret < 0) {
+-        sqlite3_log(SQLITE_WARNING, "Fd %d enable del monitor go wrong, errno = %d", fd, errno);
++    if (ret < 0 && errno != EACCES) {
++        sqlite3_log(SQLITE_WARNING, "Flags %u fd %d enable del monitor go wrong, errno = %d", flags, fd, errno);
+     }
+ }
+ 
+@@ -57778,6 +57778,8 @@ static void MetaDwrCheckVacuum(BtShared *pBt);
  static int MetaDwrRecoverAndBeginTran(Btree *pBt, int wrflag, int *pSchemaVersion);
  static int MetaDwrOpenAndCheck(Btree *pBt);
  static void MetaDwrDisable(Btree *pBt);
@@ -20,7 +31,7 @@ index 3ae7a1a..abe918d 100644
  #define META_HEADER_CHANGED 1
  #define META_SCHEMA_CHANGED 2
  #define META_IN_RECOVERY 1
-@@ -59553,11 +59555,12 @@ static int pager_end_transaction(Pager *pPager, int hasSuper, int bCommit){
+@@ -59556,11 +59558,12 @@ static int pager_end_transaction(Pager *pPager, int hasSuper, int bCommit){
      sqlite3PcacheTruncate(pPager->pPCache, pPager->dbSize);
    }
  #ifdef SQLITE_META_DWR
@@ -38,7 +49,7 @@ index 3ae7a1a..abe918d 100644
    }
  #endif
    if( pagerUseWal(pPager) ){
-@@ -74658,6 +74661,11 @@ static int lockBtree(BtShared *pBt){
+@@ -74661,6 +74664,11 @@ static int lockBtree(BtShared *pBt){
      }
      if( nPage>nPageFile ){
        if( sqlite3WritableSchema(pBt->db)==0 ){
@@ -50,7 +61,7 @@ index 3ae7a1a..abe918d 100644
          rc = SQLITE_CORRUPT_BKPT;
          goto page1_init_failed;
        }else{
-@@ -121506,8 +121514,8 @@ static void attachFunc(
+@@ -121509,8 +121517,8 @@ static void attachFunc(
    if( rc==SQLITE_OK ){
      extern int sqlite3CodecAttach(sqlite3*, int, const void*, int);
      extern void sqlite3CodecGetKey(sqlite3*, int, void**, int*);
@@ -61,7 +72,7 @@ index 3ae7a1a..abe918d 100644
      int t = sqlite3_value_type(argv[2]);
      switch( t ){
        case SQLITE_INTEGER:
-@@ -121524,14 +121532,7 @@ static void attachFunc(
+@@ -121527,14 +121535,7 @@ static void attachFunc(
          break;
  
        case SQLITE_NULL:
@@ -77,7 +88,7 @@ index 3ae7a1a..abe918d 100644
          break;
      }
    }
-@@ -183691,10 +183692,12 @@ opendb_out:
+@@ -183694,10 +183695,12 @@ opendb_out:
      db->eOpenState = SQLITE_STATE_SICK;
    }
  #ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
@@ -94,7 +105,7 @@ index 3ae7a1a..abe918d 100644
  #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
  #ifdef SQLITE_ENABLE_BINLOG
    sqlite3BinlogReset(db);
-@@ -204144,6 +204147,39 @@ static int fts3ExprTermOffsetInit(Fts3Expr *pExpr, int iPhrase, void *ctx){
+@@ -204147,6 +204150,39 @@ static int fts3ExprTermOffsetInit(Fts3Expr *pExpr, int iPhrase, void *ctx){
    return rc;
  }
  
@@ -134,7 +145,7 @@ index 3ae7a1a..abe918d 100644
  /*
  ** Implementation of offsets() function.
  */
-@@ -204180,6 +204216,12 @@ SQLITE_PRIVATE void sqlite3Fts3Offsets(
+@@ -204183,6 +204219,12 @@ SQLITE_PRIVATE void sqlite3Fts3Offsets(
    sCtx.iDocid = pCsr->iPrevId;
    sCtx.pCsr = pCsr;
  
@@ -147,7 +158,7 @@ index 3ae7a1a..abe918d 100644
    /* Loop through the table columns, appending offset information to
    ** string-buffer res for each column.
    */
-@@ -254366,7 +254408,20 @@ SQLITE_API int sqlite3_stmt_init(
+@@ -254369,7 +254411,20 @@ SQLITE_API int sqlite3_stmt_init(
  /* Return the source-id for this library */
  SQLITE_API const char *sqlite3_sourceid(void){ return SQLITE_SOURCE_ID; }
  /************************** End of sqlite3.c ******************************/
@@ -169,7 +180,15 @@ index 3ae7a1a..abe918d 100644
  #ifdef SQLITE_HAS_CODEC
  /************** Begin file hw_codec_openssl.h *******************************/
  #ifndef EXPOSE_INTERNAL_FUNC
-@@ -256014,7 +256069,12 @@ typedef struct MetaDwrHdr {
+@@ -255503,6 +255558,7 @@ int sqlite3CodecAttach(sqlite3* db, int nDb, const void *pKey, int nKey){
+     return SQLITE_ERROR;
+   }
+   sqlite3_mutex_enter(db->mutex);
++  p->pBt->btsFlags &= ~BTS_PAGESIZE_FIXED;
+ #ifdef SQLITE_CODEC_ATTACH_CHANGED
+   int rc = sqlite3CodecInitContext(ctx, p, pKey, nKey, nDb);
+ #else
+@@ -256017,7 +256073,12 @@ typedef struct MetaDwrHdr {
    u32 pageSz;
    u32 pageCnt;
    u64 dbFileInode;
@@ -183,7 +202,7 @@ index 3ae7a1a..abe918d 100644
    u32 checkSum;
    u8 *zones;
    Pgno *pages;
-@@ -256369,6 +256429,87 @@ static inline u64 CaculateMetaDwrWriteOffset(int pageSz, u32 idx, u8 zone) {
+@@ -256372,6 +256433,87 @@ static inline u64 CaculateMetaDwrWriteOffset(int pageSz, u32 idx, u8 zone) {
    return META_DWR_HEADER_PAGE_SIZE + pageSz * (idx * 2 + zone);
  }
  
@@ -271,7 +290,25 @@ index 3ae7a1a..abe918d 100644
  static void MetaDwrUpdateHeaderDbInfo(BtShared *pBt) {
    MetaDwrHdr *hdr = pBt->pPager->metaHdr;
    // 28 offset: dbSize, freelist pageNo, freelist pages count, schema cookie
-@@ -257055,19 +257196,6 @@ static void MetaDwrDisable(Btree *pBt)
+@@ -256592,11 +256734,12 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
+   if (pPager->metaMapPage == NULL) {
+     sqlite3_int64 sz = META_DWR_HEADER_PAGE_SIZE;
+     sqlite3OsFileControlHint(metaFd, SQLITE_FCNTL_CHUNK_SIZE, &sz);
+-    sqlite3OsFileControlHint(metaFd, SQLITE_FCNTL_SIZE_HINT, &sz);
+-    void *page = osMmap(0, META_DWR_HEADER_PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED,
+-                        ((unixFile *)metaFd)->h, 0);
+-    if (page != MAP_FAILED) {
+-      pPager->metaMapPage = page;
++    if (sqlite3OsFileControl(metaFd, SQLITE_FCNTL_SIZE_HINT, &sz) == SQLITE_OK) {
++      void *page = osMmap(0, META_DWR_HEADER_PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED,
++                          ((unixFile *)metaFd)->h, 0);
++      if (page != MAP_FAILED) {
++        pPager->metaMapPage = page;
++      }
+     }
+   }
+ #endif
+@@ -257058,19 +257201,6 @@ static void MetaDwrDisable(Btree *pBt)
  }
  #endif
  #if SQLITE_OS_UNIX
@@ -291,7 +328,7 @@ index 3ae7a1a..abe918d 100644
  static void ResetLockStatus(void)
  {
    (void)memset(&g_lockStatus, 0, sizeof(g_lockStatus));
-@@ -257171,8 +257299,13 @@ static inline const char *FlockToName(int l_type)
+@@ -257174,8 +257304,13 @@ static inline const char *FlockToName(int l_type)
  
  static int DumpProcessLocks(int fd, struct flock *lock, const char *lockName, char *dumpBuf, int bufLen)
  {
@@ -307,5 +344,5 @@ index 3ae7a1a..abe918d 100644
      return 0;
    }
 -- 
-2.34.1
+2.28.0.windows.1
 
