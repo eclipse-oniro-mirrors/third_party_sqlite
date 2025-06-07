@@ -1,0 +1,180 @@
+From fa5b9fefdd1d5b13ad1953690ed93f21f26be9ac Mon Sep 17 00:00:00 2001
+From: ryne3366 <zengchuanrui@huawei.com>
+Date: Fri, 6 Jun 2025 19:42:36 +0800
+Subject: [PATCH 1/2] rekey multi process
+
+---
+ src/sqlite3.c | 93 +++++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 90 insertions(+), 3 deletions(-)
+
+diff --git a/src/sqlite3.c b/src/sqlite3.c
+index 6530284..b808dc6 100644
+--- a/src/sqlite3.c
++++ b/src/sqlite3.c
+@@ -15692,6 +15692,7 @@ typedef int VList;
+ #define RESERVED_BYTE     (PENDING_BYTE+1)
+ #define SHARED_FIRST      (PENDING_BYTE+2)
+ #define SHARED_SIZE       510
++#define SHARED_CODEC_BYTE (PENDING_BYTE+2097)
+ 
+ /*
+ ** Wrapper around OS specific sqlite3_os_init() function.
+@@ -38678,6 +38679,10 @@ struct unixFile {
+ #endif
+ };
+ 
++#ifdef SQLITE_HAS_CODEC
++static int CodecFileLock(Pager *pPager, short lockType);
++#endif
++
+ /* This variable holds the process id (pid) from when the xRandomness()
+ ** method was called.  If xOpen() is called from a different process id,
+ ** indicating that a fork() has occurred, the PRNG will be reset.
+@@ -39623,6 +39628,9 @@ struct unixInodeInfo {
+   sqlite3_mutex *pLockMutex;      /* Hold this mutex for... */
+   int nShared;                      /* Number of SHARED locks held */
+   int nLock;                        /* Number of outstanding file locks */
++#if SQLITE_HAS_CODEC
++  void *codecPager;
++#endif
+   unsigned char eFileLock;          /* One of SHARED_LOCK, RESERVED_LOCK etc. */
+   unsigned char bProcessLock;       /* An exclusive process lock is held */
+   UnixUnusedFd *pUnused;            /* Unused file descriptors to close */
+@@ -61693,6 +61701,9 @@ SQLITE_PRIVATE int sqlite3PagerClose(Pager *pPager, sqlite3 *db){
+   PAGERTRACE(("CLOSE %d\n", PAGERID(pPager)));
+   IOTRACE(("CLOSE %p\n", pPager))
+   sqlite3OsClose(pPager->jfd);
++#if SQLITE_OS_UNIX && defined(SQLITE_HAS_CODEC)
++  if( pPager->xCodec ) CodecFileLock(pPager, F_UNLCK);
++#endif
+   sqlite3OsClose(pPager->fd);
+   sqlite3PageFree(pTmp);
+   sqlite3PcacheClose(pPager->pPCache);
+@@ -255484,6 +255495,54 @@ void sqlite3CodecDetach(void *ctx){
+   return;
+ }
+ 
++#if SQLITE_OS_UNIX
++static int CodecFileLock(Pager *pPager, short lockType)
++{
++  sqlite3_file *fd = pPager->fd;
++  unixFile *pFile = (unixFile *)fd;
++  unixInodeInfo *pInode = pFile->pInode;
++  if (pInode == NULL) {
++    sqlite3_log(SQLITE_IOERR_RDLOCK, "Codec file lock %d go wrong", lockType);
++    return SQLITE_IOERR_RDLOCK;
++  }
++  sqlite3_mutex_enter(pInode->pLockMutex);
++  // last conntection release the lock
++  if (lockType == F_UNLCK && pInode->nRef > 1) {
++    sqlite3_mutex_leave(pInode->pLockMutex);
++    return SQLITE_OK;
++  }
++  if (lockType == F_WRLCK && pInode->nRef > 1) {
++    sqlite3_mutex_leave(pInode->pLockMutex);
++    sqlite3_log(SQLITE_BUSY, "Codec file lock wrlock busy ref %d", pInode->nRef);
++    return SQLITE_BUSY;
++  }
++  if (lockType == F_RDLCK && pInode->codecPager != 0 && pInode->codecPager != pPager) {
++    sqlite3_mutex_leave(pInode->pLockMutex);
++    sqlite3_log(SQLITE_BUSY, "Codec exists file lock wrlock");
++    return SQLITE_BUSY;
++  }
++  struct flock lock;
++  lock.l_whence = SEEK_SET;
++  lock.l_start = SHARED_CODEC_BYTE;
++  lock.l_len = 1;
++  // F_RDLCK, F_WRLCK, F_UNLCK
++  lock.l_type = lockType;
++  int rc = osSetPosixAdvisoryLock(pFile->h, &lock, pFile);
++  if (rc < 0) {
++    int tErrno = errno;
++    rc = sqliteErrorFromPosixError(tErrno, SQLITE_IOERR_RDLOCK);
++    if (IS_LOCK_ERROR(rc)) {
++      storeLastErrno(pFile, tErrno);
++    }
++    sqlite3_log(rc, "Codec file lock %d: errno = %d", lockType, tErrno);
++  } else {
++    pInode->codecPager = (lockType == F_WRLCK ? pPager : 0);
++  }
++  sqlite3_mutex_leave(pInode->pLockMutex);
++  return rc;
++}
++#endif
++
+ int sqlite3CodecAttach(sqlite3* db, int nDb, const void *pKey, int nKey){
+   if(db == NULL){
+     return SQLITE_ERROR;
+@@ -255503,6 +255562,18 @@ int sqlite3CodecAttach(sqlite3* db, int nDb, const void *pKey, int nKey){
+     return SQLITE_ERROR;
+   }
+   sqlite3_mutex_enter(db->mutex);
++  Pager *pPager = p->pBt->pPager;
++#if SQLITE_OS_UNIX
++  if (pPager->fd != NULL && isOpen(pPager->fd)) {
++    int ret = CodecFileLock(pPager, F_RDLCK);
++    if(ret != SQLITE_OK){
++      sqlite3_free(ctx);
++      sqlite3_mutex_leave(db->mutex);
++      sqlite3_log(ret, "sqlite3CodecAttach: codec lock error");
++      return ret;
++    }
++  }
++#endif
+ #ifdef SQLITE_CODEC_ATTACH_CHANGED
+   int rc = sqlite3CodecInitContext(ctx, p, pKey, nKey, nDb);
+ #else
+@@ -255510,6 +255581,7 @@ int sqlite3CodecAttach(sqlite3* db, int nDb, const void *pKey, int nKey){
+ #endif /* SQLITE_CODEC_ATTACH_CHANGED */
+   if(rc != SQLITE_OK){
+     sqlite3_free(ctx);
++    sqlite3_mutex_leave(db->mutex);
+     return rc;
+   }
+   sqlite3PagerSetCodec(sqlite3BtreePager(p), sqlite3Codec, NULL, sqlite3CodecDetach, (void *)ctx);
+@@ -255518,7 +255590,7 @@ int sqlite3CodecAttach(sqlite3* db, int nDb, const void *pKey, int nKey){
+   p->pBt->btsFlags &= ~BTS_PAGESIZE_FIXED;
+   sqlite3BtreeSetPageSize(p, ctx->readCtx->codecConst.cipherPageSize, ctx->readCtx->codecConst.reserveSize, 0);
+   sqlite3BtreeSecureDelete(p, 1);
+-  if(isOpen(p->pBt->pPager->fd)){
++  if(isOpen(pPager->fd)){
+     sqlite3BtreeSetAutoVacuum(p, SQLITE_DEFAULT_AUTOVACUUM);
+   }
+ 
+@@ -255589,7 +255661,20 @@ int sqlite3_rekey_v2(sqlite3 *db, const char *zDb, const void *pKey, int nKey){
+     return rc;
+   }
+   sqlite3_mutex_enter(db->mutex);
+-  (void)sqlite3BtreeBeginTrans(p, 1, 0);
++  rc = sqlite3BtreeBeginTrans(p, 1, 0);
++  if(rc != SQLITE_OK){
++    sqlite3_mutex_leave(db->mutex);
++    sqlite3_log(rc, "sqlite3 rekey: error when begin trans %s.", sqlite3PagerFilename(pPager, 1));
++    return rc;
++  }
++#if SQLITE_OS_UNIX
++  if((rc = CodecFileLock(pPager, F_WRLCK)) != SQLITE_OK){
++    (void)sqlite3BtreeRollback(p, SQLITE_ABORT_ROLLBACK, 0);
++    sqlite3_mutex_leave(db->mutex);
++    sqlite3_log(rc, "sqlite3_rekey_v2: error when lock %s.", sqlite3PagerFilename(pPager, 1));
++    return rc;
++  }
++#endif
+   sqlite3PagerPagecount(pPager, &pageCount);
+   // support hmac algo changed by using rekey operation
+   int oldHmacAlgo = ctx->writeCtx->codecConst.hmacAlgo;
+@@ -255624,8 +255709,10 @@ int sqlite3_rekey_v2(sqlite3 *db, const char *zDb, const void *pKey, int nKey){
+     }
+     (void)sqlite3BtreeRollback(p, SQLITE_ABORT_ROLLBACK, 0);
+   }
++#if SQLITE_OS_UNIX
++  (void)CodecFileLock(pPager, F_RDLCK);
++#endif
+   sqlite3_mutex_leave(db->mutex);
+-
+   return rc;
+ }
+ 
+-- 
+2.34.1
+
