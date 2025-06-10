@@ -1,0 +1,729 @@
+From 6795a730af198fed664ac8418b36368048c4aa4b Mon Sep 17 00:00:00 2001
+From: MartinChoo <214582617@qq.com>
+Date: Sat, 7 Jun 2025 22:25:48 +0800
+Subject: [PATCH] Allow enable checksum through PRAGMA
+
+Signed-off-by: MartinChoo <214582617@qq.com>
+---
+ ext/misc/cksumvfs.c | 185 ++++++++++++++++++++++++++++++++++++--------
+ src/sqlite3.c       | 175 ++++++++++++++++++++++++++++++++---------
+ 2 files changed, 293 insertions(+), 67 deletions(-)
+
+diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
+index 6f4c55c..a23a997 100644
+--- a/ext/misc/cksumvfs.c
++++ b/ext/misc/cksumvfs.c
+@@ -73,12 +73,12 @@
+ ** encountered that contains an invalid checksum.
+ **
+ ** Checksumming only works on databases that have a reserve-bytes
+-** value of exactly 8.  The default value for reserve-bytes is 0.
++** value of exactly 10.  The default value for reserve-bytes is 0.
+ ** Hence, newly created database files will omit the checksum by
+ ** default.  To create a database that includes a checksum, change
+-** the reserve-bytes value to 8 by runing:
++** the reserve-bytes value to 10 by runing:
+ **
+-**    int n = 8;
++**    int n = 10;
+ **    sqlite3_file_control(db, 0, SQLITE_FCNTL_RESERVE_BYTES, &n);
+ **
+ ** If you do this immediately after creating a new database file,
+@@ -92,12 +92,12 @@
+ ** If the database is in WAL mode, you should shutdown and
+ ** reopen all database connections before continuing.
+ **
+-** From the CLI, use the ".filectrl reserve_bytes 8" command, 
++** From the CLI, use the ".filectrl reserve_bytes 10" command, 
+ ** followed by "VACUUM;".
+ **
+ ** Note that SQLite allows the number of reserve-bytes to be
+ ** increased but not decreased.  So if a database file already
+-** has a reserve-bytes value greater than 8, there is no way to
++** has a reserve-bytes value greater than 10, there is no way to
+ ** activate checksumming on that database, other than to dump
+ ** and restore the database file.  Note also that other extensions
+ ** might also make use of the reserve-bytes.  Checksumming will
+@@ -140,26 +140,29 @@
+ ** "Verification" in this context means the feature that causes
+ ** SQLITE_IOERR_DATA errors if a checksum mismatch is detected while
+ ** reading.  Checksums are always kept up-to-date as long as the
+-** reserve-bytes value of the database is 8, regardless of the setting
++** reserve-bytes value of the database is 10, regardless of the setting
+ ** of this pragma.  Checksum verification can be disabled (for example)
+ ** to do forensic analysis of a database that has previously reported
+ ** a checksum error.
+ **
+ ** The "checksum_verification" pragma will always respond with "0" if
+-** the database file does not have a reserve-bytes value of 8.  The
++** the database file does not have a reserve-bytes value of 10.  The
+ ** pragma will return no rows at all if the cksumvfs extension is
+ ** not loaded.
+ **
+ ** IMPLEMENTATION NOTES
+ **
+-** The checksum is stored in the last 8 bytes of each page.  This
++** The checksum is stored in the last 10 bytes of each page.  This
+ ** module only operates if the "bytes of reserved space on each page"
+-** value at offset 20 the SQLite database header is exactly 8.  If
+-** the reserved-space value is not 8, this module is a no-op.
++** value at offset 20 the SQLite database header is exactly 10.  If
++** the reserved-space value is not 10, this module is a no-op.
+ */
+ #if defined(SQLITE_AMALGAMATION) && !defined(SQLITE_CKSUMVFS_STATIC)
+ # define SQLITE_CKSUMVFS_STATIC
+ #endif
++#ifndef SQLITE_EXPORT
++# define SQLITE_EXPORT
++#endif
+ #ifdef SQLITE_CKSUMVFS_STATIC
+ # include "sqlite3.h"
+ #else
+@@ -193,6 +196,21 @@ typedef struct CksmFile CksmFile;
+   typedef unsigned char u8;
+   typedef unsigned int u32;
+ #endif
++typedef sqlite3_uint64 u64;
++
++/*
++** Cksumvfs reserved area, file format:
++** -----------------------------------------------
++** |--  MagicNum  --|-- CksumType --|--Checksum--|
++** |--1 byte, 0xff--|--1 byte, 0/1--|-- 8 bytes--|
++** -----------------------------------------------
++** MagicNum: 0xff, CksumType: 0 means without checksum, 1 means with checksum
++*/
++#define CKSUMVFS_MAGIC_NUM 0xff
++#define CKSUMVFS_WITHOUT_CHECKSUM 0
++#define CKSUMVFS_CALC_CHECKSUM 1
++#define CKSUMVFS_CHECKSUM_SIZE 8
++#define CKSUMVFS_RESERVED_SIZE (1+1+CKSUMVFS_CHECKSUM_SIZE)
+ 
+ /* Access to a lower-level VFS that (might) implement dynamic loading,
+ ** access to randomness, etc.
+@@ -205,8 +223,9 @@ struct CksmFile {
+   sqlite3_file base;    /* IO methods */
+   const char *zFName;   /* Original name of the file */
+   char computeCksm;     /* True to compute checksums.
+-                        ** Always true if reserve size is 8. */
++                        ** Always true if reserve size is 10. */
+   char verifyCksm;      /* True to verify checksums */
++  char disableVerify;   /* True if checksum verification is disabled */
+   char isWal;           /* True if processing a WAL file */
+   char inCkpt;          /* Currently doing a checkpoint */
+   CksmFile *pPartner;   /* Ptr from WAL to main-db, or from main-db to WAL */
+@@ -307,6 +326,79 @@ static const sqlite3_io_methods cksm_io_methods = {
+   + (((x)&0x00FF0000)>>8)  + (((x)&0xFF000000)>>24) \
+ )
+ 
++static u64 cksmComputeDeepFastLE(void *src, int srcLen){
++  u32 s1 = 0, s2 = 0;
++  u32 s3 = 0, s4 = 0;
++  u32 s5 = 0, s6 = 0;
++  u32 s7 = 0, s8 = 0;
++  u32 *aData = (u32*)src;
++  u32 *aEnd = aData + srcLen/4;
++  u64 aOut;
++  u8 *u8p_aOut = (u8*)&aOut;
++  while( aData + 32 <= aEnd ){
++    s1 += *aData++ + s2;
++    s2 += *aData++ + s1;
++    s1 += *aData++ + s2;
++    s2 += *aData++ + s1;
++    s1 += *aData++ + s2;
++    s2 += *aData++ + s1;
++    s1 += *aData++ + s2;
++    s2 += *aData++ + s1;
++
++    s3 += *aData++ + s4;
++    s4 += *aData++ + s3;
++    s3 += *aData++ + s4;
++    s4 += *aData++ + s3;
++    s3 += *aData++ + s4;
++    s4 += *aData++ + s3;
++    s3 += *aData++ + s4;
++    s4 += *aData++ + s3;
++
++    s5 += *aData++ + s6;
++    s6 += *aData++ + s5;
++    s5 += *aData++ + s6;
++    s6 += *aData++ + s5;
++    s5 += *aData++ + s6;
++    s6 += *aData++ + s5;
++    s5 += *aData++ + s6;
++    s6 += *aData++ + s5;
++
++    s7 += *aData++ + s8;
++    s8 += *aData++ + s7;
++    s7 += *aData++ + s8;
++    s8 += *aData++ + s7;
++    s7 += *aData++ + s8;
++    s8 += *aData++ + s7;
++    s7 += *aData++ + s8;
++    s8 += *aData++ + s7;
++
++    s3 += 13*s1 + 21*s2;
++    s4 += 21*s1 + 34*s2;
++
++    s5 += 13*s3 + 21*s4;
++    s6 += 21*s3 + 34*s4;
++
++    s7 += 13*s5 + 21*s6;
++    s8 += 21*s5 + 34*s6;
++
++    s1 = s7;
++    s2 = s8;
++    s3 = 0;
++    s4 = 0;
++    s5 = 0;
++    s6 = 0;
++    s7 = 0;
++    s8 = 0;
++  }
++  while( aData < aEnd ){
++    s1 = *aData++ + s1 + s2;
++    s2 = *aData++ + s1 + s2;
++  }
++  memcpy(u8p_aOut, &s1, 4);
++  memcpy(u8p_aOut + 4, &s2, 4);
++  return aOut;
++}
++
+ /* Compute a checksum on a buffer */
+ static void cksmCompute(
+   u8 *a,           /* Content to be checksummed */
+@@ -324,10 +416,8 @@ static void cksmCompute(
+ 
+   if( 1 == *(u8*)&x ){
+     /* Little-endian */
+-    do {
+-      s1 += *aData++ + s2;
+-      s2 += *aData++ + s1;
+-    }while( aData<aEnd );
++    *(u64*)aOut = cksmComputeDeepFastLE(a, nByte);
++    return;
+   }else{
+     /* Big-endian */
+     do {
+@@ -356,14 +446,16 @@ static void cksmVerifyFunc(
+ ){
+   int nByte;
+   u8 *data;
+-  u8 cksum[8];
++  u8 cksum[CKSUMVFS_CHECKSUM_SIZE];
+   data = (u8*)sqlite3_value_blob(argv[0]);
+   if( data==0 ) return;
+   if( sqlite3_value_type(argv[0])!=SQLITE_BLOB ) return;
+   nByte = sqlite3_value_bytes(argv[0]);
+   if( nByte<512 || nByte>65536 || (nByte & (nByte-1))!=0 ) return;
+-  cksmCompute(data, nByte-8, cksum);
+-  sqlite3_result_int(context, memcmp(data+nByte-8,cksum,8)==0);
++  if( data[nByte-CKSUMVFS_RESERVED_SIZE]!=CKSUMVFS_MAGIC_NUM
++    || data[nByte-CKSUMVFS_RESERVED_SIZE+1]!=CKSUMVFS_CALC_CHECKSUM ) return;
++  cksmCompute(data, nByte-CKSUMVFS_CHECKSUM_SIZE, cksum);
++  sqlite3_result_int(context, memcmp(data+nByte-CKSUMVFS_CHECKSUM_SIZE,cksum,CKSUMVFS_CHECKSUM_SIZE)==0);
+ }
+ 
+ #ifdef SQLITE_CKSUMVFS_INIT_FUNCNAME
+@@ -375,7 +467,7 @@ static void cksmVerifyFunc(
+ **
+ **   sqlite3_file_control(db, SCHEMANAME, SQLITE_FCNTL_RESERVE_BYTE, &n);
+ **
+-** In order to set the reserve bytes value to 8, so that cksumvfs will
++** In order to set the reserve bytes value to 10, so that cksumvfs will
+ ** operation.  This feature is provided (if and only if the
+ ** SQLITE_CKSUMVFS_INIT_FUNCNAME compile-time option is set to a string
+ ** which is the name of the SQL function) so as to provide the ability
+@@ -393,7 +485,7 @@ static void cksmInitFunc(
+   int argc,
+   sqlite3_value **argv
+ ){
+-  int nByte = 8;
++  int nByte = CKSUMVFS_RESERVED_SIZE;
+   const char *zSchemaName = (const char*)sqlite3_value_text(argv[0]);
+   sqlite3 *db = sqlite3_context_db_handle(context);
+   sqlite3_file_control(db, zSchemaName, SQLITE_FCNTL_RESERVE_BYTES, &nByte);
+@@ -422,9 +514,11 @@ static int cksmClose(sqlite3_file *pFile){
+ static void cksmSetFlags(CksmFile *p, int hasCorrectReserveSize){
+   if( hasCorrectReserveSize!=p->computeCksm ){
+     p->computeCksm = p->verifyCksm = hasCorrectReserveSize;
++    if( p->disableVerify ) p->verifyCksm = 0;
+     if( p->pPartner ){
+       p->pPartner->verifyCksm = hasCorrectReserveSize;
+       p->pPartner->computeCksm = hasCorrectReserveSize;
++      if( p->disableVerify ) p->pPartner->verifyCksm = 0;
+     }
+   }
+ }
+@@ -435,9 +529,11 @@ static void EncodeReservedBytesIntoBase16(const u8 *reserved, int len, char *enc
+     *encodeStr++ = baseCode[(reserved[i] >> 4) & 0x0F];
+     *encodeStr++ = baseCode[reserved[i] & 0x0F];
+   }
+-  *encodeStr = '0';
++  *encodeStr = '\0';
+ }
+ 
++#define CKSUM_HEX_LEN (CKSUMVFS_CHECKSUM_SIZE+1)*2
++
+ /*
+ ** Read data from a cksm-file.
+ */
+@@ -456,7 +552,7 @@ static int cksmRead(
+           memcmp(zBuf,"SQLite format 3",16)==0 || memcmp(zBuf,"ZV-",3)==0 
+     )){
+       u8 *d = (u8*)zBuf;
+-      char hasCorrectReserveSize = (d[20]==8);
++      char hasCorrectReserveSize = (d[20]==CKSUMVFS_RESERVED_SIZE);
+       cksmSetFlags(p, hasCorrectReserveSize);
+     }
+     /* Verify the checksum if
+@@ -464,18 +560,28 @@ static int cksmRead(
+     **        database page, only support pageSize:4K
+     **    (2) checksum verification is enabled
+     **    (3) we are not in the middle of checkpoint
++    **    (4) magic number should be 0xff
++    **    (5) checksum type should be 1, 0 means without checksum
+     */
+     if( iAmt==4096           /* (1) */
+      && p->verifyCksm       /* (2) */
+      && !p->inCkpt          /* (3) */
+     ){
+-      u8 cksum[8];
+-      cksmCompute((u8*)zBuf, iAmt-8, cksum);
+-      if( memcmp((u8*)zBuf+iAmt-8, cksum, 8)!=0 ){
+-        char expect[18] = {0};
+-        char actual[18] = {0};
+-        EncodeReservedBytesIntoBase16((u8 *)zBuf+iAmt-8, 8, expect, 18);
+-        EncodeReservedBytesIntoBase16(cksum, 8, actual, 18);
++      if( ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE]!=CKSUMVFS_MAGIC_NUM ){ /* (4) */
++        sqlite3_log(SQLITE_IOERR_DATA, "unrecognized format, offset %lld of \"%s\", amt:%d", iOfst, p->zFName, iAmt);
++        return SQLITE_IOERR_DATA;
++      }
++      if( ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE+1]==CKSUMVFS_WITHOUT_CHECKSUM ){ /* (5) */
++        return rc;
++      }
++      u8 cksum[CKSUMVFS_CHECKSUM_SIZE];
++      cksmCompute((u8*)zBuf, iAmt-CKSUMVFS_CHECKSUM_SIZE, cksum);
++      if( memcmp((u8*)zBuf+iAmt-CKSUMVFS_CHECKSUM_SIZE, cksum, CKSUMVFS_CHECKSUM_SIZE)!=0 ){
++        char expect[CKSUM_HEX_LEN] = {0};
++        char actual[CKSUM_HEX_LEN] = {0};
++        EncodeReservedBytesIntoBase16((u8 *)zBuf+iAmt-CKSUMVFS_CHECKSUM_SIZE, CKSUMVFS_CHECKSUM_SIZE, expect,
++          CKSUM_HEX_LEN);
++        EncodeReservedBytesIntoBase16(cksum, CKSUMVFS_CHECKSUM_SIZE, actual, CKSUM_HEX_LEN);
+         sqlite3_log(SQLITE_IOERR_DATA, "checksum fault offset %lld of \"%s\", amt:%d, expect:%s, actual:%s",
+            iOfst, p->zFName, iAmt, expect, actual);
+         rc = SQLITE_IOERR_DATA;
+@@ -500,7 +606,7 @@ static int cksmWrite(
+         memcmp(zBuf,"SQLite format 3",16)==0 || memcmp(zBuf,"ZV-",3)==0 
+   )){
+     u8 *d = (u8*)zBuf;
+-    char hasCorrectReserveSize = (d[20]==8);
++    char hasCorrectReserveSize = (d[20]==CKSUMVFS_RESERVED_SIZE);
+     cksmSetFlags(p, hasCorrectReserveSize);
+   }
+   /* If the write size is appropriate for a database page and if
+@@ -513,7 +619,11 @@ static int cksmWrite(
+    && p->computeCksm
+    && !p->inCkpt
+   ){
+-    cksmCompute((u8*)zBuf, iAmt-8, ((u8*)zBuf)+iAmt-8);
++    ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE]=CKSUMVFS_MAGIC_NUM;
++    ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE+1]=p->verifyCksm ? CKSUMVFS_CALC_CHECKSUM : CKSUMVFS_WITHOUT_CHECKSUM;
++    if( p->verifyCksm ){ /* do not compute checksum if verifyCksm is off */
++      cksmCompute((u8*)zBuf, iAmt-CKSUMVFS_CHECKSUM_SIZE, ((u8*)zBuf)+iAmt-CKSUMVFS_CHECKSUM_SIZE);
++    }
+   }
+   return pFile->pMethods->xWrite(pFile, zBuf, iAmt, iOfst);
+ }
+@@ -585,11 +695,16 @@ static int cksmFileControl(sqlite3_file *pFile, int op, void *pArg){
+          || sqlite3_stricmp("yes",zArg)==0
+          || sqlite3_stricmp("on",zArg)==0
+         ){
++          p->disableVerify = 0;
+           p->verifyCksm = p->computeCksm;
+         }else{
++          p->disableVerify = 1;
+           p->verifyCksm = 0;
+         }
+-        if( p->pPartner ) p->pPartner->verifyCksm = p->verifyCksm;
++        if( p->pPartner ){
++          p->pPartner->disableVerify = p->disableVerify;
++          p->pPartner->verifyCksm = p->verifyCksm;
++        }
+       }
+       azArg[0] = sqlite3_mprintf("%d",p->verifyCksm);
+       return SQLITE_OK;
+@@ -729,9 +844,11 @@ static int cksmOpen(
+     p->pPartner->pPartner = p;
+     p->isWal = 1;
+     p->computeCksm = p->pPartner->computeCksm;
++    p->verifyCksm = p->pPartner->verifyCksm;
+   }else{
+     p->isWal = 0;
+     p->computeCksm = 0;
++    p->verifyCksm = 0;
+   }
+   p->zFName = zName;
+ cksm_open_done:
+@@ -902,6 +1019,10 @@ int sqlite3_cksumvfs_init(
+ #endif /* !defined(SQLITE_CKSUMVFS_STATIC) */
+ 
+ #ifdef SQLITE_CKSUMVFS_STATIC
++sqlite3_file *sqlite3_get_orig_file(sqlite3_file *file) {
++  return ORIGFILE(file);
++}
++
+ struct sqlite3_api_routines_cksumvfs {
+   int (*register_cksumvfs)(const char *);
+   int (*unregister_cksumvfs)();
+diff --git a/src/sqlite3.c b/src/sqlite3.c
+index 3be1113..80d7979 100644
+--- a/src/sqlite3.c
++++ b/src/sqlite3.c
+@@ -139859,6 +139859,10 @@ static int integrityCheckResultRow(Vdbe *v){
+   return addr;
+ }
+ 
++#ifdef SQLITE_CKSUMVFS_STATIC
++static int PragmaCksumPersistEnable(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, const char *zRight);
++#endif
++
+ /*
+ ** Process a pragma statement.
+ **
+@@ -139981,7 +139985,15 @@ SQLITE_PRIVATE void sqlite3Pragma(
+     /* PragmaMetaDoubleWrie executes internal */
+     goto pragma_out;
+   }
+-#endif
++#endif /* SQLITE_META_DWR */
++
++#ifdef SQLITE_CKSUMVFS_STATIC
++  if( PragmaCksumPersistEnable(db, iDb, pParse, zLeft, zRight) ){
++    /* PragmaCksumPersistEnable executes internal */
++    goto pragma_out;
++  }
++#endif /* SQLITE_CKSUMVFS_STATIC */
++
+   /* Locate the pragma in the lookup table */
+   pPragma = pragmaLocate(zLeft);
+   if( pPragma==0 ){
+@@ -184243,16 +184255,12 @@ SQLITE_API int sqlite3_file_control(sqlite3 *db, const char *zDbName, int op, vo
+       *(unsigned int*)pArg = sqlite3PagerDataVersion(pPager);
+       rc = SQLITE_OK;
+     }else if( op==SQLITE_FCNTL_RESERVE_BYTES ){
+-#ifndef SQLITE_CKSUMVFS_STATIC
+-      rc = SQLITE_OK;
+-#else
+       int iNew = *(int*)pArg;
+       *(int*)pArg = sqlite3BtreeGetRequestedReserve(pBtree);
+       if( iNew>=0 && iNew<=255 ){
+         sqlite3BtreeSetPageSize(pBtree, 0, iNew, 0);
+       }
+       rc = SQLITE_OK;
+-#endif
+     }else if( op==SQLITE_FCNTL_RESET_CACHE ){
+       sqlite3BtreeClearCache(pBtree);
+       rc = SQLITE_OK;
+@@ -256078,7 +256086,71 @@ export_finish:
+   return;
+ }
+ /************** End file hw_codec.c *****************************************/
+-#endif
++#endif /* SQLITE_HAS_CODEC */
++
++#ifdef SQLITE_CKSUMVFS_STATIC
++#define SQLITE_CKSUMVFS_RESERVED_SIZE 10
++static int PragmaCksumPersistEnable(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, const char *zRight){
++  Btree *pBt = db->aDb[iDb].pBt;
++  if( pBt==NULL || zLeft==NULL || sqlite3StrICmp(zLeft, "checksum_persist_enable")!=0 ){
++    return 0;
++  }
++  sqlite3_mutex_enter(db->mutex);
++  int reserved = sqlite3BtreeGetRequestedReserve(pBt);
++  sqlite3_mutex_leave(db->mutex);
++  if( zRight==NULL ){
++    // Try to get the state of cksumvfs enable
++    Vdbe *v = sqlite3GetVdbe(parse);
++    sqlite3VdbeSetNumCols(v, 1);
++    sqlite3VdbeSetColName(v, 0, COLNAME_NAME, "checksum_persist_enable", SQLITE_STATIC);
++    sqlite3VdbeAddOp4(v, OP_String8, 0, 1, 0, (reserved==SQLITE_CKSUMVFS_RESERVED_SIZE ? "ON" : "OFF"), 0);
++    sqlite3VdbeAddOp2(v, OP_ResultRow, 1, 1);
++  }else if( sqlite3StrICmp(zRight, "on")==0 ){
++    // Enabled
++    if( reserved==0 ){
++      Pager *pPager = pBt->pBt->pPager;
++      if( (pPager->memDb!=0 && pPager->dbSize!=0) || sqlite3PcacheRefCount(pPager->pPCache)!=0 ){
++        parse->nErr++;
++        parse->rc = SQLITE_MISUSE;
++        sqlite3_log(SQLITE_MISUSE, "checksum_persist_enable can only be enabled before any other ops.");
++        return 1;
++      }
++      int reservedTarget = SQLITE_CKSUMVFS_RESERVED_SIZE;
++      int res = sqlite3_file_control(db, 0, SQLITE_FCNTL_RESERVE_BYTES, &reservedTarget);
++      if( res!=SQLITE_OK ){
++        parse->nErr++;
++        parse->rc = res;
++        sqlite3_log(res, "try set reserved region to turn on checksum_persist_enable");
++      }
++    }else if( reserved!=SQLITE_CKSUMVFS_RESERVED_SIZE ){
++      // undefined reserved bytes
++      parse->nErr++;
++      parse->rc = SQLITE_MISUSE;
++      sqlite3_log(SQLITE_MISUSE, "unrecognized reserved region led to cksumvfs cannot enable");
++    }
++  }
++  return 1;
++}
++extern sqlite3_file *sqlite3_get_orig_file(sqlite3_file *file);
++#else
++static sqlite3_file *sqlite3_get_orig_file(sqlite3_file *file) {
++  return file;
++}
++#endif /* SQLITE_CKSUMVFS_STATIC */
++
++#if SQLITE_OS_UNIX
++#define SQLITE_CHECK_FILE_ID_UNIX 1
++#define SQLITE_CHECK_FILE_ID_CKSM 2
++
++// checkFileId should not be 0, it must be SQLITE_CHECK_FILE_ID_UNIX(1) or SQLITE_CHECK_FILE_ID_CKSM(2)
++static unixFile *Sqlite3GetUnixFile(sqlite3_file *file, u8 checkFileId) {
++  if (checkFileId == SQLITE_CHECK_FILE_ID_UNIX) {
++    return (unixFile*)file;
++  }
++  return (unixFile*)sqlite3_get_orig_file(file);
++}
++#endif /* SQLITE_OS_UNIX */
++
+ #ifdef SQLITE_META_DWR
+ #define META_DWR_MAX_PAGES 500
+ #define META_DWR_MAGIC 0x234A86D9
+@@ -256110,7 +256182,7 @@ typedef struct MetaDwrHdr {
+   Pgno *pages;
+   u32 pageBufSize;
+   u8 hdrValid;
+-  u8 checkFileId;
++  u8 checkFileId; /* 0, means no check, 1 means vfs:unix, 2 means vfs:cksm */
+   u16 needSync;
+   i64 lastSyncTime;
+ } MetaDwrHdr;
+@@ -256124,7 +256196,7 @@ typedef struct MetaDwrHdr {
+ static int MetaDwrHeaderSimpleCheck(Pager *pPager, MetaDwrHdr *hdr) {
+ #if SQLITE_OS_UNIX
+   if (hdr->checkFileId) {
+-    unixFile *fd = (unixFile *)pPager->fd;
++    unixFile *fd = Sqlite3GetUnixFile(pPager->fd, hdr->checkFileId);
+     if (fd == NULL || fd->pInode == NULL || pPager->pVfs == NULL) {
+       return SQLITE_INTERNAL;
+     }
+@@ -256134,7 +256206,7 @@ static int MetaDwrHeaderSimpleCheck(Pager *pPager, MetaDwrHdr *hdr) {
+       return SQLITE_IOERR_DATA;
+     }
+   }
+-#endif
++#endif /* SQLITE_OS_UNIX */
+   if (hdr->pageCnt > META_DWR_MAX_PAGES || hdr->version != META_DWR_VERSION ||
+       hdr->magic != META_DWR_MAGIC || hdr->checkSum != META_DWR_MAGIC) {
+     sqlite3_log(SQLITE_IOERR_DATA, "Meta dwr file check wrong pageCnt %u, version %u, magic %u, checkSum %u",
+@@ -256366,7 +256438,15 @@ static MetaDwrHdr *AllocInitMetaHeaderDwr(Pager *pPager) {
+     MetaDwrReleaseHdr(hdr);
+     return NULL;
+   }
+-  hdr->checkFileId = (pPager->pVfs != NULL && sqlite3_stricmp(pPager->pVfs->zName, "unix") == 0);
++  if (pPager->pVfs==NULL) {
++    hdr->checkFileId = 0;
++  } else if (sqlite3_stricmp(pPager->pVfs->zName, "unix") == 0) {
++    hdr->checkFileId = SQLITE_CHECK_FILE_ID_UNIX;
++  } else if (sqlite3_stricmp(pPager->pVfs->zName, "cksmvfs") == 0) {
++    hdr->checkFileId = SQLITE_CHECK_FILE_ID_CKSM;
++  } else {
++    hdr->checkFileId = 0;
++  }
+   return hdr;
+ }
+ 
+@@ -256379,7 +256459,7 @@ static void MetaDwrCloseFile(Pager *pPager) {
+     osMunmap(pPager->metaMapPage, META_DWR_HEADER_PAGE_SIZE);
+     pPager->metaMapPage = NULL;
+   }
+-#endif
++#endif /* SQLITE_OS_UNIX */
+   if (pPager->metaHdr && pPager->metaHdr->needSync > 0) {
+     (void)sqlite3OsSync(pPager->metaFd, SQLITE_SYNC_NORMAL);
+   }
+@@ -256474,10 +256554,10 @@ static void MetaDwrUpdateHeaderDbInfo(BtShared *pBt) {
+   } else {
+     hdr->mxFrameInWal = 0;
+   }
+-#endif
++#endif /* SQLITE_OMIT_WAL */
+ #if SQLITE_OS_UNIX
+   if (hdr->checkFileId) {
+-    unixFile *fd = (unixFile *)pBt->pPager->fd;
++    unixFile *fd = Sqlite3GetUnixFile(pBt->pPager->fd, hdr->checkFileId);
+     if (fd == NULL || fd->pInode == NULL) {
+       sqlite3_log(SQLITE_WARNING_DUMP, "update meta header invalid fd");
+       hdr->hdrValid = 0;
+@@ -256485,7 +256565,7 @@ static void MetaDwrUpdateHeaderDbInfo(BtShared *pBt) {
+     }
+     hdr->dbFileInode = fd->pInode->fileId.ino;
+   }
+-#endif
++#endif /* SQLITE_OS_UNIX */
+   hdr->freeListPageNo = sqlite3Get4byte(dbHdrInfo + 4);
+   hdr->freeListPageCnt = sqlite3Get4byte(dbHdrInfo + 8);
+   hdr->schemaCookie = sqlite3Get4byte(dbHdrInfo + 12);
+@@ -256581,7 +256661,7 @@ static int MetaDwrWriteOnePage(Btree *pBt, PgHdr *pPage, MetaDwrHdr *hdr, u8 cur
+     return SQLITE_NOMEM;
+ #else
+   pData = pPage->pData;
+-#endif
++#endif /* SQLITE_HAS_CODEC */
+   rc = sqlite3OsWrite(pPager->metaFd, pData, pageSz, ofs);
+   if (rc != SQLITE_OK) {
+     return rc;
+@@ -256643,7 +256723,7 @@ static int MetaDwrCheckPerm(sqlite3_vfs *pVfs, u8 openCreate, char *metaPath) {
+   if (openCreate) {
+     sqlite3_log(SQLITE_WARNING_DUMP, "Meta double write disabled, sysno %d", errno);
+   }
+-#endif
++#endif /* HARMONY_OS */
+   return rc;
+ }
+ 
+@@ -256686,7 +256766,7 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
+       pPager->metaMapPage = page;
+     }
+   }
+-#endif
++#endif /* SQLITE_OS_UNIX */
+   pPager->metaFd = metaFd;
+ INIT_META_OUT:
+   sqlite3EndBenignMalloc();
+@@ -256810,7 +256890,7 @@ static int MetaDwrRecoverHeadPage(
+       goto RELEASE_OUT;
+     }
+   }
+-#endif
++#endif /* SQLITE_OMIT_WAL */
+   rc = SQLITE_NOTADB;
+   for (u32 i = 0; i < hdr->pageCnt; i++) {
+     if (hdr->pages[i] != pgno) {
+@@ -257060,15 +257140,24 @@ CHK_RESTORE_OUT:
+ static inline u8 IsConnectionValidForCheck(Pager *pPager)
+ {
+ #if SQLITE_OS_UNIX
+-    unixFile *fd = (unixFile *)pPager->fd;
+-    // unix and only one connection exist
+-    if (fd == NULL || fd->pInode == NULL || pPager->pVfs == NULL ||
+-      sqlite3_stricmp(pPager->pVfs->zName, "unix") != 0 || fd->pInode->nRef != 1) {
+-      return 0;
+-    }
+-    return 1;
+-#else
++  if (pPager->pVfs == NULL) {
+     return 0;
++  }
++  if (sqlite3_stricmp(pPager->pVfs->zName, "unix") != 0 && sqlite3_stricmp(pPager->pVfs->zName, "cksmvfs") != 0) {
++    return 0;
++  }
++  u8 checkFileId = SQLITE_CHECK_FILE_ID_UNIX;
++  if (sqlite3_stricmp(pPager->pVfs->zName, "cksmvfs") == 0) {
++    checkFileId = SQLITE_CHECK_FILE_ID_CKSM;
++  }
++  unixFile *fd = Sqlite3GetUnixFile(pPager->fd, checkFileId);
++  // unix and only one connection exist
++  if (fd == NULL || fd->pInode == NULL || fd->pInode->nRef != 1) {
++    return 0;
++  }
++  return 1;
++#else
++  return 0;
+ #endif
+ }
+ 
+@@ -257083,7 +257172,7 @@ static int MetaDwrOpenAndCheck(Btree *pBt)
+   if (pPager->xCodec) {
+     return SQLITE_OK;
+   }
+-#endif
++#endif /* SQLITE_HAS_CODEC */
+   sqlite3BtreeEnter(pBt);
+   int rc = SQLITE_OK;
+   int openedTransaction = 0;
+@@ -257128,7 +257217,7 @@ static void MetaDwrDisable(Btree *pBt)
+   if (pPager->xCodec) {
+     return;
+   }
+-#endif
++#endif /* SQLITE_HAS_CODEC */
+   sqlite3BtreeEnter(pBt);
+   MetaDwrCloseFile(pPager);
+   MetaDwrReleaseHdr(pPager->metaHdr);
+@@ -257143,7 +257232,8 @@ static void MetaDwrDisable(Btree *pBt)
+   }
+   sqlite3BtreeLeave(pBt);
+ }
+-#endif
++#endif /* SQLITE_META_DWR */
++
+ #if SQLITE_OS_UNIX
+ #include <unistd.h>
+ #include <sys/syscall.h>
+@@ -257352,10 +257442,17 @@ static void DumpLocksByWal(Wal *pWal)
+     sqlite3_log(SQLITE_ERROR, "Wal ptr is NULL!");
+     return;
+   }
+-  if (pWal->pVfs == NULL || sqlite3_stricmp(pWal->pVfs->zName, "unix") != 0) {
++  u8 checkFileId = 0;
++  if (pWal->pVfs==NULL) {
++    return;
++  } else if (sqlite3_stricmp(pWal->pVfs->zName, "unix") == 0) {
++    checkFileId = SQLITE_CHECK_FILE_ID_UNIX;
++  } else if (sqlite3_stricmp(pWal->pVfs->zName, "cksmvfs") == 0) {
++    checkFileId = SQLITE_CHECK_FILE_ID_CKSM;
++  } else {
+     return;
+   }
+-  DumpLocksInfo((unixFile *)(pWal->pDbFd), 1);
++  DumpLocksInfo(Sqlite3GetUnixFile(pWal->pDbFd, checkFileId), 1);
+ }
+ #endif /* #ifndef SQLITE_OMIT_WAL */
+ 
+@@ -257365,13 +257462,20 @@ static void DumpLocksByPager(Pager *pPager)
+     sqlite3_log(SQLITE_ERROR, "Pager ptr is NULL!");
+     return;
+   }
+-  if (pPager->pVfs == NULL || sqlite3_stricmp(pPager->pVfs->zName, "unix") != 0) {
++  u8 checkFileId = 0;
++  if (pPager->pVfs==NULL) {
++    return;
++  } else if (sqlite3_stricmp(pPager->pVfs->zName, "unix") == 0) {
++    checkFileId = SQLITE_CHECK_FILE_ID_UNIX;
++  } else if (sqlite3_stricmp(pPager->pVfs->zName, "cksmvfs") == 0) {
++    checkFileId = SQLITE_CHECK_FILE_ID_CKSM;
++  } else {
+     return;
+   }
+ #ifndef SQLITE_OMIT_WAL
+-  DumpLocksInfo((unixFile *)(pPager->fd), pPager->pWal != NULL);
++  DumpLocksInfo(Sqlite3GetUnixFile(pPager->fd, checkFileId), pPager->pWal != NULL);
+ #else /* #ifndef SQLITE_OMIT_WAL */
+-  DumpLocksInfo((unixFile *)(pPager->fd), 0);
++  DumpLocksInfo(Sqlite3GetUnixFile(pPager->fd, checkFileId), 0);
+ #endif /* #ifndef SQLITE_OMIT_WAL */
+ }
+ #endif /* SQLITE_OS_UNIX */
+@@ -258307,7 +258411,8 @@ static const sqlite3_api_routines_cksumvfs sqlite3CksumvfsApis = {
+ };
+ 
+ EXPORT_SYMBOLS const sqlite3_api_routines_cksumvfs *sqlite3_export_cksumvfs_symbols = &sqlite3CksumvfsApis;
+-#endif
++#endif /* SQLITE_CKSUMVFS_STATIC */
++
+ struct sqlite3_api_routines_hw {
+   int (*initialize)();
+   int (*config)(int,...);
+-- 
+2.47.0.windows.2
+

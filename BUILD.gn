@@ -83,7 +83,10 @@ ohos_shared_library("sqliteicu") {
 
 ohos_shared_library("sqlite") {
   branch_protector_ret = "pac_ret"
-  sources = [ "$sqlite_patched_dir/src/sqlite3.c" ]
+  sources = [
+    "$sqlite_patched_dir/src/sqlite3.c",
+    "$sqlite_patched_dir/ext/misc/cksumvfs.c",
+  ]
 
   defines = [
     "NDEBUG=1",
@@ -124,6 +127,7 @@ ohos_shared_library("sqlite") {
     "SQLITE_ENABLE_ICU",
     "SQLITE_META_DWR",
     "SQLITE_ENABLE_BINLOG",
+    "SQLITE_CKSUMVFS_STATIC",
   ]
   if (sqlite_support_check_pages) {
   }
