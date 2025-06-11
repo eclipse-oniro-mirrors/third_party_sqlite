@@ -1,14 +1,14 @@
-From 759ae762933810cd476838f4b41afc52a9317d0c Mon Sep 17 00:00:00 2001
+From 50059cd9ac8a97d4334f6fe042d42708a96b4f9f Mon Sep 17 00:00:00 2001
 From: Liu Hongyang <liuhongyang4@huawei.com>
-Date: Mon, 19 May 2025 22:18:58 +0800
+Date: Wed, 11 Jun 2025 09:32:35 +0800
 Subject: [PATCH] Support-Binlog
 
 ---
- src/sqlite3.c | 1313 ++++++++++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 1304 insertions(+), 9 deletions(-)
+ src/sqlite3.c | 1493 ++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 1484 insertions(+), 9 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 2a4e87f..2f26487 100644
+index e7e8b3c..eb89098 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -2938,7 +2938,9 @@ SQLITE_API sqlite3_int64 sqlite3_last_insert_rowid(sqlite3*);
@@ -42,7 +42,7 @@ index 2a4e87f..2f26487 100644
  /*
  ** CAPI3REF: Number of columns in a result set
  ** METHOD: sqlite3_stmt
-@@ -17617,6 +17632,196 @@ typedef struct CodecParameter {
+@@ -17617,6 +17632,201 @@ typedef struct CodecParameter {
  } CodecParameter;
  #endif /* defined(SQLITE_HAS_CODEC) && defined(SQLITE_CODEC_ATTACH_CHANGED) */
  
@@ -84,6 +84,11 @@ index 2a4e87f..2f26487 100644
 +  BINLOG_EVENT_TYPE_PRAGMA = 65,
 +  BINLOG_EVENT_TYPE_DML = 66,
 +  BINLOG_EVENT_TYPE_ROLLBACK = 67,
++  BINLOG_EVENT_TYPE_ROW_START = 69,
++  BINLOG_EVENT_TYPE_ROW_TABLE = 70,
++  BINLOG_EVENT_TYPE_ROW_FULL_DATA = 71,
++  BINLOG_EVENT_TYPE_ROW_COMMIT = 72,
++  BINLOG_EVENT_TYPE_ROW_ROLLBACK = 73,
 +  BINLOG_EVENT_TYPE_BUTT,
 +} BinlogEventTypeE;
 + 
@@ -212,7 +217,7 @@ index 2a4e87f..2f26487 100644
 +} Sqlite3BinlogApiInfo;
 + 
 +SQLITE_PRIVATE int sqlite3BinlogStmtPrepare(sqlite3 *db, Sqlite3BinlogStmt *bStmt);
-+SQLITE_PRIVATE int sqlite3BinlogStmtStep(Sqlite3BinlogStmt *bStmt, char **sql);
++SQLITE_PRIVATE int sqlite3BinlogStmtStep(sqlite3 *db, Sqlite3BinlogStmt *bStmt, char **sql, Table **pOutTable);
 +SQLITE_PRIVATE void sqlite3BinlogStmtFinalize(sqlite3 *db, Sqlite3BinlogStmt *bStmt);
 + 
 +SQLITE_PRIVATE int sqlite3BinlogInitApi(sqlite3 *db);
@@ -239,7 +244,7 @@ index 2a4e87f..2f26487 100644
  /*
  ** Each database connection is an instance of the following structure.
  */
-@@ -17770,6 +17975,9 @@ struct sqlite3 {
+@@ -17770,6 +17980,9 @@ struct sqlite3 {
  #if defined(SQLITE_HAS_CODEC) && defined(SQLITE_CODEC_ATTACH_CHANGED)
    CodecParameter codecParm;
  #endif /* defined(SQLITE_HAS_CODEC) && defined(SQLITE_CODEC_ATTACH_CHANGED) */
@@ -249,7 +254,7 @@ index 2a4e87f..2f26487 100644
  };
  
  /*
-@@ -23666,6 +23874,12 @@ struct Vdbe {
+@@ -23666,6 +23879,14 @@ struct Vdbe {
    int startPos;
    int addedRows;
  #endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
@@ -257,12 +262,14 @@ index 2a4e87f..2f26487 100644
 +/* begin of binlog related field */
 +  StmtType stmtType;              /* Type of binlog statement */
 +  BinlogDMLData *pBinlogDMLData;  /* Data for binlog row-based DML statement */
++  const char *pDataTmp;           /* Temporary binlog data for op_notfound */
++  sqlite3_uint64 nDataTmp;        /* Size of pDataTmp */
 +/* end of binlog related field */
 +#endif
  };
  
  /*
-@@ -88435,7 +88649,11 @@ static int vdbeCommit(sqlite3 *db, Vdbe *p){
+@@ -88435,7 +88656,11 @@ static int vdbeCommit(sqlite3 *db, Vdbe *p){
          rc = sqlite3BtreeCommitPhaseOne(pBt, 0);
        }
      }
@@ -275,7 +282,7 @@ index 2a4e87f..2f26487 100644
      /* Do the commit only if all databases successfully complete phase 1.
      ** If one of the BtreeCommitPhaseOne() calls fails, this indicates an
      ** IO error while deleting or truncating a journal file. It is unlikely,
-@@ -88583,6 +88801,9 @@ static int vdbeCommit(sqlite3 *db, Vdbe *p){
+@@ -88583,6 +88808,9 @@ static int vdbeCommit(sqlite3 *db, Vdbe *p){
      ** transaction is already guaranteed, but some stray 'cold' journals
      ** may be lying around. Returning an error code won't help matters.
      */
@@ -285,7 +292,7 @@ index 2a4e87f..2f26487 100644
      disable_simulated_io_errors();
      sqlite3BeginBenignMalloc();
      for(i=0; i<db->nDb; i++){
-@@ -88868,6 +89089,9 @@ SQLITE_PRIVATE int sqlite3VdbeHalt(Vdbe *p){
+@@ -88868,6 +89096,9 @@ SQLITE_PRIVATE int sqlite3VdbeHalt(Vdbe *p){
      }else if( eStatementOp==0 ){
        if( p->rc==SQLITE_OK || p->errorAction==OE_Fail ){
          eStatementOp = SAVEPOINT_RELEASE;
@@ -295,7 +302,7 @@ index 2a4e87f..2f26487 100644
        }else if( p->errorAction==OE_Abort ){
          eStatementOp = SAVEPOINT_ROLLBACK;
        }else{
-@@ -89090,6 +89314,9 @@ SQLITE_PRIVATE int sqlite3VdbeReset(Vdbe *p){
+@@ -89090,6 +89321,9 @@ SQLITE_PRIVATE int sqlite3VdbeReset(Vdbe *p){
        fclose(out);
      }
    }
@@ -305,7 +312,7 @@ index 2a4e87f..2f26487 100644
  #endif
    return p->rc & db->errMask;
  }
-@@ -89194,6 +89421,9 @@ static void sqlite3VdbeClearObject(sqlite3 *db, Vdbe *p){
+@@ -89194,6 +89428,9 @@ static void sqlite3VdbeClearObject(sqlite3 *db, Vdbe *p){
      sqlite3DbFree(db, p->aScan);
    }
  #endif
@@ -315,7 +322,7 @@ index 2a4e87f..2f26487 100644
  }
  
  /*
-@@ -91886,6 +92116,44 @@ SQLITE_API int sqlite3_set_droptable_handle(sqlite3 *db, void (*xFunc)(sqlite3*,
+@@ -91886,6 +92123,44 @@ SQLITE_API int sqlite3_set_droptable_handle(sqlite3 *db, void (*xFunc)(sqlite3*,
  }
  #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
  
@@ -360,7 +367,20 @@ index 2a4e87f..2f26487 100644
  /*
  ** This is the top-level implementation of sqlite3_step().  Call
  ** sqlite3Step() to do most of the work.  If a schema error occurs,
-@@ -99584,6 +99852,15 @@ case OP_Insert: {
+@@ -99189,6 +99464,12 @@ case OP_Found: {        /* jump, in3, ncycle */
+   pC->nullRow = 1-alreadyExists;
+   pC->deferredMoveto = 0;
+   pC->cacheStatus = CACHE_STALE;
++#ifdef SQLITE_ENABLE_BINLOG
++  if ( pOp->opcode==OP_NotFound && r.nField==0 && !sqlite3IsSkipWriteBinlog(p)){
++    p->nDataTmp = r.aMem->n;
++    p->pDataTmp = r.aMem->z;
++  }
++#endif
+   if( pOp->opcode==OP_Found ){
+     VdbeBranchTaken(alreadyExists!=0,2);
+     if( alreadyExists ) goto jump_to_p2;
+@@ -99584,6 +99865,15 @@ case OP_Insert: {
    }
    x.pKey = 0;
    assert( BTREE_PREFORMAT==OPFLAG_PREFORMAT );
@@ -376,7 +396,7 @@ index 2a4e87f..2f26487 100644
    rc = sqlite3BtreeInsert(pC->uc.pCursor, &x,
        (pOp->p5 & (OPFLAG_APPEND|OPFLAG_SAVEPOSITION|OPFLAG_PREFORMAT)),
        seekResult
-@@ -99699,6 +99976,21 @@ case OP_Delete: {
+@@ -99699,6 +99989,27 @@ case OP_Delete: {
      assert( CORRUPT_DB || pC->movetoTarget==iKey );
    }
  #endif
@@ -389,8 +409,14 @@ index 2a4e87f..2f26487 100644
 +    } else {
 +      Table *pBinlogTab = sqlite3BinlogFindTable(pC->uc.pCursor);
 +      if (pBinlogTab != NULL && !HasRowid(pBinlogTab)) {
-+        /* If pC is not a table, then this is a delete operation in a without rowid table */
-+        sqlite3StoreBinlogRowData(p, pC->uc.pCursor, pC->szRow, (const char *)pC->aRow, SQLITE_DELETE, -1);
++        /* If pC is not a table, then this is a delete operation in a without rowid table
++        ** pC may have no row data or invalid row data when deletion has a subquery
++        ** so we need to get row data from op_notfound, which is stored in p->pDataTmp
++        */
++        int isUseTmpData = pOp->p4type == P4_TABLE && p->nDataTmp != 0 && p->pDataTmp != NULL;
++        sqlite3_uint64 nData = isUseTmpData ? p->nDataTmp : pC->szRow;
++        const char *pData = isUseTmpData ? p->pDataTmp : (const char *)pC->aRow;
++        sqlite3StoreBinlogRowData(p, pC->uc.pCursor, nData, pData, SQLITE_DELETE, -1);
 +      }
 +    }
 +  }
@@ -398,7 +424,7 @@ index 2a4e87f..2f26487 100644
  
    /* If the update-hook or pre-update-hook will be invoked, set zDb to
    ** the name of the db to pass as to it. Also set local pTab to a copy
-@@ -100322,6 +100614,14 @@ case OP_IdxInsert: {        /* in2 */
+@@ -100322,6 +100633,14 @@ case OP_IdxInsert: {        /* in2 */
    x.pKey = pIn2->z;
    x.aMem = aMem + pOp->p3;
    x.nMem = (u16)pOp->p4.i;
@@ -413,7 +439,7 @@ index 2a4e87f..2f26487 100644
    rc = sqlite3BtreeInsert(pC->uc.pCursor, &x,
         (pOp->p5 & (OPFLAG_APPEND|OPFLAG_SAVEPOSITION|OPFLAG_PREFORMAT)),
        ((pOp->p5 & OPFLAG_USESEEKRESULT) ? pC->seekResult : 0)
-@@ -116953,7 +117253,11 @@ SQLITE_PRIVATE void sqlite3AlterRenameTable(
+@@ -116953,7 +117272,11 @@ SQLITE_PRIVATE void sqlite3AlterRenameTable(
  
    renameReloadSchema(pParse, iDb, INITFLAG_AlterRename);
    renameTestSchema(pParse, zDb, iDb==1, "after rename", 0);
@@ -426,7 +452,7 @@ index 2a4e87f..2f26487 100644
  exit_rename_table:
    sqlite3SrcListDelete(db, pSrc);
    sqlite3DbFree(db, zName);
-@@ -117135,6 +117439,9 @@ SQLITE_PRIVATE void sqlite3AlterFinishAddColumn(Parse *pParse, Token *pColDef){
+@@ -117135,6 +117458,9 @@ SQLITE_PRIVATE void sqlite3AlterFinishAddColumn(Parse *pParse, Token *pColDef){
          zTab, zDb
        );
      }
@@ -436,7 +462,7 @@ index 2a4e87f..2f26487 100644
    }
  }
  
-@@ -117346,7 +117653,13 @@ SQLITE_PRIVATE void sqlite3AlterRenameColumn(
+@@ -117346,7 +117672,13 @@ SQLITE_PRIVATE void sqlite3AlterRenameColumn(
    /* Drop and reload the database schema. */
    renameReloadSchema(pParse, iSchema, INITFLAG_AlterRename);
    renameTestSchema(pParse, zDb, iSchema==1, "after rename", 1);
@@ -451,7 +477,7 @@ index 2a4e87f..2f26487 100644
   exit_rename_column:
    sqlite3SrcListDelete(db, pSrc);
    sqlite3DbFree(db, zOld);
-@@ -118957,7 +119270,13 @@ SQLITE_PRIVATE void sqlite3AlterDropColumn(Parse *pParse, SrcList *pSrc, const T
+@@ -118957,7 +119289,13 @@ SQLITE_PRIVATE void sqlite3AlterDropColumn(Parse *pParse, SrcList *pSrc, const T
      sqlite3VdbeAddOp2(v, OP_Next, iCur, addr+1); VdbeCoverage(v);
      sqlite3VdbeJumpHere(v, addr);
    }
@@ -466,7 +492,7 @@ index 2a4e87f..2f26487 100644
  exit_drop_column:
    sqlite3DbFree(db, zCol);
    sqlite3SrcListDelete(db, pSrc);
-@@ -123295,6 +123614,9 @@ SQLITE_PRIVATE void sqlite3StartTable(
+@@ -123295,6 +123633,9 @@ SQLITE_PRIVATE void sqlite3StartTable(
      sqlite3VdbeAddOp3(v, OP_Insert, 0, reg3, reg1);
      sqlite3VdbeChangeP5(v, OPFLAG_APPEND);
      sqlite3VdbeAddOp0(v, OP_Close);
@@ -476,7 +502,7 @@ index 2a4e87f..2f26487 100644
    }
  
    /* Normal (non-error) return. */
-@@ -124963,7 +125285,13 @@ SQLITE_PRIVATE void sqlite3CreateView(
+@@ -124963,7 +125304,13 @@ SQLITE_PRIVATE void sqlite3CreateView(
  
    /* Use sqlite3EndTable() to add the view to the schema table */
    sqlite3EndTable(pParse, 0, &sEnd, 0, 0);
@@ -491,7 +517,7 @@ index 2a4e87f..2f26487 100644
  create_view_fail:
    sqlite3SelectDelete(db, pSelect);
    if( IN_RENAME_OBJECT ){
-@@ -125486,6 +125814,9 @@ SQLITE_PRIVATE void sqlite3DropTable(Parse *pParse, SrcList *pName, int isView,
+@@ -125486,6 +125833,9 @@ SQLITE_PRIVATE void sqlite3DropTable(Parse *pParse, SrcList *pName, int isView,
        sqlite3FkDropTable(pParse, pName, pTab);
      }
      sqlite3CodeDropTable(pParse, pTab, iDb, isView);
@@ -501,7 +527,7 @@ index 2a4e87f..2f26487 100644
    }
  
  exit_drop_table:
-@@ -126344,6 +126675,9 @@ SQLITE_PRIVATE void sqlite3CreateIndex(
+@@ -126344,6 +126694,9 @@ SQLITE_PRIVATE void sqlite3CreateIndex(
          /* A named index with an explicit CREATE INDEX statement */
          zStmt = sqlite3MPrintf(db, "CREATE%s INDEX %.*s",
              onError==OE_None ? "" : " UNIQUE", n, pName->z);
@@ -511,7 +537,7 @@ index 2a4e87f..2f26487 100644
        }else{
          /* An automatic index created by a PRIMARY KEY or UNIQUE constraint */
          /* zStmt = sqlite3MPrintf(""); */
-@@ -126546,6 +126880,9 @@ SQLITE_PRIVATE void sqlite3DropIndex(Parse *pParse, SrcList *pName, int ifExists
+@@ -126546,6 +126899,9 @@ SQLITE_PRIVATE void sqlite3DropIndex(Parse *pParse, SrcList *pName, int ifExists
      sqlite3ChangeCookie(pParse, iDb);
      destroyRootPage(pParse, pIndex->tnum, iDb);
      sqlite3VdbeAddOp4(v, OP_DropIndex, iDb, 0, 0, pIndex->zName, 0);
@@ -521,7 +547,7 @@ index 2a4e87f..2f26487 100644
    }
  
  exit_drop_index:
-@@ -127070,6 +127407,9 @@ SQLITE_PRIVATE void sqlite3BeginTransaction(Parse *pParse, int type){
+@@ -127070,6 +127426,9 @@ SQLITE_PRIVATE void sqlite3BeginTransaction(Parse *pParse, int type){
      }
    }
    sqlite3VdbeAddOp0(v, OP_AutoCommit);
@@ -531,7 +557,7 @@ index 2a4e87f..2f26487 100644
  }
  
  /*
-@@ -127092,6 +127432,9 @@ SQLITE_PRIVATE void sqlite3EndTransaction(Parse *pParse, int eType){
+@@ -127092,6 +127451,9 @@ SQLITE_PRIVATE void sqlite3EndTransaction(Parse *pParse, int eType){
    v = sqlite3GetVdbe(pParse);
    if( v ){
      sqlite3VdbeAddOp2(v, OP_AutoCommit, 1, isRollback);
@@ -541,7 +567,7 @@ index 2a4e87f..2f26487 100644
    }
  }
  
-@@ -127112,6 +127455,9 @@ SQLITE_PRIVATE void sqlite3Savepoint(Parse *pParse, int op, Token *pName){
+@@ -127112,6 +127474,9 @@ SQLITE_PRIVATE void sqlite3Savepoint(Parse *pParse, int op, Token *pName){
        return;
      }
      sqlite3VdbeAddOp4(v, OP_Savepoint, op, 0, 0, zName, P4_DYNAMIC);
@@ -551,7 +577,7 @@ index 2a4e87f..2f26487 100644
    }
  }
  
-@@ -137480,6 +137826,13 @@ typedef int (*sqlite3_loadext_entry)(
+@@ -137480,6 +137845,13 @@ typedef int (*sqlite3_loadext_entry)(
  /* handle after drop table done */
  #define sqlite3_set_droptable_handle   sqlite3_api->set_droptable_handle
  #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
@@ -565,7 +591,7 @@ index 2a4e87f..2f26487 100644
  #endif /* !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION) */
  
  #if !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION)
-@@ -139533,6 +139886,9 @@ SQLITE_PRIVATE void sqlite3Pragma(
+@@ -139533,6 +139905,9 @@ SQLITE_PRIVATE void sqlite3Pragma(
    if( v==0 ) return;
    sqlite3VdbeRunOnlyOnce(v);
    pParse->nMem = 2;
@@ -575,7 +601,7 @@ index 2a4e87f..2f26487 100644
  
    /* Interpret the [schema.] part of the pragma statement. iDb is the
    ** index of the database this pragma is being applied to in db.aDb[]. */
-@@ -152286,7 +152642,13 @@ SQLITE_PRIVATE void sqlite3BeginTrigger(
+@@ -152286,7 +152661,13 @@ SQLITE_PRIVATE void sqlite3BeginTrigger(
    if (tr_tm == TK_INSTEAD){
      tr_tm = TK_BEFORE;
    }
@@ -590,7 +616,7 @@ index 2a4e87f..2f26487 100644
    /* Build the Trigger object */
    pTrigger = (Trigger*)sqlite3DbMallocZero(db, sizeof(Trigger));
    if( pTrigger==0 ) goto trigger_cleanup;
-@@ -152681,6 +153043,13 @@ SQLITE_PRIVATE void sqlite3DropTrigger(Parse *pParse, SrcList *pName, int noErr)
+@@ -152681,6 +153062,13 @@ SQLITE_PRIVATE void sqlite3DropTrigger(Parse *pParse, SrcList *pName, int noErr)
      goto drop_trigger_cleanup;
    }
    sqlite3DropTriggerPtr(pParse, pTrigger);
@@ -604,7 +630,7 @@ index 2a4e87f..2f26487 100644
  
  drop_trigger_cleanup:
    sqlite3SrcListDelete(db, pName);
-@@ -153427,6 +153796,15 @@ SQLITE_PRIVATE void sqlite3CodeRowTrigger(
+@@ -153427,6 +153815,15 @@ SQLITE_PRIVATE void sqlite3CodeRowTrigger(
    assert( tr_tm==TRIGGER_BEFORE || tr_tm==TRIGGER_AFTER );
    assert( (op==TK_UPDATE)==(pChanges!=0) );
  
@@ -620,7 +646,7 @@ index 2a4e87f..2f26487 100644
    for(p=pTrigger; p; p=p->pNext){
  
      /* Sanity checking:  The schema for the trigger and for the table are
-@@ -180656,6 +181034,13 @@ SQLITE_API int sqlite3_db_config(sqlite3 *db, int op, ...){
+@@ -180656,6 +181053,13 @@ SQLITE_API int sqlite3_db_config(sqlite3 *db, int op, ...){
        break;
      }
  #endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
@@ -634,7 +660,7 @@ index 2a4e87f..2f26487 100644
      default: {
        static const struct {
          int op;      /* The opcode */
-@@ -181083,6 +181468,9 @@ SQLITE_PRIVATE void sqlite3LeaveMutexAndCloseZombie(sqlite3 *db){
+@@ -181083,6 +181487,9 @@ SQLITE_PRIVATE void sqlite3LeaveMutexAndCloseZombie(sqlite3 *db){
    sqlite3CollapseDatabaseArray(db);
    assert( db->nDb<=2 );
    assert( db->aDb==db->aDbStatic );
@@ -644,7 +670,7 @@ index 2a4e87f..2f26487 100644
  
    /* Tell the code in notify.c that the connection no longer holds any
    ** locks and does not require any further unlock-notify callbacks.
-@@ -183308,6 +183696,9 @@ opendb_out:
+@@ -183308,6 +183715,9 @@ opendb_out:
    db->mDropSchemaName = NULL;
    db->xDropTableHandle = NULL;
  #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
@@ -654,7 +680,7 @@ index 2a4e87f..2f26487 100644
    *ppDb = db;
  #ifdef SQLITE_ENABLE_SQLLOG
    if( sqlite3GlobalConfig.xSqllog ){
-@@ -256913,6 +257304,898 @@ static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime
+@@ -256913,6 +257323,1059 @@ static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime
  }
  #endif
  
@@ -788,7 +814,7 @@ index 2a4e87f..2f26487 100644
 +}
 +
 +/* Write an sql into binlog with given type and isFinish flag */
-+SQLITE_PRIVATE int sqlite3DirectWriteBinlog(Vdbe *p, BinlogEventTypeE type, char *zSql, int isFinishTrx)
++SQLITE_PRIVATE int sqlite3DirectWriteBinlog(Vdbe *p, BinlogEventTypeE type, char *zSql, u32 nSql, int isFinishTrx)
 +{
 +  BinlogWriteDataT logData;
 +  errno_t errNo = memcpy_s(&logData.xid, SQLITE_UUID_BLOB_LENGTH, p->db->xBinlogHandle.xTid, SQLITE_UUID_BLOB_LENGTH);
@@ -799,7 +825,7 @@ index 2a4e87f..2f26487 100644
 +
 +  logData.type = type;
 +  logData.data = zSql;
-+  logData.dataLength = strlen(zSql);
++  logData.dataLength = nSql;
 +  logData.isFinishTrx = isFinishTrx;
 +  sqlite3 *db = p->db;
 +  int rc = sqlite3TransferBinlogErrno(db->xBinlogHandle.binlogApi.binlogWriteApi(db->xBinlogHandle.binlogConn,
@@ -817,18 +843,19 @@ index 2a4e87f..2f26487 100644
 +      return;
 +  }
 +  int isReleased = p->pBinlogDMLData->isSavePointReleased;
-+  if (!isReleased && p->db->autoCommit > 0) {
-+    sqlite3DirectWriteBinlog(p, BINLOG_EVENT_TYPE_ROLLBACK, (char *)"rollback;", 1);
++  if (!isReleased && p->db->autoCommit > 0 && p->pBinlogDMLData->pSavePointName != NULL) {
++    u32 len = strlen(p->pBinlogDMLData->pSavePointName) + 1;
++    sqlite3DirectWriteBinlog(p, BINLOG_EVENT_TYPE_ROW_ROLLBACK, p->pBinlogDMLData->pSavePointName, len, 0);
++    sqlite3DirectWriteBinlog(p, BINLOG_EVENT_TYPE_ROW_COMMIT, p->pBinlogDMLData->pSavePointName, len, 1);
 +    p->db->xBinlogHandle.flags |= BINLOG_FLAG_UPDATE_TID;
-+  } else if (!isReleased) {
++  } else if (!isReleased && p->pBinlogDMLData->pSavePointName != NULL) {
 +    /* If not in auto commit mode and savepoint not released, 
 +    ** it means this statement failed to execute within a transaction.
 +    ** In this case, we need to rollback to the point before this statement is executed.
 +    ** If the rollback statement failed to write into binlog, then there may be an memory leak
 +    */
-+    char *rollbackSavePoint = sqlite3_mprintf("rollback to %s;", p->pBinlogDMLData->pSavePointName);
-+    sqlite3DirectWriteBinlog(p, BINLOG_EVENT_TYPE_DML, rollbackSavePoint, 0);
-+    sqlite3DbFree(p->db, rollbackSavePoint);
++    u32 len = strlen(p->pBinlogDMLData->pSavePointName) + 1;
++    sqlite3DirectWriteBinlog(p, BINLOG_EVENT_TYPE_ROW_ROLLBACK, p->pBinlogDMLData->pSavePointName, len, 0);
 +  }
 +
 +  if (p->pBinlogDMLData->pSavePointName != NULL) {
@@ -842,7 +869,7 @@ index 2a4e87f..2f26487 100644
 +
 +/* Check and create a new binlog xid if needed */
 +SQLITE_PRIVATE int sqlite3UpdateBinlogXidIfNeeded(sqlite3 *db){
-+  assert(db!=NULL);
++  assert( db!=NULL );
 +  if ((db->xBinlogHandle.flags & BINLOG_FLAG_UPDATE_TID) != 0) {
 +    if (sqlite3GenerateUuid(db->xBinlogHandle.xTid) != SQLITE_OK) {
 +      sqlite3_log(SQLITE_ERROR, "binlog generate uuid failed");
@@ -1038,12 +1065,10 @@ index 2a4e87f..2f26487 100644
 +}
 +
 +/* Return the sql statement corresponds to a binlog row data, NULL is returned if error occurs */
-+SQLITE_PRIVATE char *sqlite3GetBinlogRowStmt(Vdbe *p, const BinlogRow *pRow){
-+  assert(p!=NULL);
-+  assert(p->db!=NULL);
-+  assert(p->pBinlogDMLData!=NULL);
-+  sqlite3 *db = p->db;
-+  Table *pTab = p->pBinlogDMLData->pTable;
++SQLITE_PRIVATE char *sqlite3GetBinlogRowStmt(sqlite3 *db, const BinlogRow *pRow, Table *pTab){
++  assert( db!=NULL );
++  assert( pRow!=NULL );
++  assert( pTab!=NULL );
 +
 +  switch (pRow->op) {
 +    case SQLITE_DELETE:
@@ -1078,16 +1103,122 @@ index 2a4e87f..2f26487 100644
 +  return pTab;
 +}
 +
++SQLITE_PRIVATE int sqlite3BinlogWriteTable(Vdbe *p, Table *pTable){
++  assert( p!=NULL );
++  assert( pTable!=NULL );
++
++  char *tableName = pTable->zName;
++  u32 len = strlen(tableName) + 1;
++  return sqlite3DirectWriteBinlog(p, BINLOG_EVENT_TYPE_ROW_TABLE, tableName, len, 0);
++}
++
++SQLITE_PRIVATE int sqlite3BinlogDecodeRowBuffer(char *buffer, u32 nBuffer, u8 *op,
++  sqlite3_int64 *rowid, sqlite3_uint64 *nData, char **pData)
++{
++  if (nBuffer < sizeof(u8) + sizeof(sqlite3_int64) + sizeof(sqlite3_uint64)) {
++    sqlite3_log(SQLITE_WARNING, "Failed to decode binlog row, %u", nBuffer);
++    return SQLITE_ERROR;
++  }
++
++  u64 offset = 0;
++  *op = *((u8*)(buffer + offset));
++  offset += sizeof(u8);
++
++  errno_t errNo = memcpy_s(rowid, sizeof(sqlite3_int64), buffer + offset, sizeof(sqlite3_int64));
++  if (errNo != EOK) {
++    sqlite3_log(SQLITE_WARNING, "Failed to decode binlog row rowid");
++    return SQLITE_ERROR;
++  }
++  offset += sizeof(sqlite3_int64);
++
++  errNo = memcpy_s(nData, sizeof(sqlite3_uint64), buffer + offset, sizeof(sqlite3_uint64));
++  if (errNo != EOK) {
++    sqlite3_log(SQLITE_WARNING, "Failed to decode binlog row nData");
++    return SQLITE_ERROR;
++  }
++  offset += sizeof(sqlite3_uint64);
++
++  *pData = buffer + offset;
++  return SQLITE_OK;
++}
++
++SQLITE_PRIVATE int sqlite3BinlogGetRowBuffer(sqlite3_uint64 nData, const char *pData, u8 op,
++  sqlite3_int64 rowid, char **pOutBuffer, u64 *nOutBuffer){
++  assert( pOutBuffer!=NULL );
++  assert( nOutBuffer!=NULL );
++
++  u64 nRowBuffer = sizeof(op) + sizeof(rowid) + sizeof(nData) + nData;
++  char *pRowBuffer = sqlite3MallocZero(nRowBuffer);
++  if (pRowBuffer == NULL) {
++    sqlite3_log(SQLITE_ERROR, "Failed to malloc binlog row, %lu", nRowBuffer);
++    return SQLITE_ERROR;
++  }
++
++  errno_t errNo = memcpy_s(pRowBuffer, nRowBuffer, &op, sizeof(op));
++  if (errNo != EOK) {
++    goto error_when_memcpy_binlog_row;
++  }
++
++  u64 offset = sizeof(op);
++  errNo = memcpy_s(pRowBuffer + offset, nRowBuffer, &rowid, sizeof(rowid));
++  offset += sizeof(rowid);
++  if (errNo != EOK) {
++    goto error_when_memcpy_binlog_row;
++  }
++
++  errNo = memcpy_s(pRowBuffer + offset, nRowBuffer, &nData, sizeof(nData));
++  offset += sizeof(nData);
++  if (errNo != EOK) {
++    goto error_when_memcpy_binlog_row;
++  }
++
++  if (nData > 0) {
++    errNo = memcpy_s(pRowBuffer + offset, nRowBuffer, pData, nData);
++     if (errNo != EOK) {
++      goto error_when_memcpy_binlog_row;
++    }
++  }
++ 
++  *pOutBuffer = pRowBuffer;
++  *nOutBuffer = nRowBuffer;
++  return SQLITE_OK;
++
++error_when_memcpy_binlog_row:
++  sqlite3_free(pRowBuffer);
++  sqlite3_log(SQLITE_ERROR, "Failed to copy binlog row, %lu", nRowBuffer);
++  return SQLITE_ERROR;
++}
++
++SQLITE_PRIVATE int sqlite3BinlogWriteRowData(
++  Vdbe *p, sqlite3_uint64 nData, const char *pData, int op, sqlite3_int64 rowid){
++  if ((nData == 0 || pData == NULL) && op != SQLITE_DELETE) {
++    sqlite3_log(SQLITE_ERROR, "binlog row data empty, %llu", nData);
++    return SQLITE_ERROR;
++  }
++
++  u8 opData = op == SQLITE_DELETE ? SQLITE_DELETE: SQLITE_INSERT;
++  u64 nRowBuffer = 0;
++  char *pRowBuffer = NULL;
++  int rc = sqlite3BinlogGetRowBuffer(nData, pData, opData, rowid, &pRowBuffer, &nRowBuffer);
++  if (rc != SQLITE_OK) {
++    return rc;
++  }
++
++  rc = sqlite3DirectWriteBinlog(p, BINLOG_EVENT_TYPE_ROW_FULL_DATA, pRowBuffer, nRowBuffer, 0);
++  sqlite3_free(pRowBuffer);
++  return rc;
++}
++
 +/**
 +** This is the function called in sqlite3VdbeExec to write a row-based binlog statement.
 +** If an error occured, then the row data is cleared and the state will be logged in statement mode
 +**/
 +SQLITE_PRIVATE void sqlite3StoreBinlogRowData(Vdbe *p, BtCursor *pCursor,
 +  sqlite3_uint64 nData, const char *pData, int op, sqlite3_int64 rowid){
-+  assert(p!=NULL && pCursor!=NULL);
-+  assert(p->db!=NULL);
-+  assert(sqlite3IsRowBasedBinlog(p));
-+  assert(op == SQLITE_INSERT || op == SQLITE_UPDATE || op == SQLITE_DELETE);
++  assert( p!=NULL && pCursor!=NULL );
++  assert( p->db!=NULL );
++  assert( sqlite3IsRowBasedBinlog(p) );
++  assert( op==SQLITE_INSERT || op==SQLITE_UPDATE || op==SQLITE_DELETE );
 +  sqlite3 *db = p->db;
 +  BinlogDMLData *dataContainer = NULL;
 +
@@ -1121,12 +1252,7 @@ index 2a4e87f..2f26487 100644
 +    }
 +    dataContainer->pSavePointName = savePointName;
 +    p->pBinlogDMLData = dataContainer;
-+    char *zSavePointSql = sqlite3_mprintf("savepoint %s;", savePointName);
-+    if (zSavePointSql==NULL) {
-+      goto error_when_store_binlog;
-+    }
-+    int rc = sqlite3DirectWriteBinlog(p, sqlite3TransferLogEventType(p->stmtType), zSavePointSql, 0);
-+    sqlite3DbFree(db, zSavePointSql);
++    int rc = sqlite3DirectWriteBinlog(p, BINLOG_EVENT_TYPE_ROW_START, savePointName, strlen(savePointName)+1, 0);
 +    if (rc != SQLITE_OK) {
 +      goto error_when_store_binlog;
 +    }
@@ -1134,23 +1260,17 @@ index 2a4e87f..2f26487 100644
 +    dataContainer = p->pBinlogDMLData;
 +  }
 +
-+  dataContainer->pTable = pTab;
-+  BinlogRow pRow;
-+  pRow.op = op;
-+  pRow.nData = nData;
-+  pRow.pData = pData;
-+  pRow.rowid = rowid;
-+  char *zSql = sqlite3GetBinlogRowStmt(p, &pRow);
-+  if (zSql == NULL) {
-+    goto error_when_store_binlog;
++  if (dataContainer->pTable != pTab) {
++    int rc = sqlite3BinlogWriteTable(p, pTab);
++    if (rc != SQLITE_OK) {
++      goto error_when_store_binlog;
++    }
++    dataContainer->pTable = pTab;
 +  }
 +
-+  if (sqlite3DirectWriteBinlog(p, sqlite3TransferLogEventType(p->stmtType), zSql, 0) != SQLITE_OK) {
-+    sqlite3DbFree(db, zSql);
-+    goto error_when_store_binlog;
++  if (sqlite3BinlogWriteRowData(p, nData, pData, op, rowid) == SQLITE_OK) {
++    return;
 +  }
-+  sqlite3DbFree(db, zSql);
-+  return;
 +
 +error_when_store_binlog:
 +  sqlite3_log(SQLITE_WARNING, "Failed to store row-based binlog data, use statement mode instead.");
@@ -1224,8 +1344,8 @@ index 2a4e87f..2f26487 100644
 +}
 +
 +SQLITE_PRIVATE char *sqlite3BinlogGetNthCol(sqlite3 *db, const Table *pTab, const BinlogRow *pRow, int iCol) {
-+  assert( db!=NULL && pTab!=NULL && pRow!=NULL );
-+  assert( iCol>=0 );  
++  assert( db != NULL && pTab != NULL && pRow != NULL );
++  assert( iCol >= 0 );  
 +  if (HasRowid(pTab) && pTab->iPKey == iCol) {
 +      return sqlite3_mprintf("%lld", pRow->rowid);
 +  }
@@ -1287,7 +1407,8 @@ index 2a4e87f..2f26487 100644
 +  char *zSql = NULL;
 +  if (logData.type == BINLOG_EVENT_TYPE_DML && sqlite3IsRowBasedBinlog(p) && p->pBinlogDMLData != NULL) {
 +    // release savepoint
-+    zSql = sqlite3_mprintf("release savepoint %s;", p->pBinlogDMLData->pSavePointName);
++    zSql = sqlite3_mprintf("%s", p->pBinlogDMLData->pSavePointName);
++    logData.type = BINLOG_EVENT_TYPE_ROW_COMMIT;
 +    p->pBinlogDMLData->isSavePointReleased = 1;
 +  } else {
 +    zSql = sqlite3_expanded_sql((sqlite3_stmt *)p);
@@ -1411,11 +1532,70 @@ index 2a4e87f..2f26487 100644
 +  bStmt->curIdx = 0;
 +  return SQLITE_OK;
 +}
-+ 
-+SQLITE_PRIVATE int sqlite3BinlogStmtStep(Sqlite3BinlogStmt *bStmt, char **sql)
++
++SQLITE_PRIVATE char *sqlite3BinlogGetRowSql(sqlite3 *db, Table* pTable, char *buffer, u32 nBuffer, int *rc)
++{
++  if (buffer == NULL) {
++    *rc = SQLITE_ERROR;
++    sqlite3_log(SQLITE_ERROR, "binlog row has no data");
++    return NULL;
++  }
++
++  u8 op = 0;
++  sqlite3_int64 rowid = 0;
++  sqlite3_uint64 nData = 0;
++  char *pData = NULL;
++  *rc = sqlite3BinlogDecodeRowBuffer(buffer, nBuffer, &op, &rowid, &nData, &pData);
++  if (*rc != SQLITE_OK) {
++    return NULL;
++  }
++
++  BinlogRow pRow;
++  pRow.op = op;
++  pRow.nData = nData;
++  pRow.pData = pData;
++  pRow.rowid = rowid;
++  return sqlite3GetBinlogRowStmt(db, &pRow, pTable);
++}
++
++SQLITE_PRIVATE char *sqlite3BinlogGetEventSql(sqlite3 *db, BinlogEventT *event, Table **pOutTable, int *rc)
++{
++  assert( event!=NULL );
++  switch (event->head.eventType) {
++    case BINLOG_EVENT_TYPE_ROW_START:
++      return sqlite3_mprintf("savepoint %s;", (char *)event->body);
++    case BINLOG_EVENT_TYPE_ROW_TABLE: {
++      char *pTableName = (char *)event->body;
++      sqlite3_stmt *stmt = NULL;
++      *rc = sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table';", -1, &stmt, NULL);
++      if (*rc != SQLITE_OK) {
++        sqlite3_log(SQLITE_ERROR, "binlog row failed to prepare");
++        return NULL;
++      }
++      *pOutTable = sqlite3FindTable(db, pTableName, NULL);
++      sqlite3_finalize(stmt);
++      return NULL;
++    }
++    case BINLOG_EVENT_TYPE_ROW_FULL_DATA:
++      if (pOutTable == NULL || *pOutTable == NULL) {
++        *rc = SQLITE_ERROR;
++        sqlite3_log(SQLITE_ERROR, "binlog row has no table");
++        return NULL;
++      }
++      return sqlite3BinlogGetRowSql(db, *pOutTable, (char *)event->body, event->head.eventLength, rc);
++    case BINLOG_EVENT_TYPE_ROW_COMMIT:
++      return sqlite3_mprintf("release %s;", (char *)event->body);
++    case BINLOG_EVENT_TYPE_ROW_ROLLBACK:
++      return sqlite3_mprintf("rollback to %s;", (char *)event->body);
++    default:
++      return sqlite3_mprintf("%s", (char *)event->body);
++  }
++}
++
++SQLITE_PRIVATE int sqlite3BinlogStmtStep(sqlite3 *db, Sqlite3BinlogStmt *bStmt, char **sql, Table **pOutTable)
 +{
 +  if (bStmt == NULL || bStmt->cursor == NULL || sql == NULL) {
-+    sqlite3_log(SQLITE_ERROR, "binlog stmt stmp parameter is null");
++    sqlite3_log(SQLITE_ERROR, "binlog stmt step parameter is null");
 +    return SQLITE_ERROR;
 +  }
 +  if (bStmt->curIdx >= bStmt->cursor->eventNum) {
@@ -1423,10 +1603,14 @@ index 2a4e87f..2f26487 100644
 +  }
 +  BinlogEventT *event = bStmt->cursor->sqlEvent[bStmt->curIdx];
 +  if (event == NULL) {
-+    sqlite3_log(SQLITE_ERROR, "binlog stmt stmp event is null");
++    sqlite3_log(SQLITE_ERROR, "binlog stmt step event is null");
 +    return SQLITE_ERROR;
 +  }
-+  *sql = (char *)event->body;
++  int rc = SQLITE_OK;
++  *sql = sqlite3BinlogGetEventSql(db, event, pOutTable, &rc);
++  if (rc != SQLITE_OK){
++    return rc;
++  }
 +  bStmt->curIdx++;
 +  return SQLITE_ROW;
 +}
@@ -1453,7 +1637,6 @@ index 2a4e87f..2f26487 100644
 +  if (rc == SQLITE_OK || rc == SQLITE_CONSTRAINT) {
 +    return SQLITE_OK;
 +  }
-+  sqlite3BinlogErrorCallback(srcDb, rc, "exec replay sql failed");
 +  return rc;
 +}
 + 
@@ -1497,19 +1680,23 @@ index 2a4e87f..2f26487 100644
 +      break;
 +    }
 +    char *bSql = NULL;
-+    while ((res = sqlite3BinlogStmtStep(&bStmt, &bSql)) == SQLITE_ROW) {
++    Table *pTab = NULL;
++    while ((res = sqlite3BinlogStmtStep(destDb, &bStmt, &bSql, &pTab)) == SQLITE_ROW) {
 +      if (bSql == NULL) {
-+        sqlite3_log(SQLITE_ERROR, "binlog event read invalid");
 +        continue;
 +      }
 +      int errCode = sqlite3BinlogExecuteReplaySql(srcDb, destDb, bSql);
++      sqlite3_free(bSql);
++      bSql = NULL;
 +      if (errCode != SQLITE_OK) {
 +        res = errCode;
 +        break;
 +      }
-+      bSql = NULL;
 +    }
 +    sqlite3BinlogStmtFinalize(srcDb, &bStmt);
++    if (res != SQLITE_DONE && res != SQLITE_OK) {
++      sqlite3BinlogErrorCallback(srcDb, res, "exec replay sql failed");
++    }
 +    if (res != SQLITE_DONE) {
 +      break;
 +    }
@@ -1541,7 +1728,7 @@ index 2a4e87f..2f26487 100644
 +  }
 +
 +  const char *zFile = sqlite3_db_filename(db, 0);
-+  if (zFile == NULL || (db->xBinlogHandle.flags & BINLOG_FLAG_ENABLE)) {
++  if (zFile == NULL || (db->xBinlogHandle.flags & BINLOG_FLAG_ENABLE) == 0) {
 +    sqlite3_log(SQLITE_ERROR, "binlog db has no file path");
 +    return;
 +  }
@@ -1553,7 +1740,7 @@ index 2a4e87f..2f26487 100644
  // hw export the symbols
  #ifdef SQLITE_EXPORT_SYMBOLS
  #ifndef SQLITE_CKSUMVFS_STATIC
-@@ -256942,6 +258225,9 @@ struct sqlite3_api_routines_hw {
+@@ -256942,6 +258405,9 @@ struct sqlite3_api_routines_hw {
    int (*key_v2)(sqlite3*,const char*,const void*,int);
    int (*rekey)(sqlite3*,const void*,int);
    int (*rekey_v2)(sqlite3*,const char*,const void*,int);
@@ -1563,7 +1750,7 @@ index 2a4e87f..2f26487 100644
  };
  
  typedef struct sqlite3_api_routines_hw sqlite3_api_routines_hw;
-@@ -256952,13 +258238,22 @@ static const sqlite3_api_routines_hw sqlite3HwApis = {
+@@ -256952,13 +258418,22 @@ static const sqlite3_api_routines_hw sqlite3HwApis = {
    sqlite3_key,
    sqlite3_key_v2,
    sqlite3_rekey,
