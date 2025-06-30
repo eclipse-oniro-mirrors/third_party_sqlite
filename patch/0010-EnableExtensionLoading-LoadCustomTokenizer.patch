@@ -1,0 +1,64 @@
+diff --git a/src/shell.c b/src/shell.c
+index 7fb190e..6dc5087 100644
+--- a/src/shell.c
++++ b/src/shell.c
+@@ -118,6 +118,7 @@ typedef unsigned short int u16;
+ #include <stdio.h>
+ #include <assert.h>
+ #include <math.h>
++#include <sys/time.h>
+ #include "sqlite3.h"
+ typedef sqlite3_int64 i64;
+ typedef sqlite3_uint64 u64;
+@@ -22189,6 +22190,32 @@ static void open_db(ShellState *p, int openFlags){
+     }
+     sqlite3_db_config(p->db, SQLITE_DBCONFIG_STMT_SCANSTATUS, (int)0, (int*)0);
+ 
++    int enableLoadExtension = 1;
++    char *ErrMsg = 0;
++    int ret_icu = SQLITE_OK;
++    const char *extension_path = "/system/lib64/platformsdk/libcustomtokenizer.z.so";
++
++    if (access(extension_path, F_OK) == 0) {
++        // 启用扩展加载配置
++        ret_icu = sqlite3_db_config(p->db, SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, enableLoadExtension, &ErrMsg);
++        if (ret_icu != SQLITE_OK) {
++            eputf("ERROR: Failed to configure database for extension loading: %s\n", ErrMsg ? ErrMsg : "Unknown error");
++            if (ErrMsg) sqlite3_free(ErrMsg);
++            return;
++        }
++
++        // 加载自定义扩展
++        ret_icu = sqlite3_load_extension(p->db, extension_path, NULL, &ErrMsg);
++        if (ret_icu != SQLITE_OK) {
++            eputf("ERROR: Failed to load extension from: %s. Message: %s\n", extension_path, ErrMsg ? ErrMsg : "Unknown error");
++            if (ErrMsg) sqlite3_free(ErrMsg);
++            return;
++        }
++
++    } else {
++        eputf("ERROR: Extension file (%s) does NOT exist. Extension will not be loaded.\n", extension_path);
++    }
++
+     /* Reflect the use or absence of --unsafe-testing invocation. */
+     {
+       int testmode_on = ShellHasFlag(p,SHFLG_TestingMode);
+@@ -28237,6 +28264,8 @@ static int line_is_complete(char *zSql, int nSql){
+ static int runOneSqlLine(ShellState *p, char *zSql, FILE *in, int startline){
+   int rc;
+   char *zErrMsg = 0;
++  struct timeval start, end;
++  gettimeofday(&start, NULL);
+ 
+   open_db(p, 0);
+   if( ShellHasFlag(p,SHFLG_Backslash) ) resolve_backslashes(zSql);
+@@ -28244,6 +28273,9 @@ static int runOneSqlLine(ShellState *p, char *zSql, FILE *in, int startline){
+   BEGIN_TIMER;
+   rc = shell_exec(p, zSql, &zErrMsg);
+   END_TIMER;
++  gettimeofday(&end, NULL);
++  long long elapsed_us = (end.tv_sec - start.tv_sec) * 1000000LL + (end.tv_usec - start.tv_usec);
++  eputf("cost: %lld us\n", elapsed_us);
+   if( rc || zErrMsg ){
+     char zPrefix[100];
+     const char *zErrorTail;

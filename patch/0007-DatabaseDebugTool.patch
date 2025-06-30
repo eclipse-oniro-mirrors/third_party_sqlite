@@ -1,5 +1,5 @@
 diff --git a/src/shell.c b/src/shell.c
-index 7fb190e..07fe381 100644
+index 7fb190e..c1948b1 100644
 --- a/src/shell.c
 +++ b/src/shell.c
 @@ -119,6 +119,7 @@ typedef unsigned short int u16;
@@ -10,26 +10,13 @@ index 7fb190e..07fe381 100644
  typedef sqlite3_int64 i64;
  typedef sqlite3_uint64 u64;
  typedef unsigned char u8;
-@@ -28874,6 +28875,8 @@ int SQLITE_CDECL wmain(int argc, wchar_t **wargv){
-     warnInmemoryDb = 0;
+@@ -28875,6 +28876,9 @@ int SQLITE_CDECL wmain(int argc, wchar_t **wargv){
    }
  #endif
-+  // The icu analyzer is enabled by default on the client tool.
-+  sqlite3_config(SQLITE_CONFIG_ENABLE_ICU);
  
++// The icu analyzer is enabled by default on the client tool.
++  sqlite3_config(SQLITE_CONFIG_ENABLE_ICU);
++
    /* Do an initial pass through the command-line argument to locate
    ** the name of the database file, the name of the initialization file,
-diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 7fb290f..0024163 100644
---- a/src/sqlite3.c
-+++ b/src/sqlite3.c
-@@ -20,6 +20,9 @@
- ** The content in this amalgamation comes from Fossil check-in
- ** f1e31fd9961ac82535a5d0702b127d84de8c.
- */
-+#ifndef SQLITE_EXPORT
-+#define SQLITE_EXPORT
-+#endif
- #define SQLITE_CORE 1
- #define SQLITE_AMALGAMATION 1
- #ifndef SQLITE_PRIVATE
+   ** the size of the alternative malloc heap, options affecting commands
