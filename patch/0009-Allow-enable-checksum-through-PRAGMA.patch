@@ -1,9 +1,8 @@
-From 6795a730af198fed664ac8418b36368048c4aa4b Mon Sep 17 00:00:00 2001
+From 1136400a2cdcdbd784cb459cfc6f123f14f3cc58 Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
-Date: Sat, 7 Jun 2025 22:25:48 +0800
-Subject: [PATCH] Allow enable checksum through PRAGMA
+Date: Thu, 3 Jul 2025 22:57:51 +0800
+Subject: [PATCH 09/12] Allow enable checksum through PRAGMA
 
-Signed-off-by: MartinChoo <214582617@qq.com>
 ---
  ext/misc/cksumvfs.c | 185 ++++++++++++++++++++++++++++++++++++--------
  src/sqlite3.c       | 175 ++++++++++++++++++++++++++++++++---------
@@ -377,10 +376,10 @@ index 6f4c55c..a23a997 100644
    int (*register_cksumvfs)(const char *);
    int (*unregister_cksumvfs)();
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 3be1113..80d7979 100644
+index 425d3d7..24e3247 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
-@@ -139859,6 +139859,10 @@ static int integrityCheckResultRow(Vdbe *v){
+@@ -139875,6 +139875,10 @@ static int integrityCheckResultRow(Vdbe *v){
    return addr;
  }
  
@@ -391,7 +390,7 @@ index 3be1113..80d7979 100644
  /*
  ** Process a pragma statement.
  **
-@@ -139981,7 +139985,15 @@ SQLITE_PRIVATE void sqlite3Pragma(
+@@ -139997,7 +140001,15 @@ SQLITE_PRIVATE void sqlite3Pragma(
      /* PragmaMetaDoubleWrie executes internal */
      goto pragma_out;
    }
@@ -408,7 +407,7 @@ index 3be1113..80d7979 100644
    /* Locate the pragma in the lookup table */
    pPragma = pragmaLocate(zLeft);
    if( pPragma==0 ){
-@@ -184243,16 +184255,12 @@ SQLITE_API int sqlite3_file_control(sqlite3 *db, const char *zDbName, int op, vo
+@@ -184259,16 +184271,12 @@ SQLITE_API int sqlite3_file_control(sqlite3 *db, const char *zDbName, int op, vo
        *(unsigned int*)pArg = sqlite3PagerDataVersion(pPager);
        rc = SQLITE_OK;
      }else if( op==SQLITE_FCNTL_RESERVE_BYTES ){
@@ -425,7 +424,7 @@ index 3be1113..80d7979 100644
      }else if( op==SQLITE_FCNTL_RESET_CACHE ){
        sqlite3BtreeClearCache(pBtree);
        rc = SQLITE_OK;
-@@ -256078,7 +256086,71 @@ export_finish:
+@@ -256094,7 +256102,71 @@ export_finish:
    return;
  }
  /************** End file hw_codec.c *****************************************/
@@ -498,7 +497,7 @@ index 3be1113..80d7979 100644
  #ifdef SQLITE_META_DWR
  #define META_DWR_MAX_PAGES 500
  #define META_DWR_MAGIC 0x234A86D9
-@@ -256110,7 +256182,7 @@ typedef struct MetaDwrHdr {
+@@ -256126,7 +256198,7 @@ typedef struct MetaDwrHdr {
    Pgno *pages;
    u32 pageBufSize;
    u8 hdrValid;
@@ -507,7 +506,7 @@ index 3be1113..80d7979 100644
    u16 needSync;
    i64 lastSyncTime;
  } MetaDwrHdr;
-@@ -256124,7 +256196,7 @@ typedef struct MetaDwrHdr {
+@@ -256140,7 +256212,7 @@ typedef struct MetaDwrHdr {
  static int MetaDwrHeaderSimpleCheck(Pager *pPager, MetaDwrHdr *hdr) {
  #if SQLITE_OS_UNIX
    if (hdr->checkFileId) {
@@ -516,7 +515,7 @@ index 3be1113..80d7979 100644
      if (fd == NULL || fd->pInode == NULL || pPager->pVfs == NULL) {
        return SQLITE_INTERNAL;
      }
-@@ -256134,7 +256206,7 @@ static int MetaDwrHeaderSimpleCheck(Pager *pPager, MetaDwrHdr *hdr) {
+@@ -256150,7 +256222,7 @@ static int MetaDwrHeaderSimpleCheck(Pager *pPager, MetaDwrHdr *hdr) {
        return SQLITE_IOERR_DATA;
      }
    }
@@ -525,7 +524,7 @@ index 3be1113..80d7979 100644
    if (hdr->pageCnt > META_DWR_MAX_PAGES || hdr->version != META_DWR_VERSION ||
        hdr->magic != META_DWR_MAGIC || hdr->checkSum != META_DWR_MAGIC) {
      sqlite3_log(SQLITE_IOERR_DATA, "Meta dwr file check wrong pageCnt %u, version %u, magic %u, checkSum %u",
-@@ -256366,7 +256438,15 @@ static MetaDwrHdr *AllocInitMetaHeaderDwr(Pager *pPager) {
+@@ -256382,7 +256454,15 @@ static MetaDwrHdr *AllocInitMetaHeaderDwr(Pager *pPager) {
      MetaDwrReleaseHdr(hdr);
      return NULL;
    }
@@ -542,7 +541,7 @@ index 3be1113..80d7979 100644
    return hdr;
  }
  
-@@ -256379,7 +256459,7 @@ static void MetaDwrCloseFile(Pager *pPager) {
+@@ -256395,7 +256475,7 @@ static void MetaDwrCloseFile(Pager *pPager) {
      osMunmap(pPager->metaMapPage, META_DWR_HEADER_PAGE_SIZE);
      pPager->metaMapPage = NULL;
    }
@@ -551,7 +550,7 @@ index 3be1113..80d7979 100644
    if (pPager->metaHdr && pPager->metaHdr->needSync > 0) {
      (void)sqlite3OsSync(pPager->metaFd, SQLITE_SYNC_NORMAL);
    }
-@@ -256474,10 +256554,10 @@ static void MetaDwrUpdateHeaderDbInfo(BtShared *pBt) {
+@@ -256490,10 +256570,10 @@ static void MetaDwrUpdateHeaderDbInfo(BtShared *pBt) {
    } else {
      hdr->mxFrameInWal = 0;
    }
@@ -564,7 +563,7 @@ index 3be1113..80d7979 100644
      if (fd == NULL || fd->pInode == NULL) {
        sqlite3_log(SQLITE_WARNING_DUMP, "update meta header invalid fd");
        hdr->hdrValid = 0;
-@@ -256485,7 +256565,7 @@ static void MetaDwrUpdateHeaderDbInfo(BtShared *pBt) {
+@@ -256501,7 +256581,7 @@ static void MetaDwrUpdateHeaderDbInfo(BtShared *pBt) {
      }
      hdr->dbFileInode = fd->pInode->fileId.ino;
    }
@@ -573,7 +572,7 @@ index 3be1113..80d7979 100644
    hdr->freeListPageNo = sqlite3Get4byte(dbHdrInfo + 4);
    hdr->freeListPageCnt = sqlite3Get4byte(dbHdrInfo + 8);
    hdr->schemaCookie = sqlite3Get4byte(dbHdrInfo + 12);
-@@ -256581,7 +256661,7 @@ static int MetaDwrWriteOnePage(Btree *pBt, PgHdr *pPage, MetaDwrHdr *hdr, u8 cur
+@@ -256597,7 +256677,7 @@ static int MetaDwrWriteOnePage(Btree *pBt, PgHdr *pPage, MetaDwrHdr *hdr, u8 cur
      return SQLITE_NOMEM;
  #else
    pData = pPage->pData;
@@ -582,7 +581,7 @@ index 3be1113..80d7979 100644
    rc = sqlite3OsWrite(pPager->metaFd, pData, pageSz, ofs);
    if (rc != SQLITE_OK) {
      return rc;
-@@ -256643,7 +256723,7 @@ static int MetaDwrCheckPerm(sqlite3_vfs *pVfs, u8 openCreate, char *metaPath) {
+@@ -256659,7 +256739,7 @@ static int MetaDwrCheckPerm(sqlite3_vfs *pVfs, u8 openCreate, char *metaPath) {
    if (openCreate) {
      sqlite3_log(SQLITE_WARNING_DUMP, "Meta double write disabled, sysno %d", errno);
    }
@@ -591,7 +590,7 @@ index 3be1113..80d7979 100644
    return rc;
  }
  
-@@ -256686,7 +256766,7 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
+@@ -256702,7 +256782,7 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
        pPager->metaMapPage = page;
      }
    }
@@ -600,7 +599,7 @@ index 3be1113..80d7979 100644
    pPager->metaFd = metaFd;
  INIT_META_OUT:
    sqlite3EndBenignMalloc();
-@@ -256810,7 +256890,7 @@ static int MetaDwrRecoverHeadPage(
+@@ -256826,7 +256906,7 @@ static int MetaDwrRecoverHeadPage(
        goto RELEASE_OUT;
      }
    }
@@ -609,7 +608,7 @@ index 3be1113..80d7979 100644
    rc = SQLITE_NOTADB;
    for (u32 i = 0; i < hdr->pageCnt; i++) {
      if (hdr->pages[i] != pgno) {
-@@ -257060,15 +257140,24 @@ CHK_RESTORE_OUT:
+@@ -257076,15 +257156,24 @@ CHK_RESTORE_OUT:
  static inline u8 IsConnectionValidForCheck(Pager *pPager)
  {
  #if SQLITE_OS_UNIX
@@ -642,7 +641,7 @@ index 3be1113..80d7979 100644
  #endif
  }
  
-@@ -257083,7 +257172,7 @@ static int MetaDwrOpenAndCheck(Btree *pBt)
+@@ -257099,7 +257188,7 @@ static int MetaDwrOpenAndCheck(Btree *pBt)
    if (pPager->xCodec) {
      return SQLITE_OK;
    }
@@ -651,7 +650,7 @@ index 3be1113..80d7979 100644
    sqlite3BtreeEnter(pBt);
    int rc = SQLITE_OK;
    int openedTransaction = 0;
-@@ -257128,7 +257217,7 @@ static void MetaDwrDisable(Btree *pBt)
+@@ -257144,7 +257233,7 @@ static void MetaDwrDisable(Btree *pBt)
    if (pPager->xCodec) {
      return;
    }
@@ -660,7 +659,7 @@ index 3be1113..80d7979 100644
    sqlite3BtreeEnter(pBt);
    MetaDwrCloseFile(pPager);
    MetaDwrReleaseHdr(pPager->metaHdr);
-@@ -257143,7 +257232,8 @@ static void MetaDwrDisable(Btree *pBt)
+@@ -257159,7 +257248,8 @@ static void MetaDwrDisable(Btree *pBt)
    }
    sqlite3BtreeLeave(pBt);
  }
@@ -670,7 +669,7 @@ index 3be1113..80d7979 100644
  #if SQLITE_OS_UNIX
  #include <unistd.h>
  #include <sys/syscall.h>
-@@ -257352,10 +257442,17 @@ static void DumpLocksByWal(Wal *pWal)
+@@ -257368,10 +257458,17 @@ static void DumpLocksByWal(Wal *pWal)
      sqlite3_log(SQLITE_ERROR, "Wal ptr is NULL!");
      return;
    }
@@ -690,7 +689,7 @@ index 3be1113..80d7979 100644
  }
  #endif /* #ifndef SQLITE_OMIT_WAL */
  
-@@ -257365,13 +257462,20 @@ static void DumpLocksByPager(Pager *pPager)
+@@ -257381,13 +257478,20 @@ static void DumpLocksByPager(Pager *pPager)
      sqlite3_log(SQLITE_ERROR, "Pager ptr is NULL!");
      return;
    }
@@ -714,7 +713,7 @@ index 3be1113..80d7979 100644
  #endif /* #ifndef SQLITE_OMIT_WAL */
  }
  #endif /* SQLITE_OS_UNIX */
-@@ -258307,7 +258411,8 @@ static const sqlite3_api_routines_cksumvfs sqlite3CksumvfsApis = {
+@@ -258484,7 +258588,8 @@ static const sqlite3_api_routines_cksumvfs sqlite3CksumvfsApis = {
  };
  
  EXPORT_SYMBOLS const sqlite3_api_routines_cksumvfs *sqlite3_export_cksumvfs_symbols = &sqlite3CksumvfsApis;

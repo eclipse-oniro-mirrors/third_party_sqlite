@@ -1,14 +1,14 @@
-From 5604e33fbc2e70d6b636d4a497e40791b8fcc1bd Mon Sep 17 00:00:00 2001
-From: Liu Hongyang <liuhongyang4@huawei.com>
-Date: Sat, 5 Jul 2025 16:18:35 +0800
-Subject: [PATCH] Support-Binlog
+From 43816530bf2526e61ba871ab7d82ddb524f3bb94 Mon Sep 17 00:00:00 2001
+From: MartinChoo <214582617@qq.com>
+Date: Thu, 3 Jul 2025 22:55:59 +0800
+Subject: [PATCH 06/12] Support-Binlog
 
 ---
  src/sqlite3.c | 1510 ++++++++++++++++++++++++++++++++++++++++++++++++-
  1 file changed, 1501 insertions(+), 9 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index e7e8b3c..c095863 100644
+index e7e8b3c..311d910 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -2938,7 +2938,9 @@ SQLITE_API sqlite3_int64 sqlite3_last_insert_rowid(sqlite3*);
@@ -1793,5 +1793,5 @@ index e7e8b3c..c095863 100644
  
  EXPORT_SYMBOLS const sqlite3_api_routines *sqlite3_export_symbols = &sqlite3Apis;
 -- 
-2.25.1
+2.47.0.windows.2
 

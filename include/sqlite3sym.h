@@ -36,7 +36,7 @@ typedef enum BinlogFileCleanMode {
 typedef enum {
   ROW = 0,
 } Sqlite3BinlogMode;
- 
+
 typedef struct Sqlite3BinlogConfig {
     Sqlite3BinlogMode mode;
     unsigned short fullCallbackThreshold;
@@ -59,6 +59,7 @@ struct sqlite3_api_routines_hw {
   int (*is_support_binlog)(void);
   int (*replay_binlog)(sqlite3*, sqlite3*);
   int (*clean_binlog)(sqlite3*, BinlogFileCleanModeE);
+  int (*compressdb_backup)(sqlite3*, const char*);
 };
 
 extern const struct sqlite3_api_routines_hw *sqlite3_export_hw_symbols;
@@ -71,6 +72,7 @@ extern const struct sqlite3_api_routines_hw *sqlite3_export_hw_symbols;
 #define sqlite3_is_support_binlog   sqlite3_export_hw_symbols->is_support_binlog
 #define sqlite3_replay_binlog       sqlite3_export_hw_symbols->replay_binlog
 #define sqlite3_clean_binlog        sqlite3_export_hw_symbols->clean_binlog
+#define sqlite3_compressdb_backup   sqlite3_export_hw_symbols->compressdb_backup
 
 struct sqlite3_api_routines_cksumvfs {
   int (*register_cksumvfs)(const char *);

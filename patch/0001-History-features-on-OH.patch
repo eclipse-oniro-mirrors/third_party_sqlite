@@ -1,15 +1,14 @@
-From f71a3aaddebdcba87ad8af804d680397ecc5fa48 Mon Sep 17 00:00:00 2001
-From: wanghaishuo <wanghaishuo1@huawei.com>
-Date: Mon, 12 May 2025 15:29:53 +0800
-Subject: [PATCH 1/6] History features on OH
+From 1355da4b32bfb2e263e03e953d052086cf40ed20 Mon Sep 17 00:00:00 2001
+From: MartinChoo <214582617@qq.com>
+Date: Thu, 3 Jul 2025 22:53:07 +0800
+Subject: [PATCH 01/12] History features on OH
 
-Signed-off-by: wanghaishuo <wanghaishuo1@huawei.com>
 ---
  src/sqlite3.c | 2451 ++++++++++++++++++++++++++++++++++++++++++++++++-
  1 file changed, 2438 insertions(+), 13 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 7fb290f..ad78006 100644
+index 730b247..b132937 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -2915,6 +2915,11 @@ SQLITE_API int sqlite3_extended_result_codes(sqlite3*, int onoff);
@@ -3033,5 +3032,5 @@ index 7fb290f..ad78006 100644
 +/************** End hw export the symbols *****************************************/
 +#endif /* SQLITE_EXPORT_SYMBOLS */
 -- 
-2.34.1
+2.47.0.windows.2
 

@@ -1,0 +1,1953 @@
+From 9b6d3d2c1c6a34701067ba0069dd69f180c21de2 Mon Sep 17 00:00:00 2001
+From: MartinChoo <214582617@qq.com>
+Date: Thu, 3 Jul 2025 23:12:46 +0800
+Subject: [PATCH 11/12] Support compress db
+
+---
+ ext/misc/cksumvfs.c |    4 +-
+ src/compressvfs.c   | 1100 +++++++++++++++++++++++++++++++++++++++++++
+ src/sqlite3.c       |  443 ++++++++++++++++-
+ 3 files changed, 1531 insertions(+), 16 deletions(-)
+ create mode 100644 src/compressvfs.c
+
+diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
+index a23a997..1a801fb 100644
+--- a/ext/misc/cksumvfs.c
++++ b/ext/misc/cksumvfs.c
+@@ -966,7 +966,7 @@ static int cksmRegisterVfs(void){
+   cksm_vfs.iVersion = pOrig->iVersion;
+   cksm_vfs.pAppData = pOrig;
+   cksm_vfs.szOsFile = pOrig->szOsFile + sizeof(CksmFile);
+-  rc = sqlite3_vfs_register(&cksm_vfs, 1);
++  rc = sqlite3_vfs_register(&cksm_vfs, 0);
+   if( rc==SQLITE_OK ){
+     rc = sqlite3_auto_extension((void(*)(void))cksmRegisterFunc);
+   }
+@@ -1019,7 +1019,7 @@ int sqlite3_cksumvfs_init(
+ #endif /* !defined(SQLITE_CKSUMVFS_STATIC) */
+ 
+ #ifdef SQLITE_CKSUMVFS_STATIC
+-sqlite3_file *sqlite3_get_orig_file(sqlite3_file *file) {
++sqlite3_file *cksmvfsGetOrigFile(sqlite3_file *file) {
+   return ORIGFILE(file);
+ }
+ 
+diff --git a/src/compressvfs.c b/src/compressvfs.c
+new file mode 100644
+index 0000000..b1d0ac6
+--- /dev/null
++++ b/src/compressvfs.c
+@@ -0,0 +1,1100 @@
++/************** Begin file compressvfs.c *********************************************/
++/*
++** 2025 June 26
++**
++** The author disclaims copyright to this source code.  In place of
++** a legal notice, here is a blessing:
++**
++**    May you do good and not evil.
++**    May you find forgiveness for yourself and forgive others.
++**    May you share freely, never taking more than you give.
++**
++*************************************************************************
++**
++** This file implements a VFS shim that compress each page's data
++** of an SQLite database file. It will Open a OutterDB which used to
++** manager compressed page data and create a vfs_pages table  into OutterDB.
++** When read pages's data, the data will be selected from vfs_pages and
++** decompress by compression.
++**
++** COMPILING
++**
++** This extension requires SQLite 3.44.4 or later. It uses the
++** sqlite3_database_file_object() interface which was added in
++** version 3.44.4, so it will not link with an earlier version of
++** SQLite.
++**
++** To build this extension as a separately loaded shared library or
++** DLL, use compiler command-lines similar to the following:
++**
++**    (linux)    gcc -fPIC -shared compressvfs.c -o sqlitecompressvfs.z.so
++**
++** You may want to add additional compiler options, of course,
++** according to the needs of your project.
++**
++** LOADING
++**
++** To use this extension as a shared library, you first have to
++** open SQLite database connection with compressvfs.
++** It will load autometically when connect to OutterDB.
++** And then compressvfs will be reegistered before open db connection.
++** After first used , all subsequent databse connections that are opened
++** will include this extension.
++**
++** Compressvfs is a VFS Shim. When loaded, "compressvfs" will registered based on
++** default VFS. This is normally what you want.
++**
++** USING
++**
++** Open database connections using the sqlite3_open() with uri "?vfs=compressvfs" or
++** sqlite3_open_v2() interfaces with zVfs parameter.
++**
++** For example:
++**
++**    sqlite3 *db;
++**    sqlite3_open("file:example.db?vfs=compressvfs", &db);
++**    or
++**    sqlite3_open_v2("example.db", &db, flag, "compressvfs");
++**
++** After open databse connections with compressvfs, page data will be auto compressed.
++** And data can be read and written normally.
++**
++*/
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++#include <sqlite3sym.h>
++SQLITE_EXTENSION_INIT1
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <assert.h>
++#include <stddef.h>
++#include "securec.h"
++#ifndef _WIN32
++#include <dlfcn.h>
++#endif
++
++// hw export the symbols
++#ifdef SQLITE_EXPORT_SYMBOLS
++#if defined(__GNUC__)
++#  define EXPORT_SYMBOLS  __attribute__ ((visibility ("default")))
++#elif defined(_MSC_VER)
++#  define EXPORT_SYMBOLS  __declspec(dllexport)
++#else
++#  define EXPORT_SYMBOLS
++#endif
++#endif
++
++/*
++** Useful datatype
++*/
++#ifndef UINT32_TYPE
++# ifdef HAVE_UINT32_T
++#  define UINT32_TYPE uint32_t
++# else
++#  define UINT32_TYPE unsigned int
++# endif
++#endif
++#ifndef UINT16_TYPE
++# ifdef HAVE_UINT16_T
++#  define UINT16_TYPE uint16_t
++# else
++#  define UINT16_TYPE unsigned short int
++# endif
++#endif
++#ifndef INT16_TYPE
++# ifdef HAVE_INT16_T
++#  define INT16_TYPE int16_t
++# else
++#  define INT16_TYPE short int
++# endif
++#endif
++#ifndef UINT8_TYPE
++# ifdef HAVE_UINT8_T
++#  define UINT8_TYPE uint8_t
++# else
++#  define UINT8_TYPE unsigned char
++# endif
++#endif
++#ifndef INT8_TYPE
++# ifdef HAVE_INT8_T
++#  define INT8_TYPE int8_t
++# else
++#  define INT8_TYPE signed char
++# endif
++#endif
++#ifndef LONGDOUBLE_TYPE
++# define LONGDOUBLE_TYPE long double
++#endif
++#ifdef SQLITE_INT64_TYPE
++  typedef SQLITE_INT64_TYPE sqlite_int64;
++# ifdef SQLITE_UINT64_TYPE
++    typedef SQLITE_UINT64_TYPE sqlite_uint64;
++# else
++    typedef unsigned SQLITE_INT64_TYPE sqlite_uint64;
++# endif
++#elif defined(_MSC_VER) || defined(__BORLANDC__)
++  typedef __int64 sqlite_int64;
++  typedef unsigned __int64 sqlite_uint64;
++#else
++  typedef long long int sqlite_int64;
++  typedef unsigned long long int sqlite_uint64;
++#endif
++typedef sqlite_int64 sqlite3_int64;
++typedef sqlite_uint64 sqlite3_uint64;
++typedef sqlite_int64 i64;          /* 8-byte signed integer */
++typedef sqlite_uint64 u64;         /* 8-byte unsigned integer */
++typedef UINT32_TYPE u32;           /* 4-byte unsigned integer */
++typedef UINT16_TYPE u16;           /* 2-byte unsigned integer */
++typedef INT16_TYPE i16;            /* 2-byte signed integer */
++typedef UINT8_TYPE u8;             /* 1-byte unsigned integer */
++typedef INT8_TYPE i8;              /* 1-byte signed integer */
++
++typedef u32 Pgno;
++/* VFS's name */
++#define COMPRESS_VFS_NAME "compressvfs"
++
++/* COMPRESSION OPTIONS */
++#define COMPRESSION_UNDEFINED 0
++#define COMPRESSION_BROTLI    1
++#define COMPRESSION_ZSTD      2
++
++#define COMPRESSION_SQL_MAX_LENGTH 100
++
++#define SQLITE_SHMMAP_IS_WRITE       0x00000001  /*Flag for xShmMap, extend file if necessary */
++#define SQLITE_OPEN_COMPRESS_SHM     0x00010000  /*Flag for xShmMap, need to rename shm file */
++
++typedef struct compress_info compress_info;
++struct compress_info{
++  sqlite3_vfs *pRootVfs;            /* Ptr to default VFS */
++  sqlite3* pDb;                     /* Ptr to OutterDB */
++  u8 bOutterDbOpen;                 /* True to OutterDB is opened */
++  u8 bSubDbOpen;                    /* True to SubDB is opened */
++};
++
++/* An open file */
++typedef struct{
++  sqlite3_file base;        /* IO methods */
++  compress_info *pInfo;     /* Ptr to compress info */
++  u8 bBegin;                /* True to xSync() need commit */
++  u8 compression;           /* Compression options */
++  int page_size;            /* Uncompressed page size */
++} CompressFile;
++
++
++static int compressClose(sqlite3_file *pFile);
++static int compressRead(sqlite3_file *pFile, void *pBuf, int iAmt, sqlite_int64 iOfst);
++static int compressWrite(sqlite3_file *pFile, const void *pBuf, int iAmt, sqlite_int64 iOfst);
++static int compressTruncate(sqlite3_file *pFile, sqlite_int64 size);
++static int compressSync(sqlite3_file *pFile, int flags);
++static int compressFileSize(sqlite3_file *pFile, i64 *pSize);
++static int compressLock(sqlite3_file *pFile, int eFileLock);
++static int compressUnlock(sqlite3_file *pFile, int eFileLock);
++static int compressCheckReservedLock(sqlite3_file *pFile, int *pResOut);
++static int compressFileControl(sqlite3_file *pFile, int op, void *pArg);
++static int compressSectorSize(sqlite3_file *pFile);
++static int compressDeviceCharacteristics(sqlite3_file *pFile);
++static int compressShmMap(sqlite3_file *pFile, int iPg, int pgsz, int fileFlag, void volatile **pp);
++static int compressShmLock(sqlite3_file *pFile, int offset, int n, int flags);
++static void compressShmBarrier(sqlite3_file *pFile);
++static int compressShmUnmap(sqlite3_file *pFile, int deleteFlag);
++static int compressFetch(sqlite3_file *pFile, sqlite_int64 iOfst, int iAmt, void **pp);
++static int compressUnfetch(sqlite3_file *pFile, sqlite_int64 iOfst, void *pPage);
++
++static sqlite3_vfs compress_vfs = {0};
++static compress_info compress_vfs_info = {0};
++static sqlite3_io_methods compress_io_methods = {
++  3,
++  compressClose,
++  compressRead,
++  compressWrite,
++  compressTruncate,
++  compressSync,
++  compressFileSize,
++  compressLock,
++  compressUnlock,
++  compressCheckReservedLock,
++  compressFileControl,
++  compressSectorSize,
++  compressDeviceCharacteristics,
++  compressShmMap,
++  compressShmLock,
++  compressShmBarrier,
++  compressShmUnmap,
++  compressFetch,
++  compressUnfetch
++};
++
++/*----------------------------brotli header begin----------------------------*/
++#define BROTLI_BOOL int
++#define BROTLI_TRUE 1
++#define BROTLI_FALSE 0
++#define BROTLI_MAX_WINDOW_BITS 24
++typedef enum{
++  // Decoding error
++  BROTLI_DECODER_RESULT_ERROR = 0,
++  // Decoding successfully completed.
++  BROTLI_DECODER_RESULT_SUCCESS = 1,
++  // Should be called again more input.
++  BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT = 2,
++  // Should be called again more output.
++  BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT = 3,
++} BrotliDecoderResult;
++
++typedef BROTLI_BOOL (*brotliCompress_ptr)(u32, u32, size_t, const u8*, size_t*, u8*);
++typedef BrotliDecoderResult (*brotliDecompress_ptr)(size_t, const u8*, size_t*, u8*);
++/*----------------------------brotli header end----------------------------*/
++
++/*----------------------------zstd header begin----------------------------*/
++typedef size_t (*zstdCompress_ptr)(void*, size_t, const void*, size_t, int);
++typedef size_t (*zstdDecompress_ptr)(void*, size_t, const void*, size_t);
++/*----------------------------zstd header begin----------------------------*/
++
++/*
++** Access to a lower-level VFS that (might) implement dynamic loading, access to randomness, etc.
++*/
++#define ORIGFILE(p) ((sqlite3_file*)(((CompressFile*)(p))+1))
++
++static u32 g_compress_algo_load = COMPRESSION_UNDEFINED;
++static void *g_compress_algo_library = NULL;
++typedef size_t (*compressBound_ptr)(size_t);
++static compressBound_ptr compressBoundPtr = NULL;
++
++static brotliCompress_ptr brotliCompressPtr = NULL;
++static brotliDecompress_ptr brotliDecompressPtr = NULL;
++static zstdCompress_ptr zstdCompressPtr = NULL;
++static zstdDecompress_ptr zstdDecompressPtr = NULL;
++
++static int loadBrotliExtension(){
++  g_compress_algo_library = dlopen("libbrotli_shared.z.so", RTLD_LAZY);
++  if( g_compress_algo_library==NULL ){
++    sqlite3_log(SQLITE_NOTICE, "load brotli so failed :%s", dlerror());
++    return SQLITE_ERROR;
++  }
++  compressBoundPtr = (compressBound_ptr)dlsym(g_compress_algo_library, "BrotliEncoderMaxCompressedSize");
++  if( compressBoundPtr==NULL ){
++    goto failed;
++  }
++  brotliCompressPtr = (brotliCompress_ptr)dlsym(g_compress_algo_library, "BrotliEncoderCompress");
++  if( brotliCompressPtr==NULL ){
++    goto failed;
++  }
++  brotliDecompressPtr = (brotliDecompress_ptr)dlsym(g_compress_algo_library, "BrotliDecoderDecompress");
++  if( brotliDecompressPtr==NULL ){
++    goto failed;
++  }
++  g_compress_algo_load = COMPRESSION_BROTLI;
++  return SQLITE_OK;
++
++ failed:
++  sqlite3_log(SQLITE_NOTICE, "load brotli dlsym failed :%s", dlerror());
++  compressBoundPtr = NULL;
++  brotliCompressPtr = NULL;
++  brotliDecompressPtr = NULL;
++  dlclose(g_compress_algo_library);
++  return SQLITE_ERROR;
++}
++
++static int loadZstsExtension(){
++  g_compress_algo_library = dlopen("libzstd_shared.z.so", RTLD_LAZY);
++  if( g_compress_algo_library==NULL ){
++    sqlite3_log(SQLITE_NOTICE, "load zstd so failed :%s", dlerror());
++    return SQLITE_ERROR;
++  }
++  compressBoundPtr = (compressBound_ptr)dlsym(g_compress_algo_library, "ZSTD_compressBound");
++  if( compressBoundPtr==NULL ){
++    goto failed;
++  }
++  zstdCompressPtr = (zstdCompress_ptr)dlsym(g_compress_algo_library, "ZSTD_compress");
++  if( zstdCompressPtr==NULL ){
++    goto failed;
++  }
++  zstdDecompressPtr = (zstdDecompress_ptr)dlsym(g_compress_algo_library, "ZSTD_decompress");
++  if( zstdDecompressPtr==NULL ){
++    goto failed;
++  }
++  g_compress_algo_load = COMPRESSION_ZSTD;
++  return SQLITE_OK;
++
++ failed:
++  sqlite3_log(SQLITE_NOTICE, "load zstd dlsym failed :%s", dlerror());
++  compressBoundPtr = NULL;
++  zstdCompressPtr = NULL;
++  zstdDecompressPtr = NULL;
++  dlclose(g_compress_algo_library);
++  return SQLITE_ERROR;
++}
++
++static int loadCompressAlgorithmExtension(u8 compression){
++  if( g_compress_algo_load!=0u ){
++    return SQLITE_OK;
++  }
++#ifndef _WIN32
++  if( compression==COMPRESSION_UNDEFINED ){
++    if( loadZstsExtension()==SQLITE_ERROR ){
++      sqlite3_log(SQLITE_NOTICE, "load zstd failed :%s", dlerror());
++      if( loadBrotliExtension()==SQLITE_ERROR ){
++        sqlite3_log(SQLITE_ERROR, "load compress so failed :%s", dlerror());
++        return SQLITE_ERROR;
++      }
++    }
++  }else if( compression==COMPRESSION_BROTLI ){
++    if( loadBrotliExtension()==SQLITE_ERROR ){
++      sqlite3_log(SQLITE_ERROR, "load brotli so failed :%s", dlerror());
++      return SQLITE_ERROR;
++    }
++  }else if( compression==COMPRESSION_ZSTD ){
++    if( loadZstsExtension()==SQLITE_ERROR ){
++      sqlite3_log(SQLITE_ERROR, "load zstd so failed :%s", dlerror());
++      return SQLITE_ERROR;
++    }
++  }else{
++    sqlite3_log(SQLITE_ERROR, "load compress so failed, compression is invalid :%u", compression);
++    return SQLITE_ERROR;
++  }
++#endif
++  return SQLITE_OK;
++}
++
++/* Get compress bound */
++static int compressLen(int src_len, int compression){
++  if( compression==COMPRESSION_BROTLI || compression==COMPRESSION_ZSTD ){
++    return compressBoundPtr(src_len);
++  }
++  return -1;
++}
++
++/* Compress buf with compression */
++static int compressBuf(
++  u8 *dst,
++  int dst_buf_len,
++  int *dst_written_len,
++  const u8 *src,
++  int src_len,
++  int compression
++){
++  int ret_len = 0;
++  if( g_compress_algo_load==COMPRESSION_UNDEFINED &&
++    loadCompressAlgorithmExtension(compression)==SQLITE_ERROR ){
++    return SQLITE_ERROR;
++  }
++  if( g_compress_algo_load!=(u32)compression ){
++    sqlite3_log(SQLITE_MISUSE, "already load %u, but need load %d", g_compress_algo_load, compression);
++    return SQLITE_MISUSE;
++  }
++  if( compression==COMPRESSION_BROTLI ){
++    size_t dst_len = dst_buf_len;
++    int ret = brotliCompressPtr(
++      3,                        // COMPRESS QUALITY (1-11)
++      BROTLI_MAX_WINDOW_BITS,   // WINDOWS SIZE (10-24)
++      (size_t)src_len,
++      (const u8 *)src,
++      &dst_len,
++      (u8 *)dst);
++    if( ret!=BROTLI_TRUE ){
++      return SQLITE_ERROR;
++    }
++    ret_len = dst_len;
++  }else if( compression==COMPRESSION_ZSTD ){
++    ret_len = (int)zstdCompressPtr(dst, dst_buf_len, src, src_len, 3);
++  }
++  if( ret_len<=0 ){
++    return SQLITE_ERROR;
++  }
++  *dst_written_len = ret_len;
++  return SQLITE_OK;
++}
++
++/* Decompress buf with compression */
++EXPORT_SYMBOLS static int decompressBuf(
++  u8 *dst,
++  int dst_buf_len,
++  int *dst_written_len,
++  const u8 *src,
++  int src_len,
++  int compression
++){
++  int ret_len = -1;
++  if( g_compress_algo_load==COMPRESSION_UNDEFINED &&
++    loadCompressAlgorithmExtension(compression)==SQLITE_ERROR ){
++    return SQLITE_ERROR;
++  }
++  if( g_compress_algo_load!=(u32)compression ){
++    sqlite3_log(SQLITE_MISUSE, "already load %u, but need load %d", g_compress_algo_load, compression);
++    return SQLITE_MISUSE;
++  }
++  if( compression==COMPRESSION_BROTLI ){
++    size_t dst_len = dst_buf_len;
++    int ret = (int)brotliDecompressPtr(src_len, src, &dst_len, dst);
++    if( ret!=BROTLI_TRUE ){
++      return SQLITE_ERROR;
++    }
++    ret_len = dst_len;
++  }else if( compression==COMPRESSION_ZSTD ){
++    ret_len = (int)zstdDecompressPtr(dst, dst_buf_len, src, src_len);
++  }
++  if( ret_len<=0 ){
++    return SQLITE_ERROR;
++  }
++  *dst_written_len = ret_len;
++  return SQLITE_OK;
++}
++
++/* Check whether the table exists in the OutterDB. */
++static int tableExists(sqlite3 *db, const char *table_name){
++  sqlite3_stmt *stmt = NULL;
++  const char *sql = "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?;";
++  int exists = 0;
++
++  if( sqlite3_prepare_v2(db, sql, -1, &stmt, NULL)==SQLITE_OK ){
++    sqlite3_bind_text(stmt, 1, table_name, -1, SQLITE_STATIC);
++    if( sqlite3_step(stmt)==SQLITE_ROW ){
++      exists = 1;
++    }
++    sqlite3_finalize(stmt);
++  }
++  return exists;
++}
++
++/* Get page size before compressed from OutterDB. */
++static int getCompressPgsize(sqlite3 * db, int *pagesize){
++  int rc = SQLITE_OK;
++  if( *pagesize!=0 ){
++    return rc;
++  }
++  sqlite3_stmt *stmt = NULL;
++  const char *sql = "SELECT pagesize FROM vfs_compresssion;";
++  if( sqlite3_prepare_v2(db, sql, -1, &stmt, NULL)==SQLITE_OK ){
++    if( sqlite3_step(stmt)==SQLITE_ROW ){
++      *pagesize = sqlite3_column_int(stmt, 0);
++    }else{
++      rc = SQLITE_ERROR;
++    }
++    sqlite3_finalize(stmt);
++  }
++  return rc;
++}
++
++/* Set page size before compressed to OutterDB. */
++static int setCompressPgsize(sqlite3 *db, int pagesize){
++  int rc = SQLITE_OK;
++  sqlite3_stmt *stmt = NULL;
++  const char *sql = "UPDATE vfs_compresssion SET pagesize=?;";
++
++  if( sqlite3_prepare_v2(db, sql, -1, &stmt, NULL)==SQLITE_OK ){
++    sqlite3_bind_int(stmt, 1, pagesize);
++    if( sqlite3_step(stmt)!=SQLITE_DONE ){
++      rc = SQLITE_ERROR;
++    }
++    sqlite3_finalize(stmt);
++  }
++  return rc;
++}
++
++/* Get max page number from OutterDB. */
++static int getMaxCompressPgno(sqlite3 * db){
++  sqlite3_stmt *stmt = NULL;
++  const char *sql = "SELECT MAX(pageno) FROM vfs_pages;";
++  int max_pgno = 0;
++
++  if( sqlite3_prepare_v2(db, sql, -1, &stmt, NULL)==SQLITE_OK ){
++    if( sqlite3_step(stmt)==SQLITE_ROW ){
++      max_pgno = sqlite3_column_int(stmt, 0);
++    }
++    sqlite3_finalize(stmt);
++  }
++  return max_pgno;
++}
++
++/* Get Compression option from OutterDB. */
++static void getCompression(sqlite3 * db, CompressFile *pCompress){
++  sqlite3_stmt *stmt = NULL;
++  const char *sql = "SELECT count(*), compression, pagesize FROM vfs_compression;";
++  int count = 0;
++  pCompress->compression = COMPRESSION_UNDEFINED;
++  pCompress->page_size = 0;
++
++  if( sqlite3_prepare_v2(db, sql, -1, &stmt, NULL)==SQLITE_OK ){
++    if( sqlite3_step(stmt)==SQLITE_ROW ){
++      count = sqlite3_column_int(stmt, 0);
++      if ( count==1 ){
++        pCompress->compression = sqlite3_column_int(stmt, 1);
++        pCompress->page_size = sqlite3_column_int(stmt, 2);
++      }
++    }
++    sqlite3_finalize(stmt);
++  }
++  return;
++}
++
++/*
++** Sync a compress file. If need commit a transaction
++** which begin in compressWrite or compressTruncate.
++*/
++static int compressSync(sqlite3_file *pFile, int flags){
++  assert( pFile );
++  CompressFile *pCompress = (CompressFile *)pFile;
++  compress_info *compress_info = pCompress->pInfo;
++  sqlite3 *db = compress_info->pDb;
++  if( pCompress->bBegin==1 ){
++    int rc = sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
++    if( rc!=SQLITE_OK ){
++      return SQLITE_IOERR_WRITE;
++    }
++    pCompress->bBegin = 0;
++  }
++  return SQLITE_OK;
++}
++
++/*
++** Check if another file-handle holds a RESERVED lock on a compress file.
++*/
++static int compressCheckReservedLock(sqlite3_file *pFile, int *pResOut){
++  assert( pFile );
++  *pResOut = 0;
++  return SQLITE_OK;
++}
++
++/*
++** File control method. Use default VFS's xFileControl.
++*/
++static int compressFileControl(sqlite3_file *pFile, int op, void *pArg){
++  assert( pFile );
++  pFile = ORIGFILE(pFile);
++  return pFile->pMethods->xFileControl(pFile, op, pArg);
++}
++
++/*
++** Return the sector-size in bytes for a file. Use default VFS's xSectorSize.
++*/
++static int compressSectorSize(sqlite3_file *pFile){
++  assert( pFile );
++  pFile = ORIGFILE(pFile);
++  return pFile->pMethods->xSectorSize(pFile);
++}
++
++/*
++** Return the device characteristic flags supported by a file.
++** Use default VFS's xDeviceCharacteristics.
++*/
++static int compressDeviceCharacteristics(sqlite3_file *pFile){
++  assert( pFile );
++  pFile = ORIGFILE(pFile);
++  return pFile->pMethods->xDeviceCharacteristics(pFile);
++}
++
++/*
++** Lock a compress file.Never lock InnerDB, because it wil not control the database file.
++*/
++static int compressLock(sqlite3_file *pFile, int eFileLock){
++  assert( pFile );
++  return SQLITE_OK;
++}
++
++/*
++** Unlock a compress file.Never unlock InnerDB, because it wil not control the database file.
++*/
++static int compressUnlock(sqlite3_file *pFile, int eFileLock){
++  assert( pFile );
++  return SQLITE_OK;
++}
++
++/*
++** Get File's size. Here wil return InnerDB's file size.
++*/
++static int compressFileSize(sqlite3_file *pFile, i64 *pSize){
++  assert( pFile );
++  CompressFile *pCompress = (CompressFile *)pFile;
++  compress_info *compress_info = pCompress->pInfo;
++  sqlite3 *db = compress_info->pDb;
++  int rc = getCompressPgsize(db, &pCompress->page_size);
++  if( rc!=SQLITE_OK ){
++    return SQLITE_IOERR_FSTAT;
++  }
++  int pgsize = pCompress->page_size;
++  int maxpgno = getMaxCompressPgno(db);
++  *pSize = (i64)maxpgno * pgsize;
++  return SQLITE_OK;
++}
++
++/*
++** Truncate a compress file by delete from vfs_pages.
++*/
++static int compressTruncate(sqlite3_file *pFile, sqlite_int64 size){
++  assert( pFile );
++  CompressFile *pCompress = (CompressFile *)pFile;
++  compress_info *compress_info = pCompress->pInfo;
++  sqlite3 *db = compress_info->pDb;
++  int rc = getCompressPgsize(db, &pCompress->page_size);
++  if( rc!=SQLITE_OK || pCompress->page_size==0 ){
++    return SQLITE_IOERR_TRUNCATE;
++  }
++  int pgsize = pCompress->page_size;
++  int pgno = size / pgsize;
++  if( size % pgsize!=0 || getMaxCompressPgno(db) < pgno){
++    return SQLITE_IOERR_TRUNCATE;
++  }
++  if( pCompress->bBegin!=1 ){
++    if( sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL)!=SQLITE_OK ){
++      return SQLITE_IOERR_TRUNCATE;
++    }
++    pCompress->bBegin = 1;
++  }
++  sqlite3_stmt *stmt = NULL;
++  const char *sql = "DELETE FROM vfs_pages WHERE pageno > ?;";
++  if( sqlite3_prepare_v2(db, sql, -1, &stmt, NULL)==SQLITE_OK ){
++    sqlite3_bind_int(stmt, 1, pgno);
++    if( sqlite3_step(stmt)!=SQLITE_DONE ){
++      rc = SQLITE_IOERR_TRUNCATE;
++    }
++    sqlite3_finalize(stmt);
++  }
++  return rc;
++}
++
++/*
++** Write one page of data to compress file at a time.
++** It will be compressed and insert into vfs_pages in OutterDB.
++*/
++static int compressWrite(sqlite3_file *pFile, const void *pBuf, int iAmt, sqlite_int64 iOfst){
++  assert( pFile );
++  assert( iAmt>0 );
++  CompressFile *pCompress = (CompressFile *)pFile;
++  compress_info *compress_info = pCompress->pInfo;
++  sqlite3 *db = compress_info->pDb;
++  int rc = getCompressPgsize(db, &pCompress->page_size);
++  if( rc!=SQLITE_OK ){
++    return SQLITE_IOERR_WRITE;
++  }
++
++  if( pCompress->page_size<=0 && iAmt >= 512 && iAmt <= 64*1024 && !(iAmt & (iAmt - 1)) ){
++    // new compress db need set orignal db's pagesize
++    rc = setCompressPgsize(db, iAmt);
++    if( rc!=SQLITE_OK ){
++      return SQLITE_IOERR_WRITE;
++    }
++    pCompress->page_size = iAmt;
++  }
++  int pgsize = pCompress->page_size;
++  int pgno = iOfst / pgsize + 1;
++  if( iAmt!=pgsize || iOfst % pgsize!=0 ){
++    return SQLITE_IOERR_WRITE;
++  }
++
++  int max_compress_size = compressLen(iAmt, pCompress->compression);
++  if( max_compress_size<=0 ){
++    return SQLITE_IOERR_WRITE;
++  }
++  u8 *compressed_data = sqlite3_malloc(max_compress_size);
++  if( compressed_data==0 ){
++    return SQLITE_NOMEM;
++  }
++  int compress_data_len = 0;
++  if( compressBuf(compressed_data, max_compress_size, &compress_data_len, pBuf, iAmt, pCompress->compression) ){
++    sqlite3_free(compressed_data);
++    return SQLITE_IOERR_WRITE;
++  }
++  if( pCompress->bBegin!=1 ){
++    if( sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL)!=SQLITE_OK ){
++      sqlite3_free(compressed_data);
++      return SQLITE_IOERR_WRITE;
++    }
++    pCompress->bBegin = 1;
++  }
++  sqlite3_stmt *stmt = NULL;
++  const char *sql = "INSERT OR REPLACE INTO vfs_pages(data, pageno) VALUE (?,?);";
++  if( sqlite3_prepare_v2(db, sql, -1, &stmt, NULL)==SQLITE_OK ){
++    sqlite3_bind_blob(stmt, 1, compressed_data, compress_data_len, SQLITE_STATIC);
++    sqlite3_bind_int(stmt, 2, pgno);
++    if( sqlite3_step(stmt)!=SQLITE_DONE ){
++      sqlite3_free(compressed_data);
++      sqlite3_finalize(stmt);
++      return SQLITE_IOERR_WRITE;
++    }
++    sqlite3_finalize(stmt);
++  }
++  sqlite3_free(compressed_data);
++  return SQLITE_OK;
++}
++
++/*
++** Read data from compress file.
++** It will be selected from vfs_pages in OutterDB and return a decompressed buf.
++*/
++static int compressRead(sqlite3_file *pFile, void *pBuf, int iAmt, sqlite_int64 iOfst){
++  assert( pFile );
++  assert( iOfst>=0 );
++  assert( iAmt>0 );
++  CompressFile *pCompress = (CompressFile *)pFile;
++  if( pCompress->compression!=COMPRESSION_BROTLI && pCompress->compression!=COMPRESSION_ZSTD ){
++    // nowaday only support brotli/zstd.
++    return SQLITE_CORRUPT;
++  }
++  (void)memset_s(pBuf, iAmt, 0, iAmt);
++  compress_info *compress_info = pCompress->pInfo;
++  sqlite3 *db = compress_info->pDb;
++  int rc = getCompressPgsize(db, &pCompress->page_size);
++  if( rc!=SQLITE_OK || pCompress->page_size==0 ){
++    return SQLITE_IOERR_SHORT_READ;
++  }
++  int pgsize = pCompress->page_size;
++  int pgno = iOfst / pgsize + 1;
++  int dataidx = iOfst % pgsize;
++  sqlite3_stmt *stmt = NULL;
++  const char *sql = "SELECT data, length(data) FROM vfs_pages WHERE pageno=?;";
++  const void *data = NULL;
++  int data_len = 0;
++  rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
++  if( rc!=SQLITE_OK ){
++    return SQLITE_CORRUPT;
++  }
++  u8 *decompressed_data = NULL;
++  if( pgsize!=iAmt ){
++    decompressed_data = sqlite3_malloc(pgsize);
++    if( decompressed_data==NULL ){
++      sqlite3_finalize(stmt);
++      return SQLITE_CORRUPT;
++    }
++  }else{
++    decompressed_data = (u8 *)pBuf;
++  }
++
++  int decompressed_data_len = 0;
++  sqlite3_bind_int(stmt, 1, pgno);
++  rc = sqlite3_step(stmt);
++  if( rc==SQLITE_ROW ){
++    data = sqlite3_column_blob(stmt, 0);
++    if( data==NULL ){
++      rc = SQLITE_IOERR_SHORT_READ;
++      goto failed;
++    }
++    data_len = sqlite3_column_int(stmt, 1);
++    if( data_len==0 ){
++      rc = SQLITE_IOERR_SHORT_READ;
++      goto failed;
++    }
++    if( decompressBuf(decompressed_data, pgsize, &decompressed_data_len, data, data_len,
++      pCompress->compression)!=SQLITE_OK ){
++      rc = SQLITE_IOERR_SHORT_READ;
++      goto failed;
++    }
++    if( decompressed_data_len!=pgsize ){
++      rc = SQLITE_IOERR_SHORT_READ;
++      goto failed;
++    }
++    if( pgsize!=iAmt ){
++      rc = memcpy_s(pBuf, iAmt, decompressed_data+dataidx, iAmt);
++      if( rc!=SQLITE_OK ){
++        rc = SQLITE_IOERR_SHORT_READ;
++        goto failed;
++      }
++    }
++    rc = SQLITE_OK;
++  }else if( rc==SQLITE_DONE ){
++    rc = SQLITE_IOERR_SHORT_READ;
++  }
++
++ failed:
++  sqlite3_finalize(stmt);
++  if( pgsize!=iAmt ){
++    sqlite3_free(decompressed_data);
++  }
++
++  return rc;
++}
++
++/*
++** Close compress file. Need sync data and close OutterDB and InnerDB.
++*/
++static int compressClose(sqlite3_file *pFile){
++  assert( pFile );
++  CompressFile *pCompress = (CompressFile *)pFile;
++  compress_info *compress_info = pCompress->pInfo;
++  sqlite3 *db = compress_info->pDb;
++  int rc = compressSync(pFile, 0);
++  if( rc!=SQLITE_OK ){
++    return rc;
++  }
++  if( compress_info->bOutterDbOpen ){
++    rc = sqlite3_close(db);
++    if( rc!=SQLITE_OK ){
++      return rc;
++    }
++  }
++  if( compress_info->bSubDbOpen ){
++    pFile = ORIGFILE(pFile);
++    rc = pFile->pMethods->xClose(pFile);
++  }
++  return rc;
++}
++
++/* 
++** Create a shared memory file mapping. Need to rename the shm file, append a tail named "compress."
++*/
++static int compressShmMap(
++  sqlite3_file *pFile,
++  int iPg,
++  int pgsz,
++  int fileFlag,
++  void volatile **pp
++){
++  assert( pFile );
++  pFile = ORIGFILE(pFile);
++  fileFlag |= SQLITE_OPEN_COMPRESS_SHM;
++  return pFile->pMethods->xShmMap(pFile, iPg, pgsz, fileFlag, pp);
++}
++
++/* Perform locking on a shared-memory segment */
++static int compressShmLock(sqlite3_file *pFile, int offset, int n, int flags){
++  assert( pFile );
++  pFile = ORIGFILE(pFile);
++  flags |= SQLITE_OPEN_COMPRESS_SHM;
++  return pFile->pMethods->xShmLock(pFile, offset, n, flags);
++}
++
++/* Memory barrier operation on shared memory */
++static void compressShmBarrier(sqlite3_file *pFile){
++  assert( pFile );
++  pFile = ORIGFILE(pFile);
++  return pFile->pMethods->xShmBarrier(pFile);
++}
++
++/* Unmap a shared memory segment */
++static int compressShmUnmap(sqlite3_file *pFile, int deleteFlag){
++  assert( pFile );
++  pFile = ORIGFILE(pFile);
++  deleteFlag |= SQLITE_OPEN_COMPRESS_SHM;
++  return pFile->pMethods->xShmUnmap(pFile, deleteFlag);
++}
++
++/* Fetch a page of a memory-mapped file */
++static int compressFetch(sqlite3_file *pFile, sqlite_int64 iOfst, int iAmt, void **pp){
++  assert( pFile );
++  pFile = ORIGFILE(pFile);
++  if( pFile->pMethods->iVersion>2 && pFile->pMethods->xFetch ){
++    return pFile->pMethods->xFetch(pFile, iOfst, iAmt, pp);
++  }
++  *pp = 0;
++  return SQLITE_OK;
++}
++
++/* Release a memory-mapped page */
++static int compressUnfetch(sqlite3_file *pFile, sqlite_int64 iOfst, void *pPage){
++  assert( pFile );
++  pFile = ORIGFILE(pFile);
++  if( pFile->pMethods->iVersion>2 && pFile->pMethods->xUnfetch ){
++    return pFile->pMethods->xUnfetch(pFile, iOfst, pPage);
++  }
++  return SQLITE_OK;
++}
++
++/* Rename journal and wal file's name to identify InnerDB's file. */
++static int compressGetJournalName(const char *zName, char **zJournalName){
++  size_t len = strlen(zName);
++  if(( len >= 4 && strcmp(zName + len - 4, "-wal")==0 ) ||
++    ( len >= 8 && strcmp(zName + len - 8, "-journal")==0 )){
++    *zJournalName = (char *)sqlite3_malloc(strlen("compress") + strlen(zName) + 1);
++    if( *zJournalName==NULL ){
++      return SQLITE_NOMEM;
++    }
++    strcpy(*zJournalName, zName);
++    strcpy(*zJournalName, "compress");
++  }
++  return SQLITE_OK;
++}
++
++/*
++** Open a compress file.If this file is not a journal or wal file,
++** it will open a OutterDB and create vfs_pages and vfs_compression table
++** which used to manager compressed pages's data.
++*/
++static int compressOpen(
++  sqlite3_vfs *pVfs,
++  const char *zName,
++  sqlite3_file *pFile,
++  int flags,
++  int *pOutFlags
++){
++  compress_info *pInfo = pVfs->pAppData;
++  sqlite3_file *pSubFile = ORIGFILE(pFile);
++  CompressFile *pCompress = (CompressFile *)pFile;
++  int rc = SQLITE_OK;
++  if( !(flags & (SQLITE_OPEN_MAIN_DB|SQLITE_OPEN_TEMP_DB)) ){
++    if( flags & (SQLITE_OPEN_MAIN_JOURNAL|SQLITE_OPEN_WAL) ){
++      flags |= SQLITE_OPEN_CREATE;
++      char *zJournalName = NULL;
++      rc = compressGetJournalName(zName, &zJournalName);
++      if( rc!=SQLITE_OK || zJournalName==NULL ){
++        return rc;
++      }
++      rc = pInfo->pRootVfs->xOpen(pInfo->pRootVfs, zJournalName, pFile, flags, pOutFlags);
++      if( rc!=SQLITE_OK ){
++        sqlite3_free(zJournalName);
++      }
++      return rc;
++    }
++    return pInfo->pRootVfs->xOpen(pInfo->pRootVfs, zName, pFile, flags, pOutFlags);
++  }
++  rc = pInfo->pRootVfs->xOpen(pInfo->pRootVfs, zName, pSubFile, flags, pOutFlags);
++  if( rc!=SQLITE_OK ){
++    return rc;
++  }
++  pInfo->bSubDbOpen = 1;
++  sqlite3_int64 fileSize = 0;
++  rc = pSubFile->pMethods->xFileSize(pSubFile, &fileSize);
++  if( rc!=SQLITE_OK ){
++    rc = SQLITE_CANTOPEN;
++    goto open_end;
++  }
++
++  pCompress->pInfo = pInfo;
++  pFile->pMethods = &compress_io_methods;
++  rc = sqlite3_open_v2(zName, &pInfo->pDb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, pInfo->pRootVfs->zName);
++  if( rc!=SQLITE_OK ){
++    rc = SQLITE_CANTOPEN;
++    goto open_end;
++  }
++  pInfo->bOutterDbOpen = 1;
++  sqlite3 *db = pInfo->pDb;
++  const char *pre_pragma = "PRAGMA page_size=4096;"\
++    "PRAGMA auto_vacuum=INCREMENTAL;PRAGMA journal_mode=OFF;PRAGMA locking_mode=EXCLUSIVE;";
++  rc = sqlite3_exec(db, pre_pragma, NULL, NULL, NULL);
++  if( rc!=SQLITE_OK ){
++    rc = SQLITE_CANTOPEN;
++    goto open_end;
++  }
++  if( tableExists(db, "vfs_compression") ){
++    getCompression(db, pCompress);
++    if( pCompress->compression!=COMPRESSION_BROTLI && pCompress->compression!=COMPRESSION_ZSTD ){
++      rc = SQLITE_CANTOPEN;
++      goto open_end;
++    }
++    if( loadCompressAlgorithmExtension(pCompress->compression)==SQLITE_ERROR ){
++      rc = SQLITE_CANTOPEN;
++      goto open_end;
++    }
++  }else if( flags&SQLITE_OPEN_MAIN_DB && fileSize!=0){
++    rc = SQLITE_WARNING_NOTCOMPRESSDB;
++    sqlite3_log(rc, "open compress database go wrong, it should be a compressed db");
++    goto open_end;
++  }else{
++    if( loadCompressAlgorithmExtension(COMPRESSION_UNDEFINED)==SQLITE_ERROR ){
++      rc = SQLITE_CANTOPEN;
++      goto open_end;
++    }
++    const char *init_compression_sql = "CREATE TABLE vfs_compression (compression INTEGER, pagesize INTEGER);";
++    rc = sqlite3_exec(db, init_compression_sql, NULL, NULL, NULL);
++    if( rc!=SQLITE_OK ){
++      rc = SQLITE_CANTOPEN;
++      goto open_end;
++    }
++    char set_compression_sql[COMPRESSION_SQL_MAX_LENGTH] = {0};
++    if( sprintf_s(set_compression_sql, COMPRESSION_SQL_MAX_LENGTH,
++      "INSERT INTO vfs_compression(compression, pagesize) VALUE (%u, 0);", g_compress_algo_load)<=0 ){
++      rc = SQLITE_CANTOPEN;
++      goto open_end;
++    }
++    rc = sqlite3_exec(db, set_compression_sql, NULL, NULL, NULL);
++    if( rc!=SQLITE_OK ){
++      rc = SQLITE_CANTOPEN;
++      goto open_end;
++    }
++    pCompress->compression = g_compress_algo_load;
++    pCompress->page_size = 0;
++  }
++  if( tableExists(db, "vfs_pages") ){
++    goto open_end;
++  }
++  const char *init_page_sql = "CREATE TABLE vfs_pages (pgno INTEGER PRIMARY KEY, data BLOB NOT NULL);";
++  rc = sqlite3_exec(db, init_page_sql, NULL, NULL, NULL);
++  if( rc!=SQLITE_OK ){
++    rc = SQLITE_CANTOPEN;
++  }
++
++ open_end:
++  return rc;
++}
++
++/*
++** Delete compress file. If this file is journal or wal, need to delete the InnerDB's renamed file.
++*/
++static int compressDelete(sqlite3_vfs *pVfs, const char *zName, int syncDir){
++  compress_info *pInfo = pVfs->pAppData;
++  char *zJournalName = NULL;
++  int rc = compressGetJournalName(zName, &zJournalName);
++  if( rc!=SQLITE_OK ){
++    return rc;
++  }
++  if( zJournalName!=NULL ){
++    rc = pInfo->pRootVfs->xDelete(pInfo->pRootVfs, zJournalName, syncDir);
++    sqlite3_free(zJournalName);
++    return rc;
++  }else{
++    return pInfo->pRootVfs->xDelete(pInfo->pRootVfs, zName, syncDir);
++  }
++}
++
++/*
++** Access compress file. If this file is journal or wal need to access the InnerDB's renamed file.
++*/
++static int compressAccess(
++  sqlite3_vfs *pVfs,
++  const char *zName,
++  int flags,
++  int *pResOut
++){
++  compress_info *pInfo = pVfs->pAppData;
++  char *zJournalName = NULL;
++  int rc = compressGetJournalName(zName, &zJournalName);
++  if( rc!=SQLITE_OK ){
++    return rc;
++  }
++  if( zJournalName!=NULL ){
++    rc = pInfo->pRootVfs->xAccess(pInfo->pRootVfs, zJournalName, flags, pResOut);
++    sqlite3_free(zJournalName);
++    return rc;
++  }else{
++    return pInfo->pRootVfs->xAccess(pInfo->pRootVfs, zName, flags, pResOut);
++  }
++}
++
++
++/*
++** Init compressvfs and register the vfs
++*/
++EXPORT_SYMBOLS int sqlite3CompressvfsInit(){
++  // copy default vfs for compressvfs
++  if( sqlite3_vfs_find(COMPRESS_VFS_NAME) ){
++    return SQLITE_OK;
++  }
++  sqlite3_vfs *default_vfs = sqlite3_vfs_find(0);
++  if( default_vfs==0 ){
++    sqlite3_log(SQLITE_ERROR, "Default vfs not found!");
++    return SQLITE_ERROR;
++  }
++  sqlite3_vfs *pVfs = &compress_vfs;
++  compress_info *pInfo = &compress_vfs_info;
++  *pVfs = *default_vfs;
++  pVfs->pNext = 0;
++  pVfs->zName = COMPRESS_VFS_NAME;
++  pVfs->pAppData = pInfo;
++  pVfs->szOsFile = pVfs->szOsFile+sizeof(CompressFile);
++
++  pVfs->xOpen = compressOpen;
++  pVfs->xDelete = compressDelete;
++  pVfs->xAccess = compressAccess;
++  pInfo->pRootVfs = default_vfs;
++  pInfo->bSubDbOpen = 0;
++  pInfo->bOutterDbOpen = 0;
++  int rc = sqlite3_vfs_register(pVfs, 0);
++  if( rc!=SQLITE_OK ){
++    sqlite3_log(SQLITE_ERROR, "Compress vfs register error!");
++    return rc;
++  }
++  return SQLITE_OK;
++}
++
++EXPORT_SYMBOLS sqlite3_file *compressvfsGetOrigFile(sqlite3_file *file){
++  return ORIGFILE(file);
++}
++
++#endif /* SQLITE_ENABLE_PAGE_COMPRESS */
+\ No newline at end of file
+diff --git a/src/sqlite3.c b/src/sqlite3.c
+index 24e3247..67a78e3 100644
+--- a/src/sqlite3.c
++++ b/src/sqlite3.c
+@@ -881,6 +881,7 @@ SQLITE_API int sqlite3_exec(
+ #define SQLITE_NOTICE_RBU              (SQLITE_NOTICE | (3<<8))
+ #define SQLITE_WARNING_AUTOINDEX       (SQLITE_WARNING | (1<<8))
+ #define SQLITE_WARNING_DUMP            (SQLITE_WARNING | (2<<8))
++#define SQLITE_WARNING_NOTCOMPRESSDB   (SQLITE_WARNING | (3<<8))
+ #define SQLITE_AUTH_USER               (SQLITE_AUTH | (1<<8))
+ #define SQLITE_OK_LOAD_PERMANENTLY     (SQLITE_OK | (1<<8))
+ #define SQLITE_OK_SYMLINK              (SQLITE_OK | (2<<8)) /* internal use only */
+@@ -1877,6 +1878,14 @@ struct sqlite3_vfs {
+ */
+ #define SQLITE_SHM_NLOCK        8
+ 
++/*
++** CAPI3REF: Maximum xShmLock index
++**
++** The xShmMap method on [sqlite3_io_methods] may use values
++** between 0 and this upper bound as its "offset" argument.
++*/
++#define SQLITE_SHMMAP_IS_WRITE       0x00000001  /*Flag for xShmMap, extend file if necessary */
++#define SQLITE_OPEN_COMPRESS_SHM     0x00010000  /*Flag for xShmMap, need to rename shm file */
+ 
+ /*
+ ** CAPI3REF: Initialize The SQLite Library
+@@ -38639,6 +38648,9 @@ struct unixFile {
+   UnixUnusedFd *pPreallocatedUnused;  /* Pre-allocated UnixUnusedFd */
+   const char *zPath;                  /* Name of the file */
+   unixShm *pShm;                      /* Shared memory segment information */
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  unixShm *pCompressShm;
++#endif
+   int szChunk;                        /* Configured by FCNTL_CHUNK_SIZE */
+ #if SQLITE_MAX_MMAP_SIZE>0
+   int nFetchOut;                      /* Number of outstanding xFetch refs */
+@@ -39640,6 +39652,9 @@ struct unixInodeInfo {
+   UnixUnusedFd *pUnused;            /* Unused file descriptors to close */
+   int nRef;                       /* Number of pointers to this structure */
+   unixShmNode *pShmNode;          /* Shared memory associated with this inode */
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  unixShmNode *pCompressShmNode;
++#endif
+   unixInodeInfo *pNext;           /* List of all unixInodeInfo objects */
+   unixInodeInfo *pPrev;           /*    .... doubly linked */
+ #if SQLITE_ENABLE_LOCKING_STYLE
+@@ -40602,6 +40617,12 @@ static int closeUnixFile(sqlite3_file *id){
+   OSTRACE(("CLOSE   %-3d\n", pFile->h));
+   OpenCounter(-1);
+   sqlite3_free(pFile->pPreallocatedUnused);
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  if( strcmp(pFile->zPath+strlen(pFile->zPath)-strlen("compress"), "compress")==0 ){
++    sqlite3_free(*(char**)&pFile->zPath);
++    pFile->zPath = 0;
++  }
++#endif
+   memset(pFile, 0, sizeof(unixFile));
+   return SQLITE_OK;
+ }
+@@ -42889,14 +42910,23 @@ static int unixShmSystemLock(
+   unixFile *pFile,       /* Open connection to the WAL file */
+   int lockType,          /* F_UNLCK, F_RDLCK, or F_WRLCK */
+   int ofst,              /* First byte of the locking range */
+-  int n                  /* Number of bytes to lock */
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  int n,                  /* Number of bytes to lock */
++  int bCompress          /* True to compress shm */
++#else
++  int n
++#endif
+ ){
+   unixShmNode *pShmNode; /* Apply locks to this open shared-memory segment */
+   struct flock f;        /* The posix advisory locking structure */
+   int rc = SQLITE_OK;    /* Result code form fcntl() */
+ 
+   /* Access to the unixShmNode object is serialized by the caller */
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  pShmNode = bCompress ? pFile->pInode->pCompressShmNode : pFile->pInode->pShmNode;
++#else
+   pShmNode = pFile->pInode->pShmNode;
++#endif
+   assert( pShmNode->nRef==0 || sqlite3_mutex_held(pShmNode->pShmMutex) );
+   assert( pShmNode->nRef>0 || unixMutexHeld() );
+ 
+@@ -42984,9 +43014,11 @@ static int unixShmRegionPerMap(void){
+ ** This is not a VFS shared-memory method; it is a utility function called
+ ** by VFS shared-memory methods.
+ */
+-static void unixShmPurge(unixFile *pFd){
+-  unixShmNode *p = pFd->pInode->pShmNode;
+-  assert( unixMutexHeld() );
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++static void unixShmPurgeInner(unixFile *pFd, unixShmNode *p, int bCompressShm){
++#else
++static void unixShmPurgeInner(unixFile *pFd, unixShmNode *p){
++#endif
+   if( p && ALWAYS(p->nRef==0) ){
+     int nShmPerMap = unixShmRegionPerMap();
+     int i;
+@@ -43004,11 +43036,35 @@ static void unixShmPurge(unixFile *pFd){
+       robust_close(pFd, p->hShm, __LINE__);
+       p->hShm = -1;
+     }
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++    if( bCompressShm ){
++      p->pInode->pCompressShmNode = 0;
++    }else{
++      p->pInode->pShmNode = 0;
++    }
++#else
+     p->pInode->pShmNode = 0;
++#endif
+     sqlite3_free(p);
+   }
+ }
+ 
++/*
++** Purge the unixShmNodeList list of all entries with unixShmNode.nRef==0.
++**
++** This is not a VFS shared-memory method; it is a utility function called
++** by VFS shared-memory methods.
++*/
++static void unixShmPurge(unixFile *pFd){
++  assert( unixMutexHeld() );
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  unixShmPurgeInner(pFd, pFd->pInode->pCompressShmNode, 1);
++  unixShmPurgeInner(pFd, pFd->pInode->pShmNode, 0);
++#else
++  unixShmPurgeInner(pFd, pFd->pInode->pShmNode);
++#endif
++}
++
+ /*
+ ** The DMS lock has not yet been taken on shm file pShmNode. Attempt to
+ ** take it now. Return SQLITE_OK if successful, or an SQLite error
+@@ -43018,7 +43074,11 @@ static void unixShmPurge(unixFile *pFd){
+ ** connection and no other process already holds a lock, return
+ ** SQLITE_READONLY_CANTINIT and set pShmNode->isUnlocked=1.
+ */
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++static int unixLockSharedMemory(unixFile *pDbFd, unixShmNode *pShmNode, int bCompress){
++#else
+ static int unixLockSharedMemory(unixFile *pDbFd, unixShmNode *pShmNode){
++#endif
+   struct flock lock;
+   int rc = SQLITE_OK;
+ 
+@@ -43051,7 +43111,11 @@ static int unixLockSharedMemory(unixFile *pDbFd, unixShmNode *pShmNode){
+       pShmNode->isUnlocked = 1;
+       rc = SQLITE_READONLY_CANTINIT;
+     }else{
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++      rc = unixShmSystemLock(pDbFd, F_WRLCK, UNIX_SHM_DMS, 1, bCompress);
++#else
+       rc = unixShmSystemLock(pDbFd, F_WRLCK, UNIX_SHM_DMS, 1);
++#endif
+       MarkLockStatusByRc(rc, SHM_DMS_IDX, 1, EXCLUSIVE_LOCK, LOCK_BY_PROCESS);
+       MARK_LAST_BUSY_LINE(rc);
+       /* The first connection to attach must truncate the -shm file.  We
+@@ -43071,7 +43135,11 @@ static int unixLockSharedMemory(unixFile *pDbFd, unixShmNode *pShmNode){
+ 
+   if( rc==SQLITE_OK ){
+     assert( lock.l_type==F_UNLCK || lock.l_type==F_RDLCK );
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++    rc = unixShmSystemLock(pDbFd, F_RDLCK, UNIX_SHM_DMS, 1, bCompress);
++#else
+     rc = unixShmSystemLock(pDbFd, F_RDLCK, UNIX_SHM_DMS, 1);
++#endif
+     MarkLockStatusByRc(rc, SHM_DMS_IDX, 1, SHARED_LOCK, LOCK_BY_PROCESS);
+     MARK_LAST_BUSY_LINE(rc);
+   }
+@@ -43113,7 +43181,11 @@ static int unixLockSharedMemory(unixFile *pDbFd, unixShmNode *pShmNode){
+ ** that case, we do not really need shared memory.  No shared memory
+ ** file is created.  The shared memory will be simulated with heap memory.
+ */
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++static int unixOpenSharedMemory(unixFile *pDbFd, int bCompressShm){
++#else
+ static int unixOpenSharedMemory(unixFile *pDbFd){
++#endif
+   struct unixShm *p = 0;          /* The connection to be opened */
+   struct unixShmNode *pShmNode;   /* The underlying mmapped file */
+   int rc = SQLITE_OK;             /* Result code */
+@@ -43133,7 +43205,11 @@ static int unixOpenSharedMemory(unixFile *pDbFd){
+   assert( unixFileMutexNotheld(pDbFd) );
+   unixEnterMutex();
+   pInode = pDbFd->pInode;
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  pShmNode = bCompressShm ? pInode->pCompressShmNode : pInode->pShmNode;
++#else
+   pShmNode = pInode->pShmNode;
++#endif
+   if( pShmNode==0 ){
+     struct stat sStat;                 /* fstat() info for database file */
+ #ifndef SQLITE_SHM_DIRECTORY
+@@ -43153,6 +43229,11 @@ static int unixOpenSharedMemory(unixFile *pDbFd){
+     nShmFilename = sizeof(SQLITE_SHM_DIRECTORY) + 31;
+ #else
+     nShmFilename = 6 + (int)strlen(zBasePath);
++#endif
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++    if( bCompressShm ){
++      nShmFilename += 8;
++    }
+ #endif
+     pShmNode = sqlite3_malloc64( sizeof(*pShmNode) + nShmFilename );
+     if( pShmNode==0 ){
+@@ -43169,8 +43250,17 @@ static int unixOpenSharedMemory(unixFile *pDbFd){
+     sqlite3_snprintf(nShmFilename, zShm, "%s-shm", zBasePath);
+     sqlite3FileSuffix3(pDbFd->zPath, zShm);
+ #endif
+-    pShmNode->hShm = -1;
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++    if( bCompressShm ){
++      sqlite3_snprintf(nShmFilename, zShm, "%scompress", zShm);
++      pDbFd->pInode->pCompressShmNode = pShmNode;
++    }else{
++      pDbFd->pInode->pShmNode = pShmNode;
++    }
++#else
+     pDbFd->pInode->pShmNode = pShmNode;
++#endif
++    pShmNode->hShm = -1;
+     pShmNode->pInode = pDbFd->pInode;
+     if( sqlite3GlobalConfig.bCoreMutex ){
+       pShmNode->pShmMutex = sqlite3_mutex_alloc(SQLITE_MUTEX_FAST);
+@@ -43207,7 +43297,11 @@ static int unixOpenSharedMemory(unixFile *pDbFd){
+       */
+       robustFchown(pShmNode->hShm, sStat.st_uid, sStat.st_gid);
+ 
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++      rc = unixLockSharedMemory(pDbFd, pShmNode, bCompressShm);
++#else
+       rc = unixLockSharedMemory(pDbFd, pShmNode);
++#endif
+       if( rc!=SQLITE_OK && rc!=SQLITE_READONLY_CANTINIT ) goto shm_open_err;
+     }
+   }
+@@ -43218,7 +43312,15 @@ static int unixOpenSharedMemory(unixFile *pDbFd){
+   p->id = pShmNode->nextShmId++;
+ #endif
+   pShmNode->nRef++;
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  if( bCompressShm ){
++    pDbFd->pCompressShm = p;
++  }else{
++    pDbFd->pShm = p;
++  }
++#else
+   pDbFd->pShm = p;
++#endif
+   unixLeaveMutex();
+ 
+   /* The reference count on pShmNode has already been incremented under
+@@ -43250,6 +43352,10 @@ shm_open_err:
+ **
+ ** If an error occurs, an error code is returned and *pp is set to NULL.
+ **
++** The fileFlag parameter has two means:
++** bExtend = fileFlag & SQLITE_SHMMAP_IS_WRITE
++** bCompressShm = fileFlag & SQLITE_OPEN_COMPRESS_SHM
++**
+ ** Otherwise, if the bExtend parameter is 0 and the requested shared-memory
+ ** region has not been allocated (by any client, including one running in a
+ ** separate process), then *pp is set to NULL and SQLITE_OK returned. If
+@@ -43260,12 +43366,15 @@ shm_open_err:
+ ** this call as described above, then it is mapped into this processes
+ ** address space (if it is not already), *pp is set to point to the mapped
+ ** memory and SQLITE_OK returned.
++**
++** If bCompressShm is true, it indicates that the shmFile needs to be renamed by
++** adding a suffix named "compress"
+ */
+ static int unixShmMap(
+   sqlite3_file *fd,               /* Handle open on database file */
+   int iRegion,                    /* Region to retrieve */
+   int szRegion,                   /* Size of regions */
+-  int bExtend,                    /* True to extend file if necessary */
++  int fileFlag,                    /* True to extend file if necessary */
+   void volatile **pp              /* OUT: Mapped memory */
+ ){
+   unixFile *pDbFd = (unixFile*)fd;
+@@ -43274,18 +43383,35 @@ static int unixShmMap(
+   int rc = SQLITE_OK;
+   int nShmPerMap = unixShmRegionPerMap();
+   int nReqRegion;
++  int bExtend = (fileFlag & SQLITE_SHMMAP_IS_WRITE);  // True to extend file if necessary
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  int bCompressShm = (fileFlag & SQLITE_OPEN_COMPRESS_SHM);  // True to rename shm file
++#endif
+ 
+   /* If the shared-memory file has not yet been opened, open it now. */
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  if(( bCompressShm && pDbFd->pCompressShm==0 ) || ( !bCompressShm && pDbFd->pShm==0 )){
++    rc = unixOpenSharedMemory(pDbFd, bCompressShm);
++    if( rc!=SQLITE_OK ) return rc;
++  }
++
++  p = bCompressShm ? pDbFd->pCompressShm : pDbFd->pShm;
++#else
+   if( pDbFd->pShm==0 ){
+     rc = unixOpenSharedMemory(pDbFd);
+     if( rc!=SQLITE_OK ) return rc;
+   }
+ 
+   p = pDbFd->pShm;
++#endif
+   pShmNode = p->pShmNode;
+   sqlite3_mutex_enter(pShmNode->pShmMutex);
+   if( pShmNode->isUnlocked ){
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++    rc = unixLockSharedMemory(pDbFd, pShmNode, bCompressShm);
++#else
+     rc = unixLockSharedMemory(pDbFd, pShmNode);
++#endif
+     if( rc!=SQLITE_OK ) goto shmpage_out;
+     pShmNode->isUnlocked = 0;
+   }
+@@ -43448,8 +43574,13 @@ static int unixShmLock(
+   int rc = SQLITE_OK;                   /* Result code */
+   u16 mask;                             /* Mask of locks to take or release */
+   int *aLock;
+-
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  int bCompress = (flags & SQLITE_OPEN_COMPRESS_SHM);
++  flags &= ~SQLITE_OPEN_COMPRESS_SHM;
++  p = bCompress ? pDbFd->pCompressShm : pDbFd->pShm;
++#else
+   p = pDbFd->pShm;
++#endif
+   if( p==0 ) {
+ #ifdef LOG_DUMP
+     sqlite3_log(SQLITE_IOERR_SHMLOCK, "unixShmLock-pShm, fd[%d], ofst[%d], n[%d], flags[%d]", pDbFd->h, ofst, n, flags);
+@@ -43516,7 +43647,11 @@ static int unixShmLock(
+       }
+ 
+       if( bUnlock ){
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++        rc = unixShmSystemLock(pDbFd, F_UNLCK, ofst+UNIX_SHM_BASE, n, bCompress);
++#else
+         rc = unixShmSystemLock(pDbFd, F_UNLCK, ofst+UNIX_SHM_BASE, n);
++#endif
+         if( rc==SQLITE_OK ){
+           memset(&aLock[ofst], 0, sizeof(int)*n);
+         }
+@@ -43540,7 +43675,11 @@ static int unixShmLock(
+       if( aLock[ofst]<0 ){
+         rc = SQLITE_BUSY;
+       }else if( aLock[ofst]==0 ){
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++        rc = unixShmSystemLock(pDbFd, F_RDLCK, ofst+UNIX_SHM_BASE, n, bCompress);
++#else
+         rc = unixShmSystemLock(pDbFd, F_RDLCK, ofst+UNIX_SHM_BASE, n);
++#endif
+         useProcessLock = LOCK_BY_PROCESS;
+       }
+       MarkLockStatusByRc(rc, ofst, n, SHARED_LOCK, useProcessLock);
+@@ -43566,7 +43705,11 @@ static int unixShmLock(
+     /* Get the exclusive locks at the system level. Then if successful
+     ** also update the in-memory values. */
+     if( rc==SQLITE_OK ){
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++      rc = unixShmSystemLock(pDbFd, F_WRLCK, ofst+UNIX_SHM_BASE, n, bCompress);
++#else
+       rc = unixShmSystemLock(pDbFd, F_WRLCK, ofst+UNIX_SHM_BASE, n);
++#endif
+       useProcessLock = LOCK_BY_PROCESS;
+       if( rc==SQLITE_OK ){
+         assert( (p->sharedMask & mask)==0 );
+@@ -43619,9 +43762,14 @@ static int unixShmUnmap(
+   unixShmNode *pShmNode;          /* The underlying shared-memory file */
+   unixShm **pp;                   /* For looping over sibling connections */
+   unixFile *pDbFd;                /* The underlying database file */
+-
+   pDbFd = (unixFile*)fd;
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  int bCompressShm = (deleteFlag & SQLITE_OPEN_COMPRESS_SHM);  // True means compress shm file
++  deleteFlag &= 1;
++  p = bCompressShm ? pDbFd->pCompressShm : pDbFd->pShm;
++#else
+   p = pDbFd->pShm;
++#endif
+   if( p==0 ) return SQLITE_OK;
+   pShmNode = p->pShmNode;
+ 
+@@ -43636,7 +43784,15 @@ static int unixShmUnmap(
+ 
+   /* Free the connection p */
+   sqlite3_free(p);
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  if( bCompressShm ){
++    pDbFd->pCompressShm = 0;
++  }else{
++    pDbFd->pShm = 0;
++  }
++#else
+   pDbFd->pShm = 0;
++#endif
+   sqlite3_mutex_leave(pShmNode->pShmMutex);
+ 
+   /* If pShmNode->nRef has reached 0, then close the underlying
+@@ -50788,8 +50944,15 @@ static int winLockSharedMemory(winShmNode *pShmNode){
+ ** When opening a new shared-memory file, if no other instances of that
+ ** file are currently open, in this process or in other processes, then
+ ** the file must be truncated to zero length or have its header cleared.
++**
++** If bCompressShm is true, it indicates that the shmFile needs to be renamed by
++** adding a suffix named "compress"
+ */
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++static int winOpenSharedMemory(winFile *pDbFd, int bCompressShm){
++#else
+ static int winOpenSharedMemory(winFile *pDbFd){
++#endif
+   struct winShm *p;                  /* The connection to be opened */
+   winShmNode *pShmNode = 0;          /* The underlying mmapped file */
+   int rc = SQLITE_OK;                /* Result code */
+@@ -50804,6 +50967,11 @@ static int winOpenSharedMemory(winFile *pDbFd){
+   p = sqlite3MallocZero( sizeof(*p) );
+   if( p==0 ) return SQLITE_IOERR_NOMEM_BKPT;
+   nName = sqlite3Strlen30(pDbFd->zPath);
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  if( bCompressShm ){
++    nName += 8;
++  }
++#endif
+   pNew = sqlite3MallocZero( sizeof(*pShmNode) + nName + 17 );
+   if( pNew==0 ){
+     sqlite3_free(p);
+@@ -50812,6 +50980,11 @@ static int winOpenSharedMemory(winFile *pDbFd){
+   pNew->zFilename = (char*)&pNew[1];
+   sqlite3_snprintf(nName+15, pNew->zFilename, "%s-shm", pDbFd->zPath);
+   sqlite3FileSuffix3(pDbFd->zPath, pNew->zFilename);
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  if( bCompressShm ){
++    sqlite3_snprintf(nName+15, pNew->zFilename, "%scompress", pNew->zFilename);
++  }
++#endif
+ 
+   /* Look to see if there is an existing winShmNode that can be used.
+   ** If no matching winShmNode currently exists, create a new one.
+@@ -51069,6 +51242,10 @@ static void winShmBarrier(
+ **
+ ** If an error occurs, an error code is returned and *pp is set to NULL.
+ **
++** The fileFlag parameter has two means:
++** bExtend = fileFlag & SQLITE_SHMMAP_IS_WRITE
++** bCompressShm = fileFlag & SQLITE_OPEN_COMPRESS_SHM
++**
+ ** Otherwise, if the isWrite parameter is 0 and the requested shared-memory
+ ** region has not been allocated (by any client, including one running in a
+ ** separate process), then *pp is set to NULL and SQLITE_OK returned. If
+@@ -51079,12 +51256,15 @@ static void winShmBarrier(
+ ** this call as described above, then it is mapped into this processes
+ ** address space (if it is not already), *pp is set to point to the mapped
+ ** memory and SQLITE_OK returned.
++**
++** If bCompressShm is true, it indicates that the shmFile needs to be renamed by
++** adding a suffix named "compress"
+ */
+ static int winShmMap(
+   sqlite3_file *fd,               /* Handle open on database file */
+   int iRegion,                    /* Region to retrieve */
+   int szRegion,                   /* Size of regions */
+-  int isWrite,                    /* True to extend file if necessary */
++  int fileFlag,                    /* True to extend file if necessary */
+   void volatile **pp              /* OUT: Mapped memory */
+ ){
+   winFile *pDbFd = (winFile*)fd;
+@@ -51092,10 +51272,18 @@ static int winShmMap(
+   winShmNode *pShmNode;
+   DWORD protect = PAGE_READWRITE;
+   DWORD flags = FILE_MAP_WRITE | FILE_MAP_READ;
++  int isWrite = (fileFlag & SQLITE_SHMMAP_IS_WRITE);  // True to extend file if necessary
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  int bCompressShm = (fileFlag & SQLITE_OPEN_COMPRESS_SHM);  // True to rename shm file
++#endif
+   int rc = SQLITE_OK;
+ 
+   if( !pShm ){
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++    rc = winOpenSharedMemory(pDbFd, bCompressShm);
++#else
+     rc = winOpenSharedMemory(pDbFd);
++#endif
+     if( rc!=SQLITE_OK ) return rc;
+     pShm = pDbFd->pShm;
+     assert( pShm!=0 );
+@@ -66177,6 +66365,7 @@ static SQLITE_NOINLINE int walIndexPageRealloc(
+     pWal->apWiData[iPage] = (u32 volatile *)sqlite3MallocZero(WALINDEX_PGSZ);
+     if( !pWal->apWiData[iPage] ) rc = SQLITE_NOMEM_BKPT;
+   }else{
++    assert( pWal->writeLock==0 || pWal->writeLock==1 );
+     rc = sqlite3OsShmMap(pWal->pDbFd, iPage, WALINDEX_PGSZ,
+         pWal->writeLock, (void volatile **)&pWal->apWiData[iPage]
+     );
+@@ -137863,6 +138052,9 @@ typedef int (*sqlite3_loadext_entry)(
+ /* clean the binlog of the db */
+ #define sqlite3_clean_binlog           sqlite3_api->clean_binlog
+ #endif /* SQLITE_ENABLE_BINLOG */
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++#define sqlite3_compressdb_backup  sqlite3_api->compressdb_backup
++#endif /* SQLITE_ENABLE_PAGE_COMPRESS */
+ #endif /* !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION) */
+ 
+ #if !defined(SQLITE_CORE) && !defined(SQLITE_OMIT_LOAD_EXTENSION)
+@@ -183070,6 +183262,188 @@ SQLITE_API int sqlite3_limit(sqlite3 *db, int limitId, int newLimit){
+   return oldLimit;                     /* IMP: R-53341-35419 */
+ }
+ 
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++/************** Include sqlitecompressvfs.h in the middle of main.c ******************/
++/************** Begin file sqlitecompressvfs.h ***************************************/
++/*
++** 2025 June 27
++**
++** The author disclaims copyright to this source code.  In place of
++** a legal notice, here is a blessing:
++**
++**    May you do good and not evil.
++**    May you find forgiveness for yourself and forgive others.
++**    May you share freely, never taking more than you give.
++**
++******************************************************************************
++**
++** This header file is used by programs that want to link against the
++** compressvfs extension.  All it does is declare the sqlite3_compressvfs_init() interface.
++*/
++
++#ifndef _WIN32
++#include <dlfcn.h>
++#endif
++
++typedef int (*sqlite3CompressVFSInit_ptr)();
++static sqlite3CompressVFSInit_ptr compressvfsInitPtr = NULL;
++typedef int (*sqlite3DecompressBuf_ptr)(
++  u8 *dst,
++  int dst_buf_len,
++  int *dst_written_len,
++  const u8 *src,
++  int src_len,
++  int compression
++);
++static sqlite3DecompressBuf_ptr decompressBufPtr = NULL;
++typedef sqlite3_file *(*sqlite3CompressGetOriFile_ptr)(sqlite3_file *);
++static sqlite3CompressGetOriFile_ptr compressvfsGetOrigFilePtr = NULL;
++static u32 compressInit = 0u;
++static u32 compressSoLoad = 0u;
++static void *g_compress_library = NULL;
++
++int sqlite3LoadCompressExtension(){
++  if( compressSoLoad ){
++    return SQLITE_OK;
++  }
++#ifndef _WIN32
++  g_compress_library = dlopen("libsqlitecompressvfs.z.so", RTLD_LAZY);
++  if( g_compress_library==NULL ){
++    sqlite3_log(SQLITE_ERROR, "load compressvfs so failed: %s\n", dlerror());
++    return SQLITE_ERROR;
++  }
++  compressvfsInitPtr = (sqlite3CompressVFSInit_ptr)dlsym(g_compress_library, "sqlite3CompressvfsInit");
++  if( compressvfsInitPtr==NULL ){
++    sqlite3_log(SQLITE_ERROR, "load compressvfs init func failed: %s\n", dlerror());
++    dlclose(g_compress_library);
++    return SQLITE_ERROR;
++  }
++  compressvfsGetOrigFilePtr = (sqlite3CompressGetOriFile_ptr)dlsym(g_compress_library, "compressvfsGetOrigFile");
++  if( compressvfsGetOrigFilePtr==NULL ){
++    sqlite3_log(SQLITE_ERROR, "load compressvfs get orig file func failed: %s\n", dlerror());
++    dlclose(g_compress_library);
++    return SQLITE_ERROR;
++  }
++  decompressBufPtr = (sqlite3DecompressBuf_ptr)dlsym(g_compress_library, "decompressBuf");
++  if( decompressBufPtr==NULL ){
++    sqlite3_log(SQLITE_ERROR, "load decompress func failed: %s\n", dlerror());
++    dlclose(g_compress_library);
++    return SQLITE_ERROR;
++  }
++  compressSoLoad = 1u;
++#endif
++  return SQLITE_OK;
++}
++
++/*
++** Load compressvfs so and register compressvfs
++*/
++int sqlite3CompressVFSModuleInit(){
++  int rc = SQLITE_OK;
++  if( compressInit ){
++    return rc;
++  }
++#ifndef _WIN32
++  rc = sqlite3LoadCompressExtension();
++  if( rc!=SQLITE_OK ){
++    return rc;
++  }
++
++  rc = compressvfsInitPtr();
++  if( rc!=SQLITE_OK ){
++    dlclose(g_compress_library);
++    compressSoLoad = 0u;
++    return rc;
++  }
++  compressInit = 1u;
++#endif
++  return rc;
++}
++
++/*
++** The backup API copies the content of one compressed database into another decompressed file.
++** It is useful either for creating backups database or
++** for copying in-memory databases to or from persistent files. 
++** The source database must be comrpessed, the destination database will be decomrpessed.
++** IMPORTANT: Before use this API, must use a normal vfs which is not compressvfs to open source comrpessed db.
++*/
++SQLITE_API int sqlite3_compressdb_backup(sqlite3 *srcDb, const char *destDbPath){
++  int rc = sqlite3LoadCompressExtension();
++  if( rc!=SQLITE_OK ){
++    return rc;
++  }
++  int pagesize = 0;
++  int compression = 0;
++  sqlite3_stmt *stmt = NULL;
++  u8 *decompressed_data = NULL;
++  int openFlags = (O_RDWR|O_CREAT|O_LARGEFILE|O_BINARY|O_NOFOLLOW);
++  int fd = robust_open(destDbPath, openFlags, 0);
++  if( fd<0 ){
++    sqlite3_log(SQLITE_ERROR, "Failed to open destDb file!");
++    return SQLITE_CANTOPEN_BKPT;
++  }
++  const char *compression_sql = "SELECT pagesize, compression FROM vfs_compression;";
++  if( sqlite3_prepare_v2(srcDb, compression_sql, -1, &stmt, NULL) == SQLITE_OK ){
++    if( sqlite3_step(stmt) == SQLITE_ROW ){
++      pagesize = sqlite3_column_int(stmt, 0);
++      compression = sqlite3_column_int(stmt, 1);
++    }else{
++      sqlite3_log(SQLITE_ERROR, "Failed to select compression!");
++      rc = SQLITE_ERROR;
++    }
++    sqlite3_finalize(stmt);
++    stmt = NULL;
++  }
++  if( rc!=SQLITE_OK || pagesize==0 ){
++    rc = SQLITE_WARNING_NOTCOMPRESSDB;
++    goto failed;
++  }
++  int dst_len = pagesize;
++  const char *data_sql = "SELECT data FROM vfs_pages;";
++  rc = sqlite3_prepare_v2(srcDb, data_sql, -1, &stmt, NULL);
++  if( rc!=SQLITE_OK ){
++    sqlite3_log(SQLITE_ERROR, "Failed to exec data_sql!");
++    goto failed;
++  }
++  decompressed_data = (u8 *)sqlite3_malloc(pagesize);
++  int pagecount = 0;
++  while( (rc = sqlite3_step(stmt)) == SQLITE_ROW ){
++    const void *data_ptr = sqlite3_column_blob(stmt, 0);
++    int data_size = sqlite3_column_bytes(stmt, 0);
++    rc = decompressBufPtr(decompressed_data, pagesize, &dst_len, data_ptr, data_size, compression);
++    if( rc!=SQLITE_OK || pagesize!=dst_len ){
++      sqlite3_log(rc, "Failed to decompress buf in src db!");
++      rc = SQLITE_ERROR;
++      goto failed;
++    }
++    int nWrite = seekAndWriteFd(fd, (i64)pagecount*pagesize, decompressed_data, pagesize, &rc);
++    if( nWrite!=dst_len || rc!=SQLITE_OK ){
++      sqlite3_log(rc, "Write dest db error at page %d!", pagecount);
++      rc = SQLITE_IOERR_WRITE;
++      goto failed;
++    }
++    pagecount++;
++    if( pagecount==(PENDING_BYTE/pagesize)+1 ){
++      pagecount++;
++    }
++  }
++  if( rc!=SQLITE_DONE ){
++    sqlite3_log(rc, "Querry error: %s!", sqlite3_errmsg(srcDb));
++  }
++
++failed:
++  osClose(fd);
++  if( decompressed_data ){
++    sqlite3_free(decompressed_data);
++  }
++  sqlite3_finalize(stmt);
++  return rc;
++}
++
++/************** End of sqlitecompressvfs.h ***************************************/
++/************** Continuing where we left off in main.c ***********************/
++#endif /* SQLITE_ENABLE_PAGE_COMPRESS */
++
+ /*
+ ** This function is used to parse both URIs and non-URI filenames passed by the
+ ** user to API functions sqlite3_open() or sqlite3_open_v2(), and for database
+@@ -183314,6 +183688,17 @@ SQLITE_PRIVATE int sqlite3ParseUri(
+     flags &= ~SQLITE_OPEN_URI;
+   }
+ 
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  if( sqlite3_stricmp(zVfs, "compressvfs")==0 ){
++    rc = sqlite3CompressVFSModuleInit();
++    if( rc!= SQLITE_OK ){
++      *pzErrMsg = sqlite3_mprintf("load so of compressvfs error.");
++      rc = SQLITE_ERROR;
++      goto parse_uri_out;
++    }
++  }
++#endif
++
+   *ppVfs = sqlite3_vfs_find(zVfs);
+   if( *ppVfs==0 ){
+     *pzErrMsg = sqlite3_mprintf("no such vfs: %s", zVfs);
+@@ -256147,9 +256532,9 @@ static int PragmaCksumPersistEnable(sqlite3 *db, int iDb, Parse *parse, const ch
+   }
+   return 1;
+ }
+-extern sqlite3_file *sqlite3_get_orig_file(sqlite3_file *file);
++extern sqlite3_file *cksmvfsGetOrigFile(sqlite3_file *file);
+ #else
+-static sqlite3_file *sqlite3_get_orig_file(sqlite3_file *file) {
++static sqlite3_file *cksmvfsGetOrigFile(sqlite3_file *file) {
+   return file;
+ }
+ #endif /* SQLITE_CKSUMVFS_STATIC */
+@@ -256157,13 +256542,22 @@ static sqlite3_file *sqlite3_get_orig_file(sqlite3_file *file) {
+ #if SQLITE_OS_UNIX
+ #define SQLITE_CHECK_FILE_ID_UNIX 1
+ #define SQLITE_CHECK_FILE_ID_CKSM 2
++#define SQLITE_CHECK_FILE_ID_COMPRESS 3
+ 
+-// checkFileId should not be 0, it must be SQLITE_CHECK_FILE_ID_UNIX(1) or SQLITE_CHECK_FILE_ID_CKSM(2)
++// checkFileId should not be 0
++// it must be SQLITE_CHECK_FILE_ID_UNIX(1) or SQLITE_CHECK_FILE_ID_CKSM(2) or SQLITE_CHECK_FILE_ID_COMPRESS(3)
+ static unixFile *Sqlite3GetUnixFile(sqlite3_file *file, u8 checkFileId) {
+-  if (checkFileId == SQLITE_CHECK_FILE_ID_UNIX) {
++  if( checkFileId == SQLITE_CHECK_FILE_ID_UNIX ){
+     return (unixFile*)file;
++  }else if( checkFileId == SQLITE_CHECK_FILE_ID_CKSM ){
++    return (unixFile*)cksmvfsGetOrigFile(file);
++  }
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  if( compressvfsGetOrigFilePtr==NULL ){
++    return (unixFile*)compressvfsGetOrigFilePtr(file);
+   }
+-  return (unixFile*)sqlite3_get_orig_file(file);
++#endif
++  return (unixFile*)file;
+ }
+ #endif /* SQLITE_OS_UNIX */
+ 
+@@ -256460,6 +256854,8 @@ static MetaDwrHdr *AllocInitMetaHeaderDwr(Pager *pPager) {
+     hdr->checkFileId = SQLITE_CHECK_FILE_ID_UNIX;
+   } else if (sqlite3_stricmp(pPager->pVfs->zName, "cksmvfs") == 0) {
+     hdr->checkFileId = SQLITE_CHECK_FILE_ID_CKSM;
++  } else if (sqlite3_stricmp(pPager->pVfs->zName, "compressvfs") == 0) {
++    hdr->checkFileId = SQLITE_CHECK_FILE_ID_COMPRESS;
+   } else {
+     hdr->checkFileId = 0;
+   }
+@@ -257407,14 +257803,23 @@ static void DumpTrxProcessLocks(unixFile *file, char *dumpBuf, int dumpBufLen)
+ 
+ static void DumpWalLocks(unixFile *file, u8 walEnabled, char *dumpBuf, int dumpBufLen)
+ {
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  if ((file->pShm == NULL || file->pShm->pShmNode == NULL) &&
++      (file->pCompressShm == NULL || file->pCompressShm->pShmNode == NULL)) {
++#else
+   if (file->pShm == NULL || file->pShm->pShmNode == NULL) {
++#endif
+     sqlite3_log(SQLITE_ERROR, "[SQLite]Wal mode disabled! pShm or pShmNode is NULL");
+     return;
+   }
+   if (!walEnabled) {
+     sqlite3_log(SQLITE_ERROR, "[SQLite] walEnabled false");
+   }
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  unixShmNode *pShmNode = file->pShm->pShmNode == NULL ? file->pCompressShm->pShmNode : file->pShm->pShmNode;
++#else
+   unixShmNode *pShmNode = file->pShm->pShmNode;
++#endif
+   char *tmp = dumpBuf;
+   int availLen = dumpBufLen - 1;
+   dumpBuf[availLen] = '\0';
+@@ -258600,6 +259005,11 @@ struct sqlite3_api_routines_hw {
+   int (*is_support_binlog)(void);
+   int (*replay_binlog)(sqlite3*, sqlite3*);
+   int (*clean_binlog)(sqlite3*, BinlogFileCleanModeE);
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  int (*compressdb_backup)(sqlite3*, const char*);
++#else
++  void *dymmyFunc1;
++#endif
+ };
+ 
+ typedef struct sqlite3_api_routines_hw sqlite3_api_routines_hw;
+@@ -258626,6 +259036,11 @@ static const sqlite3_api_routines_hw sqlite3HwApis = {
+   0,
+   0,
+ #endif/* SQLITE_ENABLE_BINLOG */
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  sqlite3_compressdb_backup,
++#else
++  0,
++#endif/* SQLITE_ENABLE_PAGE_COMPRESS */
+ };
+ 
+ EXPORT_SYMBOLS const sqlite3_api_routines *sqlite3_export_symbols = &sqlite3Apis;
+-- 
+2.47.0.windows.2
+

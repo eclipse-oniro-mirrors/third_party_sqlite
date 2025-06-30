@@ -1,5 +1,14 @@
+From 4df2a5e625753f2cb9c211617e91f606fdd6d4c6 Mon Sep 17 00:00:00 2001
+From: MartinChoo <214582617@qq.com>
+Date: Thu, 3 Jul 2025 22:58:29 +0800
+Subject: [PATCH 10/12] EnableExtensionLoading-LoadCustomTokenizer
+
+---
+ src/shell.c | 32 ++++++++++++++++++++++++++++++++
+ 1 file changed, 32 insertions(+)
+
 diff --git a/src/shell.c b/src/shell.c
-index 7fb190e..6dc5087 100644
+index c1948b1..cedf118 100644
 --- a/src/shell.c
 +++ b/src/shell.c
 @@ -118,6 +118,7 @@ typedef unsigned short int u16;
@@ -8,9 +17,9 @@ index 7fb190e..6dc5087 100644
  #include <math.h>
 +#include <sys/time.h>
  #include "sqlite3.h"
+ #include "sqlite3sym.h"
  typedef sqlite3_int64 i64;
- typedef sqlite3_uint64 u64;
-@@ -22189,6 +22190,32 @@ static void open_db(ShellState *p, int openFlags){
+@@ -22190,6 +22191,32 @@ static void open_db(ShellState *p, int openFlags){
      }
      sqlite3_db_config(p->db, SQLITE_DBCONFIG_STMT_SCANSTATUS, (int)0, (int*)0);
  
@@ -43,7 +52,7 @@ index 7fb190e..6dc5087 100644
      /* Reflect the use or absence of --unsafe-testing invocation. */
      {
        int testmode_on = ShellHasFlag(p,SHFLG_TestingMode);
-@@ -28237,6 +28264,8 @@ static int line_is_complete(char *zSql, int nSql){
+@@ -28238,6 +28265,8 @@ static int line_is_complete(char *zSql, int nSql){
  static int runOneSqlLine(ShellState *p, char *zSql, FILE *in, int startline){
    int rc;
    char *zErrMsg = 0;
@@ -52,7 +61,7 @@ index 7fb190e..6dc5087 100644
  
    open_db(p, 0);
    if( ShellHasFlag(p,SHFLG_Backslash) ) resolve_backslashes(zSql);
-@@ -28244,6 +28273,9 @@ static int runOneSqlLine(ShellState *p, char *zSql, FILE *in, int startline){
+@@ -28245,6 +28274,9 @@ static int runOneSqlLine(ShellState *p, char *zSql, FILE *in, int startline){
    BEGIN_TIMER;
    rc = shell_exec(p, zSql, &zErrMsg);
    END_TIMER;
@@ -62,3 +71,6 @@ index 7fb190e..6dc5087 100644
    if( rc || zErrMsg ){
      char zPrefix[100];
      const char *zErrorTail;
+-- 
+2.47.0.windows.2
+
