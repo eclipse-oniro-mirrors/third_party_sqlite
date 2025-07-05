@@ -43,7 +43,10 @@ static void UtPresetDb(const char *dbFile)
      * @tc.expected: step1. Execute successfully
      */
     sqlite3 *db = NULL;
-    EXPECT_EQ(sqlite3_open(dbFile, &db), SQLITE_OK);
+    std::string dbFileUri = "file:";
+    dbFileUri += dbFile;
+    dbFileUri += "?vfs=cksmvfs";
+    EXPECT_EQ(sqlite3_open(dbFileUri.c_str(), &db), SQLITE_OK);
     /**
      * @tc.steps: step1. Enable cksumvfs using PRAGMA checksum_persist_enable,
      * @tc.expected: step1. Execute successfully
@@ -141,7 +144,10 @@ HWTEST_F(LibSQLiteTest, Lib_SQLite_Test_001, TestSize.Level0)
      */
     sqlite3 *db = NULL;
     UtCorruptDb(TEST_DB, 3 * 4096 + 1000, 1, 0xFF); // 3 * 4096 + 1000 is the target page's position in file
-    EXPECT_EQ(sqlite3_open(TEST_DB, &db), SQLITE_OK);
+    std::string dbFileUri = "file:";
+    dbFileUri += TEST_DB;
+    dbFileUri += "?vfs=cksmvfs";
+    EXPECT_EQ(sqlite3_open(dbFileUri.c_str(), &db), SQLITE_OK);
     static const char *UT_SQL_SELECT_TABLE = "SELECT COUNT(*) FROM salary WHERE entryId=3;";
     EXPECT_EQ(sqlite3_exec(db, UT_SQL_SELECT_TABLE, NULL, NULL, NULL), SQLITE_IOERR);
     /**
@@ -174,7 +180,10 @@ HWTEST_F(LibSQLiteTest, Lib_SQLite_Test_002, TestSize.Level0)
      */
     sqlite3 *db = NULL;
     UtCorruptDb(TEST_DB, 3 * 4096 + 1000, 1, 0xFF); // 3 * 4096 + 1000 is the target page's position in file
-    EXPECT_EQ(sqlite3_open(TEST_DB, &db), SQLITE_OK);
+    std::string dbFileUri = "file:";
+    dbFileUri += TEST_DB;
+    dbFileUri += "?vfs=cksmvfs";
+    EXPECT_EQ(sqlite3_open(dbFileUri.c_str(), &db), SQLITE_OK);
     static const char *UT_SQL_SELECT_TABLE_1 = "SELECT COUNT(*) FROM salary WHERE entryId=3;";
     EXPECT_EQ(sqlite3_exec(db, UT_SQL_SELECT_TABLE_1, NULL, NULL, NULL), SQLITE_IOERR);
     /**

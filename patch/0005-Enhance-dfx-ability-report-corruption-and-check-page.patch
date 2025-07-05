@@ -1,9 +1,8 @@
-From ee3361c659ae4f46615bdb9f703cb3469c595214 Mon Sep 17 00:00:00 2001
-From: wanghaishuo <wanghaishuo1@huawei.com>
-Date: Mon, 12 May 2025 15:42:10 +0800
-Subject: [PATCH 5/6] Enhance dfx ability, report corruption and check pages
+From 530b32340de30cfde81712585051e5b8b77ba095 Mon Sep 17 00:00:00 2001
+From: MartinChoo <214582617@qq.com>
+Date: Thu, 3 Jul 2025 22:55:22 +0800
+Subject: [PATCH 05/12] Enhance dfx ability, report corruption and check pages
 
-Signed-off-by: wanghaishuo <wanghaishuo1@huawei.com>
 ---
  ext/misc/cksumvfs.c | 916 ++++++++++++++++++++++++++++++++++++++++++++
  src/sqlite3.c       | 818 ++++++++++++++++++++++++++++++++++-----
@@ -933,7 +932,7 @@ index 0000000..6f4c55c
 +EXPORT_SYMBOLS const sqlite3_api_routines_cksumvfs *sqlite3_export_cksumvfs_symbols = &sqlite3CksumvfsApis;
 +#endif
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 96ed35b..2a4e87f 100644
+index dc09c3c..e7e8b3c 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -2472,6 +2472,21 @@ struct sqlite3_mem_methods {
@@ -2410,5 +2409,5 @@ index 96ed35b..2a4e87f 100644
    int (*initialize)();
    int (*config)(int,...);
 -- 
-2.34.1
+2.47.0.windows.2
 

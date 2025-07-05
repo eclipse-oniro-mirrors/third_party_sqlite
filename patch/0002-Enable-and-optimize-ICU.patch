@@ -1,9 +1,8 @@
-From 57b5e5dc8b3a7f622e9666c20ec2a7f78997bf3c Mon Sep 17 00:00:00 2001
-From: wanghaishuo <wanghaishuo1@huawei.com>
-Date: Mon, 12 May 2025 15:24:45 +0800
-Subject: [PATCH 2/6] Enable and optimize ICU
+From 733de3813ffb596919bcc72fb8f61422cbacf295 Mon Sep 17 00:00:00 2001
+From: MartinChoo <214582617@qq.com>
+Date: Thu, 3 Jul 2025 22:53:41 +0800
+Subject: [PATCH 02/12] Enable and optimize ICU
 
-Signed-off-by: wanghaishuo <wanghaishuo1@huawei.com>
 ---
  src/sqlite3.c    | 1013 ++++------------------------------------------
  src/sqlite3icu.c |  888 ++++++++++++++++++++++++++++++++++++++++
@@ -11,7 +10,7 @@ Signed-off-by: wanghaishuo <wanghaishuo1@huawei.com>
  create mode 100644 src/sqlite3icu.c
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index ad78006..8d8b8ae 100644
+index b132937..efc4cd4 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -2502,6 +2502,7 @@ struct sqlite3_mem_methods {
@@ -2020,5 +2019,5 @@ index 0000000..b5944d5
 +/************** End of fts3_icu.c ********************************************/
 \ No newline at end of file
 -- 
-2.34.1
+2.47.0.windows.2
 

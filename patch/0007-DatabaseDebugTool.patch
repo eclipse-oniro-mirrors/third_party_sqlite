@@ -1,3 +1,12 @@
+From ea38cd58b2a3704a2ce6e7e6840cdaa72c24b566 Mon Sep 17 00:00:00 2001
+From: MartinChoo <214582617@qq.com>
+Date: Thu, 3 Jul 2025 22:56:30 +0800
+Subject: [PATCH 07/12] DatabaseDebugTool
+
+---
+ src/shell.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
 diff --git a/src/shell.c b/src/shell.c
 index 7fb190e..c1948b1 100644
 --- a/src/shell.c
@@ -20,3 +29,6 @@ index 7fb190e..c1948b1 100644
    /* Do an initial pass through the command-line argument to locate
    ** the name of the database file, the name of the initialization file,
    ** the size of the alternative malloc heap, options affecting commands
+-- 
+2.47.0.windows.2
+

@@ -33,6 +33,7 @@ group("libsqlite") {
   public_deps = [
     ":sqlite",
     ":sqliteicu",
+    ":sqlitecompressvfs",
   ]
 }
 
@@ -81,6 +82,46 @@ ohos_shared_library("sqliteicu") {
   ]
 }
 
+ohos_shared_library("sqlitecompressvfs") {
+  branch_protector_ret = "pac_ret"
+  sources = [ "$sqlite_patched_dir/src/compressvfs.c" ]
+
+  defines = [
+    "NDEBUG=1",
+    "SQLITE_EXPORT_SYMBOLS",
+    "SQLITE_ENABLE_PAGE_COMPRESS",
+    "HARMONY_OS",
+  ]
+  cflags_c = [
+    "-fvisibility=hidden",
+    "-Wno-implicit-fallthrough",
+  ]
+  if (target_os != "ios") {
+    ldflags = [ "-Wl,--exclude-libs,ALL" ]
+  }
+  deps = [
+    ":sqlite",
+    "//third_party/sqlite/patch:apply_patch",
+  ]
+  public_configs = [ ":sqlite_config" ]
+  configs = [ ":sqlite3_private_config" ]
+  innerapi_tags = [ "platformsdk_indirect" ]
+  part_name = "sqlite"
+  subsystem_name = "thirdparty"
+  install_images = [ system_base_dir ]
+  relative_install_dir = "platformsdk"
+  external_deps = []
+  if (is_cross_platform_build) {
+    if (target_os == "ios") {
+      deps += [ "//third_party/bounds_checking_function:libsec_shared" ]
+    } else {
+      deps += [ "//commonlibrary/c_utils/base:utils" ]
+    }
+  } else {
+    external_deps += [ "c_utils:utils" ]
+  }
+}
+
 ohos_shared_library("sqlite") {
   branch_protector_ret = "pac_ret"
   sources = [
@@ -127,6 +168,7 @@ ohos_shared_library("sqlite") {
     "SQLITE_META_DWR",
     "SQLITE_ENABLE_BINLOG",
     "SQLITE_CKSUMVFS_STATIC",
+    "SQLITE_ENABLE_PAGE_COMPRESS",
   ]
   if (sqlite_support_check_pages) {
   }

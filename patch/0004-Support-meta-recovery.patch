@@ -1,15 +1,14 @@
-From cdf4fb30449a76dc055c92efef0eee7e128ccd56 Mon Sep 17 00:00:00 2001
-From: wanghaishuo <wanghaishuo1@huawei.com>
-Date: Mon, 12 May 2025 15:33:13 +0800
-Subject: [PATCH 4/6] Support meta recovery
+From 45e883bed32094756ff8878964d911cc0cfe9fd3 Mon Sep 17 00:00:00 2001
+From: MartinChoo <214582617@qq.com>
+Date: Thu, 3 Jul 2025 22:54:55 +0800
+Subject: [PATCH 04/12] Support meta recovery
 
-Signed-off-by: wanghaishuo <wanghaishuo1@huawei.com>
 ---
  src/sqlite3.c | 1156 ++++++++++++++++++++++++++++++++++++++++++++++++-
  1 file changed, 1151 insertions(+), 5 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 574a76a..96ed35b 100644
+index 6f423a9..dc09c3c 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -786,6 +786,7 @@ SQLITE_API int sqlite3_exec(
@@ -1290,5 +1289,5 @@ index 574a76a..96ed35b 100644
  #include <unistd.h>
  #include <sys/syscall.h>
 -- 
-2.34.1
+2.47.0.windows.2
 
