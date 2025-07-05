@@ -1,14 +1,14 @@
-From 50059cd9ac8a97d4334f6fe042d42708a96b4f9f Mon Sep 17 00:00:00 2001
+From 5604e33fbc2e70d6b636d4a497e40791b8fcc1bd Mon Sep 17 00:00:00 2001
 From: Liu Hongyang <liuhongyang4@huawei.com>
-Date: Wed, 11 Jun 2025 09:32:35 +0800
+Date: Sat, 5 Jul 2025 16:18:35 +0800
 Subject: [PATCH] Support-Binlog
 
 ---
- src/sqlite3.c | 1493 ++++++++++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 1484 insertions(+), 9 deletions(-)
+ src/sqlite3.c | 1510 ++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 1501 insertions(+), 9 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index e7e8b3c..eb89098 100644
+index e7e8b3c..c095863 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -2938,7 +2938,9 @@ SQLITE_API sqlite3_int64 sqlite3_last_insert_rowid(sqlite3*);
@@ -680,7 +680,7 @@ index e7e8b3c..eb89098 100644
    *ppDb = db;
  #ifdef SQLITE_ENABLE_SQLLOG
    if( sqlite3GlobalConfig.xSqllog ){
-@@ -256913,6 +257323,1059 @@ static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime
+@@ -256913,6 +257323,1076 @@ static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime
  }
  #endif
  
@@ -1558,6 +1558,22 @@ index e7e8b3c..eb89098 100644
 +  return sqlite3GetBinlogRowStmt(db, &pRow, pTable);
 +}
 +
++SQLITE_PRIVATE Table *sqliteBinlogGetTable(sqlite3 *db, const char *pTableName, int *rc)
++{
++  assert( db!=NULL );
++  assert( pTableName!=NULL );
++  assert( rc!=NULL );
++  sqlite3_stmt *stmt = NULL;
++  *rc = sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table';", -1, &stmt, NULL);
++  if (*rc != SQLITE_OK) {
++    return NULL;
++  }
++  *rc = sqlite3_step(stmt);
++  Table *pTable = sqlite3FindTable(db, pTableName, NULL);
++  sqlite3_finalize(stmt);
++  return pTable;
++}
++
 +SQLITE_PRIVATE char *sqlite3BinlogGetEventSql(sqlite3 *db, BinlogEventT *event, Table **pOutTable, int *rc)
 +{
 +  assert( event!=NULL );
@@ -1566,14 +1582,15 @@ index e7e8b3c..eb89098 100644
 +      return sqlite3_mprintf("savepoint %s;", (char *)event->body);
 +    case BINLOG_EVENT_TYPE_ROW_TABLE: {
 +      char *pTableName = (char *)event->body;
-+      sqlite3_stmt *stmt = NULL;
-+      *rc = sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table';", -1, &stmt, NULL);
-+      if (*rc != SQLITE_OK) {
-+        sqlite3_log(SQLITE_ERROR, "binlog row failed to prepare");
++      if (*pOutTable != NULL && strcmp(pTableName, (*pOutTable)->zName) == 0) {
 +        return NULL;
 +      }
-+      *pOutTable = sqlite3FindTable(db, pTableName, NULL);
-+      sqlite3_finalize(stmt);
++      *pOutTable = sqliteBinlogGetTable(db, pTableName, rc);
++      if (*pOutTable == NULL) {
++        sqlite3_log(SQLITE_WARNING, "binlog find no table, rc=%d", *rc);
++      } else {
++        *rc = SQLITE_OK;
++      }
 +      return NULL;
 +    }
 +    case BINLOG_EVENT_TYPE_ROW_FULL_DATA:
@@ -1740,7 +1757,7 @@ index e7e8b3c..eb89098 100644
  // hw export the symbols
  #ifdef SQLITE_EXPORT_SYMBOLS
  #ifndef SQLITE_CKSUMVFS_STATIC
-@@ -256942,6 +258405,9 @@ struct sqlite3_api_routines_hw {
+@@ -256942,6 +258422,9 @@ struct sqlite3_api_routines_hw {
    int (*key_v2)(sqlite3*,const char*,const void*,int);
    int (*rekey)(sqlite3*,const void*,int);
    int (*rekey_v2)(sqlite3*,const char*,const void*,int);
@@ -1750,7 +1767,7 @@ index e7e8b3c..eb89098 100644
  };
  
  typedef struct sqlite3_api_routines_hw sqlite3_api_routines_hw;
-@@ -256952,13 +258418,22 @@ static const sqlite3_api_routines_hw sqlite3HwApis = {
+@@ -256952,13 +258435,22 @@ static const sqlite3_api_routines_hw sqlite3HwApis = {
    sqlite3_key,
    sqlite3_key_v2,
    sqlite3_rekey,
