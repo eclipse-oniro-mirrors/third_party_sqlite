@@ -1,7 +1,7 @@
-From 4df2a5e625753f2cb9c211617e91f606fdd6d4c6 Mon Sep 17 00:00:00 2001
+From 73c47b5dbd9efb039ff7461bebe4558b5e574fc1 Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
-Date: Thu, 3 Jul 2025 22:58:29 +0800
-Subject: [PATCH 10/12] EnableExtensionLoading-LoadCustomTokenizer
+Date: Thu, 10 Jul 2025 10:38:00 +0800
+Subject: [PATCH 2/4] EnableExtensionLoading-LoadCustomTokenizer
 
 ---
  src/shell.c | 32 ++++++++++++++++++++++++++++++++

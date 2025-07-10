@@ -1,15 +1,15 @@
-From 1136400a2cdcdbd784cb459cfc6f123f14f3cc58 Mon Sep 17 00:00:00 2001
+From 6e06b441bf3b59fdf03da8196442346a08dae60d Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
-Date: Thu, 3 Jul 2025 22:57:51 +0800
-Subject: [PATCH 09/12] Allow enable checksum through PRAGMA
+Date: Thu, 10 Jul 2025 10:37:19 +0800
+Subject: [PATCH 1/4] Allow enable checksum through PRAGMA
 
 ---
- ext/misc/cksumvfs.c | 185 ++++++++++++++++++++++++++++++++++++--------
- src/sqlite3.c       | 175 ++++++++++++++++++++++++++++++++---------
- 2 files changed, 293 insertions(+), 67 deletions(-)
+ ext/misc/cksumvfs.c | 189 ++++++++++++++++++++++++++++++++++++--------
+ src/sqlite3.c       | 175 ++++++++++++++++++++++++++++++++--------
+ 2 files changed, 295 insertions(+), 69 deletions(-)
 
 diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
-index 6f4c55c..a23a997 100644
+index 6f4c55c..d7a2431 100644
 --- a/ext/misc/cksumvfs.c
 +++ b/ext/misc/cksumvfs.c
 @@ -73,12 +73,12 @@
@@ -267,7 +267,12 @@ index 6f4c55c..a23a997 100644
  /*
  ** Read data from a cksm-file.
  */
-@@ -456,7 +552,7 @@ static int cksmRead(
+@@ -452,11 +548,11 @@ static int cksmRead(
+   pFile = ORIGFILE(pFile);
+   rc = pFile->pMethods->xRead(pFile, zBuf, iAmt, iOfst);
+   if( rc==SQLITE_OK ){
+-    if( iOfst==0 && iAmt>=100 && (
++    if( (iOfst==0 || p->isWal) && iAmt>=100 && (
            memcmp(zBuf,"SQLite format 3",16)==0 || memcmp(zBuf,"ZV-",3)==0 
      )){
        u8 *d = (u8*)zBuf;
@@ -312,7 +317,12 @@ index 6f4c55c..a23a997 100644
          sqlite3_log(SQLITE_IOERR_DATA, "checksum fault offset %lld of \"%s\", amt:%d, expect:%s, actual:%s",
             iOfst, p->zFName, iAmt, expect, actual);
          rc = SQLITE_IOERR_DATA;
-@@ -500,7 +606,7 @@ static int cksmWrite(
+@@ -496,11 +602,11 @@ static int cksmWrite(
+ ){
+   CksmFile *p = (CksmFile *)pFile;
+   pFile = ORIGFILE(pFile);
+-  if( iOfst==0 && iAmt>=100 && (
++  if( (iOfst==0 || p->isWal) && iAmt>=100 && (
          memcmp(zBuf,"SQLite format 3",16)==0 || memcmp(zBuf,"ZV-",3)==0 
    )){
      u8 *d = (u8*)zBuf;
@@ -376,7 +386,7 @@ index 6f4c55c..a23a997 100644
    int (*register_cksumvfs)(const char *);
    int (*unregister_cksumvfs)();
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 425d3d7..24e3247 100644
+index 3977ff6..be9f41d 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -139875,6 +139875,10 @@ static int integrityCheckResultRow(Vdbe *v){
@@ -713,7 +723,7 @@ index 425d3d7..24e3247 100644
  #endif /* #ifndef SQLITE_OMIT_WAL */
  }
  #endif /* SQLITE_OS_UNIX */
-@@ -258484,7 +258588,8 @@ static const sqlite3_api_routines_cksumvfs sqlite3CksumvfsApis = {
+@@ -258501,7 +258605,8 @@ static const sqlite3_api_routines_cksumvfs sqlite3CksumvfsApis = {
  };
  
  EXPORT_SYMBOLS const sqlite3_api_routines_cksumvfs *sqlite3_export_cksumvfs_symbols = &sqlite3CksumvfsApis;
