@@ -35,6 +35,7 @@ ohos_unittest("libsqlittest") {
 
   sources = [
     "./common.cpp",
+    "./sqlite_cksum_test.cpp",
     "./sqlite_compress_test.cpp",
     "./sqlite_test.cpp",
   ]
