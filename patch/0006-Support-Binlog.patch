@@ -1,14 +1,14 @@
-From 43816530bf2526e61ba871ab7d82ddb524f3bb94 Mon Sep 17 00:00:00 2001
-From: MartinChoo <214582617@qq.com>
-Date: Thu, 3 Jul 2025 22:55:59 +0800
+From 51e8e916320226d0dd6d85bdca8bceb4c0e40cf6 Mon Sep 17 00:00:00 2001
+From: Liu Hongyang <liuhongyang4@huawei.com>
+Date: Fri, 11 Jul 2025 10:33:52 +0800
 Subject: [PATCH 06/12] Support-Binlog
 
 ---
- src/sqlite3.c | 1510 ++++++++++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 1501 insertions(+), 9 deletions(-)
+ src/sqlite3.c | 1508 ++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 1499 insertions(+), 9 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index e7e8b3c..311d910 100644
+index e7e8b3c..3f1195a 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -2938,7 +2938,9 @@ SQLITE_API sqlite3_int64 sqlite3_last_insert_rowid(sqlite3*);
@@ -680,7 +680,7 @@ index e7e8b3c..311d910 100644
    *ppDb = db;
  #ifdef SQLITE_ENABLE_SQLLOG
    if( sqlite3GlobalConfig.xSqllog ){
-@@ -256913,6 +257323,1076 @@ static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime
+@@ -256913,6 +257323,1074 @@ static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime
  }
  #endif
  
@@ -1582,11 +1582,9 @@ index e7e8b3c..311d910 100644
 +      return sqlite3_mprintf("savepoint %s;", (char *)event->body);
 +    case BINLOG_EVENT_TYPE_ROW_TABLE: {
 +      char *pTableName = (char *)event->body;
-+      if (*pOutTable != NULL && strcmp(pTableName, (*pOutTable)->zName) == 0) {
-+        return NULL;
-+      }
 +      *pOutTable = sqliteBinlogGetTable(db, pTableName, rc);
 +      if (*pOutTable == NULL) {
++        *rc = SQLITE_ERROR;
 +        sqlite3_log(SQLITE_WARNING, "binlog find no table, rc=%d", *rc);
 +      } else {
 +        *rc = SQLITE_OK;
@@ -1757,7 +1755,7 @@ index e7e8b3c..311d910 100644
  // hw export the symbols
  #ifdef SQLITE_EXPORT_SYMBOLS
  #ifndef SQLITE_CKSUMVFS_STATIC
-@@ -256942,6 +258422,9 @@ struct sqlite3_api_routines_hw {
+@@ -256942,6 +258420,9 @@ struct sqlite3_api_routines_hw {
    int (*key_v2)(sqlite3*,const char*,const void*,int);
    int (*rekey)(sqlite3*,const void*,int);
    int (*rekey_v2)(sqlite3*,const char*,const void*,int);
@@ -1767,7 +1765,7 @@ index e7e8b3c..311d910 100644
  };
  
  typedef struct sqlite3_api_routines_hw sqlite3_api_routines_hw;
-@@ -256952,13 +258435,22 @@ static const sqlite3_api_routines_hw sqlite3HwApis = {
+@@ -256952,13 +258433,22 @@ static const sqlite3_api_routines_hw sqlite3HwApis = {
    sqlite3_key,
    sqlite3_key_v2,
    sqlite3_rekey,
@@ -1793,5 +1791,5 @@ index e7e8b3c..311d910 100644
  
  EXPORT_SYMBOLS const sqlite3_api_routines *sqlite3_export_symbols = &sqlite3Apis;
 -- 
-2.47.0.windows.2
+2.25.1
 
