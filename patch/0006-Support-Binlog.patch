@@ -1,6 +1,6 @@
-From 51e8e916320226d0dd6d85bdca8bceb4c0e40cf6 Mon Sep 17 00:00:00 2001
-From: Liu Hongyang <liuhongyang4@huawei.com>
-Date: Fri, 11 Jul 2025 10:33:52 +0800
+From d169331fa1819949f671071677cf4ac45c05a21a Mon Sep 17 00:00:00 2001
+From: MartinChoo <214582617@qq.com>
+Date: Wed, 23 Jul 2025 17:42:36 +0800
 Subject: [PATCH 06/12] Support-Binlog
 
 ---
@@ -1791,5 +1791,5 @@ index e7e8b3c..3f1195a 100644
  
  EXPORT_SYMBOLS const sqlite3_api_routines *sqlite3_export_symbols = &sqlite3Apis;
 -- 
-2.25.1
+2.47.0.windows.2
 

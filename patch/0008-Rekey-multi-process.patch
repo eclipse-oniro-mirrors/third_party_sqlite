@@ -1,6 +1,6 @@
-From c21f5d9abd672d70f46e22ffb6bb3ef48e7f1c6e Mon Sep 17 00:00:00 2001
+From ce201b3a6be487bb3eb48e1d102ba246332aba66 Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
-Date: Thu, 3 Jul 2025 22:57:18 +0800
+Date: Wed, 23 Jul 2025 17:43:40 +0800
 Subject: [PATCH 08/12] Rekey multi process
 
 ---
@@ -8,7 +8,7 @@ Subject: [PATCH 08/12] Rekey multi process
  1 file changed, 90 insertions(+), 3 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 37501f9..425d3d7 100644
+index 3f1195a..4c538a1 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -15689,6 +15689,7 @@ typedef int VList;

@@ -230,4 +230,126 @@ HWTEST_F(SQLiteCompressTest, CompressTest003, TestSize.Level0)
     UtCheckDb(dbPath2, TEST_PRESET_TABLE_COUNT + 1);
 }
 
+/**
+ * @tc.name: CompressTest004
+ * @tc.desc: Test to create new db and enable page compression
+ * @tc.type: FUNC
+ */
+HWTEST_F(SQLiteCompressTest, CompressTest004, TestSize.Level0)
+{
+    /**
+     * @tc.steps: step1. Create a brand new db while page compression enabled with sqlite3_open_v2
+     * @tc.expected: step1. Execute successfully
+     */
+    std::string dbPath1 = TEST_DIR "/compresstest0040.db";
+    sqlite3 *compDb = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(dbPath1.c_str(), &compDb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, "compressvfs"),
+        SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, UT_DDL_CREATE_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, UT_DML_INSERT_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    /**
+     * @tc.steps: step2. Set meta double write enable through Pragma statement
+     * @tc.expected: step2. Execute successfully
+     */
+    EXPECT_EQ(sqlite3_exec(compDb, "PRAGMA meta_double_write=enabled;", nullptr, nullptr, nullptr), SQLITE_OK);
+    /**
+     * @tc.steps: step3. Set journal mode as WAL through Pragma statement
+     * @tc.expected: step3. Execute successfully
+     */
+    EXPECT_EQ(sqlite3_exec(compDb, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, UT_DDL_CREATE_PHONE.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    /**
+     * @tc.steps: step4. Set WAL file persist
+     * @tc.expected: step4. Execute successfully
+     */
+    int code = 1;
+    EXPECT_EQ(sqlite3_file_control(compDb, "main", SQLITE_FCNTL_PERSIST_WAL, &code), SQLITE_OK);
+    sqlite3_close_v2(compDb);
+    /**
+     * @tc.steps: step5. Check result, files should exist
+     * @tc.expected: step4. Execute successfully
+     */
+    std::string wal = dbPath1 + "-walcompress";
+    std::string shm = dbPath1 + "-shmcompress";
+    std::string dwr = dbPath1 + "-dwr";
+    EXPECT_TRUE(Common::IsFileExist(wal.c_str()));
+    EXPECT_TRUE(Common::IsFileExist(shm.c_str()));
+    EXPECT_TRUE(Common::IsFileExist(dwr.c_str()));
+}
+
+/**
+ * @tc.name: CompressTest005
+ * @tc.desc: Test to create new db and get db/wal/journal filename
+ * @tc.type: FUNC
+ */
+HWTEST_F(SQLiteCompressTest, CompressTest005, TestSize.Level0)
+{
+    /**
+     * @tc.steps: step1. Create a brand new db while page compression enabled with sqlite3_open_v2
+     * @tc.expected: step1. Execute successfully
+     */
+    std::string dbPath1 = TEST_DIR "/compresstest0050.db";
+    sqlite3 *compDb = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(dbPath1.c_str(), &compDb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, "compressvfs"),
+        SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, UT_DDL_CREATE_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, UT_DML_INSERT_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, "PRAGMA meta_double_write=enabled;", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr), SQLITE_OK);
+    /**
+     * @tc.steps: step2. Try to get db/wal/journal filename
+     * @tc.expected: step2. Execute successfully
+     */
+    const char *db = sqlite3_db_filename(compDb, "main");
+    const char *wal = sqlite3_filename_wal(db);
+    const char *journal = sqlite3_filename_journal(db);
+    std::string str = db;
+    int n = str.find("/compresstest0050.db");
+    EXPECT_TRUE(n != string::npos);
+    EXPECT_TRUE(n==(str.size() - strlen("/compresstest0050.db")));
+    str = wal;
+    n = str.find("/compresstest0050.db-walcompress");
+    EXPECT_TRUE(n != string::npos);
+    EXPECT_TRUE(n==(str.size() - strlen("/compresstest0050.db-walcompress")));
+    str = journal;
+    n = str.find("/compresstest0050.db-journalcompress");
+    EXPECT_TRUE(n != string::npos);
+    EXPECT_TRUE(n==(str.size() - strlen("/compresstest0050.db-journalcompress")));
+    sqlite3_close_v2(compDb);
+}
+
+/**
+ * @tc.name: CompressTest006
+ * @tc.desc: Test to create new db and open multi sqlite3 handler at the same time
+ * @tc.type: FUNC
+ */
+HWTEST_F(SQLiteCompressTest, CompressTest006, TestSize.Level0)
+{
+    /**
+     * @tc.steps: step1. Create a brand new db while page compression enabled with sqlite3_open_v2
+     * @tc.expected: step1. Execute successfully
+     */
+    std::string dbPath1 = TEST_DIR "/compresstest0060.db";
+    sqlite3 *compDb = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(dbPath1.c_str(), &compDb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, "compressvfs"),
+        SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, UT_DDL_CREATE_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, UT_DML_INSERT_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, "PRAGMA meta_double_write=enabled;", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr), SQLITE_OK);
+    /**
+     * @tc.steps: step2. Open multi sqlite3 which enable page compression at the same time
+     * @tc.expected: step2. Execute successfully
+     */
+    sqlite3 *compDb1 = nullptr;
+    sqlite3 *compDb2 = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(dbPath1.c_str(), &compDb1, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, "compressvfs"),
+        SQLITE_OK);
+    EXPECT_EQ(sqlite3_open_v2(dbPath1.c_str(), &compDb2, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, "compressvfs"),
+        SQLITE_OK);
+    sqlite3_close_v2(compDb2);
+    sqlite3_close_v2(compDb1);
+    sqlite3_close_v2(compDb);
+}
+
 }  // namespace Test
