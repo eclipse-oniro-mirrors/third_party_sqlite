@@ -25,6 +25,7 @@ class Common {
 public:
     static int RemoveDir(const char *dir);
     static int MakeDir(const char *dir);
+    static bool IsFileExist(const char *fullPath);
 };
 }  // namespace SQLiteTest
 }  // namespace OHOS

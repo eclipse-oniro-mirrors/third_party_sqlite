@@ -87,5 +87,15 @@ int Common::MakeDir(const char *dir)
     }
     return TEST_STATUS_OK;
 }
+
+bool Common::IsFileExist(const char *fullPath)
+{
+    struct stat statBuf;
+    if (stat(fullPath, &statBuf) < 0) {
+        return false;
+    }
+    return S_ISREG(statBuf.st_mode);
+}
+
 }  // namespace SQLiteTest
 }  // namespace OHOS

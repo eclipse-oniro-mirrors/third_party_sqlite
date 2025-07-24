@@ -1,7 +1,7 @@
-From 6e06b441bf3b59fdf03da8196442346a08dae60d Mon Sep 17 00:00:00 2001
+From 2919f58d1a104c99d3f84b87afe2de0f08b65fae Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
-Date: Thu, 10 Jul 2025 10:37:19 +0800
-Subject: [PATCH 1/4] Allow enable checksum through PRAGMA
+Date: Wed, 23 Jul 2025 17:45:44 +0800
+Subject: [PATCH 09/12] Allow enable checksum through PRAGMA
 
 ---
  ext/misc/cksumvfs.c | 189 ++++++++++++++++++++++++++++++++++++--------
@@ -386,7 +386,7 @@ index 6f4c55c..d7a2431 100644
    int (*register_cksumvfs)(const char *);
    int (*unregister_cksumvfs)();
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 3977ff6..be9f41d 100644
+index 4c538a1..c84348b 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -139875,6 +139875,10 @@ static int integrityCheckResultRow(Vdbe *v){
@@ -723,7 +723,7 @@ index 3977ff6..be9f41d 100644
  #endif /* #ifndef SQLITE_OMIT_WAL */
  }
  #endif /* SQLITE_OS_UNIX */
-@@ -258501,7 +258605,8 @@ static const sqlite3_api_routines_cksumvfs sqlite3CksumvfsApis = {
+@@ -258499,7 +258603,8 @@ static const sqlite3_api_routines_cksumvfs sqlite3CksumvfsApis = {
  };
  
  EXPORT_SYMBOLS const sqlite3_api_routines_cksumvfs *sqlite3_export_cksumvfs_symbols = &sqlite3CksumvfsApis;

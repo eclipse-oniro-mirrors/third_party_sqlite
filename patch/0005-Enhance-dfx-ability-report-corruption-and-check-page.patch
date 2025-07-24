@@ -1,6 +1,6 @@
-From 530b32340de30cfde81712585051e5b8b77ba095 Mon Sep 17 00:00:00 2001
+From 29cc811975af684969da4f057b6107fff4d6487f Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
-Date: Thu, 3 Jul 2025 22:55:22 +0800
+Date: Wed, 23 Jul 2025 17:41:39 +0800
 Subject: [PATCH 05/12] Enhance dfx ability, report corruption and check pages
 
 ---
