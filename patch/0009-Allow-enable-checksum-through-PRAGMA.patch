@@ -1,15 +1,15 @@
-From 2919f58d1a104c99d3f84b87afe2de0f08b65fae Mon Sep 17 00:00:00 2001
+From 90cffaced08c1214ad71a19837d04d70bea71e5d Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
-Date: Wed, 23 Jul 2025 17:45:44 +0800
-Subject: [PATCH 09/12] Allow enable checksum through PRAGMA
+Date: Sat, 26 Jul 2025 17:27:24 +0800
+Subject: [PATCH 1/4] Allow enable checksum through PRAGMA
 
 ---
- ext/misc/cksumvfs.c | 189 ++++++++++++++++++++++++++++++++++++--------
+ ext/misc/cksumvfs.c | 190 ++++++++++++++++++++++++++++++++++++--------
  src/sqlite3.c       | 175 ++++++++++++++++++++++++++++++++--------
- 2 files changed, 295 insertions(+), 69 deletions(-)
+ 2 files changed, 296 insertions(+), 69 deletions(-)
 
 diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
-index 6f4c55c..d7a2431 100644
+index 6f4c55c..8df1a5e 100644
 --- a/ext/misc/cksumvfs.c
 +++ b/ext/misc/cksumvfs.c
 @@ -73,12 +73,12 @@
@@ -250,7 +250,7 @@ index 6f4c55c..d7a2431 100644
      if( p->pPartner ){
        p->pPartner->verifyCksm = hasCorrectReserveSize;
        p->pPartner->computeCksm = hasCorrectReserveSize;
-+      if( p->disableVerify ) p->pPartner->verifyCksm = 0;
++      if( p->pPartner->disableVerify ) p->pPartner->verifyCksm = 0;
      }
    }
  }
@@ -362,11 +362,12 @@ index 6f4c55c..d7a2431 100644
        }
        azArg[0] = sqlite3_mprintf("%d",p->verifyCksm);
        return SQLITE_OK;
-@@ -729,9 +844,11 @@ static int cksmOpen(
+@@ -729,9 +844,12 @@ static int cksmOpen(
      p->pPartner->pPartner = p;
      p->isWal = 1;
      p->computeCksm = p->pPartner->computeCksm;
 +    p->verifyCksm = p->pPartner->verifyCksm;
++    p->disableVerify = p->pPartner->disableVerify;
    }else{
      p->isWal = 0;
      p->computeCksm = 0;
@@ -374,7 +375,7 @@ index 6f4c55c..d7a2431 100644
    }
    p->zFName = zName;
  cksm_open_done:
-@@ -902,6 +1019,10 @@ int sqlite3_cksumvfs_init(
+@@ -902,6 +1020,10 @@ int sqlite3_cksumvfs_init(
  #endif /* !defined(SQLITE_CKSUMVFS_STATIC) */
  
  #ifdef SQLITE_CKSUMVFS_STATIC
