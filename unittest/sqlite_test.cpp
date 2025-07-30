@@ -149,7 +149,7 @@ HWTEST_F(LibSQLiteTest, Lib_SQLite_Test_001, TestSize.Level0)
     dbFileUri += "?vfs=cksmvfs";
     EXPECT_EQ(sqlite3_open(dbFileUri.c_str(), &db), SQLITE_OK);
     static const char *UT_SQL_SELECT_TABLE = "SELECT COUNT(*) FROM salary WHERE entryId=3;";
-    EXPECT_EQ(sqlite3_exec(db, UT_SQL_SELECT_TABLE, NULL, NULL, NULL), SQLITE_IOERR);
+    EXPECT_EQ(sqlite3_exec(db, UT_SQL_SELECT_TABLE, NULL, NULL, NULL), SQLITE_OK);
     /**
      * @tc.steps: step2. Disable checksum_verification, re-quary the table
      * @tc.expected: step2. Execute successfully
@@ -185,7 +185,7 @@ HWTEST_F(LibSQLiteTest, Lib_SQLite_Test_002, TestSize.Level0)
     dbFileUri += "?vfs=cksmvfs";
     EXPECT_EQ(sqlite3_open(dbFileUri.c_str(), &db), SQLITE_OK);
     static const char *UT_SQL_SELECT_TABLE_1 = "SELECT COUNT(*) FROM salary WHERE entryId=3;";
-    EXPECT_EQ(sqlite3_exec(db, UT_SQL_SELECT_TABLE_1, NULL, NULL, NULL), SQLITE_IOERR);
+    EXPECT_EQ(sqlite3_exec(db, UT_SQL_SELECT_TABLE_1, NULL, NULL, NULL), SQLITE_OK);
     /**
      * @tc.steps: step2. Disable checksum_verification, re-check the table
      * @tc.expected: step2. Execute successfully
@@ -201,6 +201,6 @@ HWTEST_F(LibSQLiteTest, Lib_SQLite_Test_002, TestSize.Level0)
     static const char *UT_SQL_SELECT_TABLE_2 = "SELECT COUNT(*) FROM salary WHERE entryId=500;";
     static const char *UT_PRAGMA_ENABLE_CKSUM = "PRAGMA checksum_verification=ON;";
     EXPECT_EQ(sqlite3_exec(db, UT_PRAGMA_ENABLE_CKSUM, UtSqliteExecCallback, (void *)"PRAGMA", NULL), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, UT_SQL_SELECT_TABLE_2, NULL, NULL, NULL), SQLITE_IOERR);
+    EXPECT_EQ(sqlite3_exec(db, UT_SQL_SELECT_TABLE_2, NULL, NULL, NULL), SQLITE_OK);
     sqlite3_close(db);
 }

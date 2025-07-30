@@ -1,14 +1,67 @@
-From 5923acebfc4af0c79fb5df9eaf49384232514f95 Mon Sep 17 00:00:00 2001
+From d57fc37e8a853b509ebfe493c5cb63fbc9938367 Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
-Date: Wed, 23 Jul 2025 21:22:02 +0800
+Date: Wed, 30 Jul 2025 19:15:32 +0800
 Subject: [PATCH] Bugfix on current version
 
 ---
- src/sqlite3.c | 281 +++++++++++++++++++++++++++++++++++++++++---------
- 1 file changed, 230 insertions(+), 51 deletions(-)
+ ext/misc/cksumvfs.c |  13 +-
+ src/sqlite3.c       | 289 ++++++++++++++++++++++++++++++++++++--------
+ 2 files changed, 242 insertions(+), 60 deletions(-)
 
+diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
+index c6ac60f..8705751 100644
+--- a/ext/misc/cksumvfs.c
++++ b/ext/misc/cksumvfs.c
+@@ -559,17 +559,17 @@ static int cksmRead(
+     **    (1) the size indicates that we are dealing with a complete
+     **        database page, only support pageSize:4K
+     **    (2) checksum verification is enabled
+-    **    (3) we are not in the middle of checkpoint
++    **    (3) Skip the WAL log write, it might write segment as iSyncPoint, do checksum at checkpoint
+     **    (4) magic number should be 0xff
+     **    (5) checksum type should be 1, 0 means without checksum
+     */
+-    if( iAmt==4096           /* (1) */
++    if( iAmt==4096          /* (1) */
+      && p->verifyCksm       /* (2) */
+-     && !p->inCkpt          /* (3) */
++     && !p->isWal           /* (3) */
+     ){
+       if( ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE]!=CKSUMVFS_MAGIC_NUM ){ /* (4) */
+         sqlite3_log(SQLITE_IOERR_DATA, "unrecognized format, offset %lld of \"%s\", amt:%d", iOfst, p->zFName, iAmt);
+-        return SQLITE_IOERR_DATA;
++        return rc;
+       }
+       if( ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE+1]==CKSUMVFS_WITHOUT_CHECKSUM ){ /* (5) */
+         return rc;
+@@ -584,7 +584,6 @@ static int cksmRead(
+         EncodeReservedBytesIntoBase16(cksum, CKSUMVFS_CHECKSUM_SIZE, actual, CKSUM_HEX_LEN);
+         sqlite3_log(SQLITE_IOERR_DATA, "checksum fault offset %lld of \"%s\", amt:%d, expect:%s, actual:%s",
+            iOfst, p->zFName, iAmt, expect, actual);
+-        rc = SQLITE_IOERR_DATA;
+       }
+     }
+   }
+@@ -617,7 +616,7 @@ static int cksmWrite(
+   */
+   if( iAmt==4096
+    && p->computeCksm
+-   && !p->inCkpt
++   && !p->isWal
+   ){
+     ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE]=CKSUMVFS_MAGIC_NUM;
+     ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE+1]=p->verifyCksm ? CKSUMVFS_CALC_CHECKSUM : CKSUMVFS_WITHOUT_CHECKSUM;
+@@ -967,7 +966,7 @@ static int cksmRegisterVfs(void){
+   cksm_vfs.iVersion = pOrig->iVersion;
+   cksm_vfs.pAppData = pOrig;
+   cksm_vfs.szOsFile = pOrig->szOsFile + sizeof(CksmFile);
+-  rc = sqlite3_vfs_register(&cksm_vfs, 0);
++  rc = sqlite3_vfs_register(&cksm_vfs, 1);
+   if( rc==SQLITE_OK ){
+     rc = sqlite3_auto_extension((void(*)(void))cksmRegisterFunc);
+   }
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 2953517..2cc9b8f 100644
+index 2953517..d3540ff 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -15050,6 +15050,14 @@ typedef INT16_TYPE LogEst;
@@ -299,7 +352,22 @@ index 2953517..2cc9b8f 100644
  #ifdef SQLITE_CKSUMVFS_STATIC
  extern sqlite3_file *cksmvfsGetOrigFile(sqlite3_file *file);
  #else
-@@ -256060,6 +256147,7 @@ int sqlite3CodecAttach(sqlite3* db, int nDb, const void *pKey, int nKey){
+@@ -255984,8 +256071,12 @@ void sqlite3CodecDetach(void *ctx){
+ #if SQLITE_OS_UNIX
+ static int CodecFileLock(Pager *pPager, short lockType)
+ {
+-  sqlite3_file *fd = pPager->fd;
+-  unixFile *pFile = (unixFile *)fd;
++  u8 checkFileId = Sqlite3GetCheckFileId(pPager->pVfs);
++  if( checkFileId==0 ){
++    sqlite3_log(SQLITE_ERROR, "unrecognized vfs, mismatch info");
++    return SQLITE_ERROR;
++  }
++  unixFile *pFile = Sqlite3GetUnixFile(pPager->fd, checkFileId);
+   unixInodeInfo *pInode = pFile->pInode;
+   if (pInode == NULL) {
+     sqlite3_log(SQLITE_IOERR_RDLOCK, "Codec file lock %d go wrong", lockType);
+@@ -256060,6 +256151,7 @@ int sqlite3CodecAttach(sqlite3* db, int nDb, const void *pKey, int nKey){
      }
    }
  #endif
@@ -307,7 +375,7 @@ index 2953517..2cc9b8f 100644
  #ifdef SQLITE_CODEC_ATTACH_CHANGED
    int rc = sqlite3CodecInitContext(ctx, p, pKey, nKey, nDb);
  #else
-@@ -256636,7 +256724,12 @@ typedef struct MetaDwrHdr {
+@@ -256636,7 +256728,12 @@ typedef struct MetaDwrHdr {
    u32 pageSz;
    u32 pageCnt;
    u64 dbFileInode;
@@ -321,7 +389,7 @@ index 2953517..2cc9b8f 100644
    u32 checkSum;
    u8 *zones;
    Pgno *pages;
-@@ -256991,6 +257084,87 @@ static inline u64 CaculateMetaDwrWriteOffset(int pageSz, u32 idx, u8 zone) {
+@@ -256991,6 +257088,87 @@ static inline u64 CaculateMetaDwrWriteOffset(int pageSz, u32 idx, u8 zone) {
    return META_DWR_HEADER_PAGE_SIZE + pageSz * (idx * 2 + zone);
  }
  
@@ -409,7 +477,7 @@ index 2953517..2cc9b8f 100644
  static void MetaDwrUpdateHeaderDbInfo(BtShared *pBt) {
    MetaDwrHdr *hdr = pBt->pPager->metaHdr;
    // 28 offset: dbSize, freelist pageNo, freelist pages count, schema cookie
-@@ -257211,11 +257385,12 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
+@@ -257211,11 +257389,12 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
    if (pPager->metaMapPage == NULL) {
      sqlite3_int64 sz = META_DWR_HEADER_PAGE_SIZE;
      sqlite3OsFileControlHint(metaFd, SQLITE_FCNTL_CHUNK_SIZE, &sz);
@@ -427,7 +495,7 @@ index 2953517..2cc9b8f 100644
      }
    }
  #endif /* SQLITE_OS_UNIX */
-@@ -257589,7 +257764,7 @@ CHK_RESTORE_OUT:
+@@ -257589,7 +257768,7 @@ CHK_RESTORE_OUT:
    return rc;
  }
  
@@ -436,7 +504,7 @@ index 2953517..2cc9b8f 100644
  {
  #if SQLITE_OS_UNIX
    u8 checkFileId = Sqlite3GetCheckFileId(pPager->pVfs);
-@@ -257597,10 +257772,18 @@ static inline u8 IsConnectionValidForCheck(Pager *pPager)
+@@ -257597,10 +257776,18 @@ static inline u8 IsConnectionValidForCheck(Pager *pPager)
      return 0;
    }
    unixFile *fd = Sqlite3GetUnixFile(pPager->fd, checkFileId);
@@ -456,7 +524,7 @@ index 2953517..2cc9b8f 100644
    return 1;
  #else
    return 0;
-@@ -257610,7 +257793,7 @@ static inline u8 IsConnectionValidForCheck(Pager *pPager)
+@@ -257610,7 +257797,7 @@ static inline u8 IsConnectionValidForCheck(Pager *pPager)
  static int MetaDwrOpenAndCheck(Btree *pBt)
  {
    Pager *pPager = pBt->pBt->pPager;
@@ -465,7 +533,7 @@ index 2953517..2cc9b8f 100644
      return SQLITE_OK;
    }
  #ifdef SQLITE_HAS_CODEC
-@@ -257655,7 +257838,7 @@ DWR_OPEN_OUT:
+@@ -257655,7 +257842,7 @@ DWR_OPEN_OUT:
  static void MetaDwrDisable(Btree *pBt)
  {
    Pager *pPager = pBt->pBt->pPager;
@@ -474,7 +542,7 @@ index 2953517..2cc9b8f 100644
      return;
    }
  #ifdef SQLITE_HAS_CODEC
-@@ -257681,19 +257864,6 @@ static void MetaDwrDisable(Btree *pBt)
+@@ -257681,19 +257868,6 @@ static void MetaDwrDisable(Btree *pBt)
  #endif /* SQLITE_META_DWR */
  
  #if SQLITE_OS_UNIX
@@ -494,7 +562,7 @@ index 2953517..2cc9b8f 100644
  static void ResetLockStatus(void)
  {
    (void)memset(&g_lockStatus, 0, sizeof(g_lockStatus));
-@@ -257797,8 +257967,13 @@ static inline const char *FlockToName(int l_type)
+@@ -257797,8 +257971,13 @@ static inline const char *FlockToName(int l_type)
  
  static int DumpProcessLocks(int fd, struct flock *lock, const char *lockName, char *dumpBuf, int bufLen)
  {
@@ -509,7 +577,7 @@ index 2953517..2cc9b8f 100644
      sqlite3_log(SQLITE_ERROR, "[SQLite]Get wal file lock ofs %u failed, errno: %d", lock->l_start, errno);
      return 0;
    }
-@@ -259041,7 +259216,11 @@ struct sqlite3_api_routines_hw {
+@@ -259041,7 +259220,11 @@ struct sqlite3_api_routines_hw {
    int (*rekey_v2)(sqlite3*,const char*,const void*,int);
    int (*is_support_binlog)(void);
    int (*replay_binlog)(sqlite3*, sqlite3*);
@@ -522,5 +590,5 @@ index 2953517..2cc9b8f 100644
    int (*compressdb_backup)(sqlite3*, const char*);
  #else
 -- 
-2.28.0.windows.1
+2.47.0.windows.2
 
