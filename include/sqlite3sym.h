@@ -56,7 +56,7 @@ struct sqlite3_api_routines_hw {
   int (*key_v2)(sqlite3*,const char*,const void*,int);
   int (*rekey)(sqlite3*,const void*,int);
   int (*rekey_v2)(sqlite3*,const char*,const void*,int);
-  int (*is_support_binlog)(void);
+  int (*is_support_binlog)(const char*);
   int (*replay_binlog)(sqlite3*, sqlite3*);
   int (*clean_binlog)(sqlite3*, BinlogFileCleanModeE);
   int (*compressdb_backup)(sqlite3*, const char*);
