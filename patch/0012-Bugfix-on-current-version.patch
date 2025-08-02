@@ -1,12 +1,12 @@
-From d57fc37e8a853b509ebfe493c5cb63fbc9938367 Mon Sep 17 00:00:00 2001
+From 7aa46d5a0145d24168cb25d0d8d5ce78b259ec63 Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
-Date: Wed, 30 Jul 2025 19:15:32 +0800
+Date: Fri, 1 Aug 2025 11:03:54 +0800
 Subject: [PATCH] Bugfix on current version
 
 ---
  ext/misc/cksumvfs.c |  13 +-
- src/sqlite3.c       | 289 ++++++++++++++++++++++++++++++++++++--------
- 2 files changed, 242 insertions(+), 60 deletions(-)
+ src/sqlite3.c       | 297 +++++++++++++++++++++++++++++++++++---------
+ 2 files changed, 247 insertions(+), 63 deletions(-)
 
 diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
 index c6ac60f..8705751 100644
@@ -61,9 +61,18 @@ index c6ac60f..8705751 100644
      rc = sqlite3_auto_extension((void(*)(void))cksmRegisterFunc);
    }
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 2953517..d3540ff 100644
+index 2953517..1e8fc0f 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
+@@ -5363,7 +5363,7 @@ SQLITE_API int sqlite3_set_droptable_handle(sqlite3*, void (*xFunc)(sqlite3*,con
+ #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
+ 
+ #ifdef SQLITE_ENABLE_BINLOG
+-SQLITE_API int sqlite3_is_support_binlog(void);
++SQLITE_API int sqlite3_is_support_binlog(const char *notUsed);
+ 
+ SQLITE_API int sqlite3_replay_binlog(sqlite3 *srcDb, sqlite3 *destDb);
+ 
 @@ -15050,6 +15050,14 @@ typedef INT16_TYPE LogEst;
  #define LARGEST_UINT64 (0xffffffff|(((u64)0xffffffff)<<32))
  #define SMALLEST_INT64 (((i64)-1) - LARGEST_INT64)
@@ -175,7 +184,18 @@ index 2953517..d3540ff 100644
          rc = SQLITE_CORRUPT_BKPT;
          goto page1_init_failed;
        }else{
-@@ -116854,7 +116878,9 @@ static void findOrCreateAggInfoColumn(
+@@ -92357,8 +92381,9 @@ SQLITE_API int sqlite3_set_droptable_handle(sqlite3 *db, void (*xFunc)(sqlite3*,
+ #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
+ 
+ #ifdef SQLITE_ENABLE_BINLOG
+-SQLITE_API int sqlite3_is_support_binlog(void)
++SQLITE_API int sqlite3_is_support_binlog(const char *notUsed)
+ {
++  (void)notUsed;
+   return SQLITE_ERROR;
+ }
+ 
+@@ -116854,7 +116879,9 @@ static void findOrCreateAggInfoColumn(
  ){
    struct AggInfo_col *pCol;
    int k;
@@ -185,7 +205,7 @@ index 2953517..d3540ff 100644
    assert( pAggInfo->iFirstReg==0 );
    pCol = pAggInfo->aCol;
    for(k=0; k<pAggInfo->nColumn; k++, pCol++){
-@@ -116872,6 +116898,10 @@ static void findOrCreateAggInfoColumn(
+@@ -116872,6 +116899,10 @@ static void findOrCreateAggInfoColumn(
      assert( pParse->db->mallocFailed );
      return;
    }
@@ -196,7 +216,7 @@ index 2953517..d3540ff 100644
    pCol = &pAggInfo->aCol[k];
    assert( ExprUseYTab(pExpr) );
    pCol->pTab = pExpr->y.pTab;
-@@ -116905,6 +116935,7 @@ fix_up_expr:
+@@ -116905,6 +116936,7 @@ fix_up_expr:
    if( pExpr->op==TK_COLUMN ){
      pExpr->op = TK_AGG_COLUMN;
    }
@@ -204,7 +224,7 @@ index 2953517..d3540ff 100644
    pExpr->iAgg = (i16)k;
  }
  
-@@ -116988,13 +117019,19 @@ static int analyzeAggregate(Walker *pWalker, Expr *pExpr){
+@@ -116988,13 +117020,19 @@ static int analyzeAggregate(Walker *pWalker, Expr *pExpr){
          ** function that is already in the pAggInfo structure
          */
          struct AggInfo_func *pItem = pAggInfo->aFunc;
@@ -225,7 +245,7 @@ index 2953517..d3540ff 100644
            /* pExpr is original.  Make a new entry in pAggInfo->aFunc[]
            */
            u8 enc = ENC(pParse->db);
-@@ -117046,6 +117083,7 @@ static int analyzeAggregate(Walker *pWalker, Expr *pExpr){
+@@ -117046,6 +117084,7 @@ static int analyzeAggregate(Walker *pWalker, Expr *pExpr){
          */
          assert( !ExprHasProperty(pExpr, EP_TokenOnly|EP_Reduced) );
          ExprSetVVAProperty(pExpr, EP_NoReduce);
@@ -233,7 +253,7 @@ index 2953517..d3540ff 100644
          pExpr->iAgg = (i16)i;
          pExpr->pAggInfo = pAggInfo;
          return WRC_Prune;
-@@ -121758,8 +121796,8 @@ static void attachFunc(
+@@ -121758,8 +121797,8 @@ static void attachFunc(
    if( rc==SQLITE_OK ){
      extern int sqlite3CodecAttach(sqlite3*, int, const void*, int);
      extern void sqlite3CodecGetKey(sqlite3*, int, void**, int*);
@@ -244,7 +264,7 @@ index 2953517..d3540ff 100644
      int t = sqlite3_value_type(argv[2]);
      switch( t ){
        case SQLITE_INTEGER:
-@@ -121776,14 +121814,7 @@ static void attachFunc(
+@@ -121776,14 +121815,7 @@ static void attachFunc(
          break;
  
        case SQLITE_NULL:
@@ -260,7 +280,7 @@ index 2953517..d3540ff 100644
          break;
      }
    }
-@@ -184151,10 +184182,12 @@ opendb_out:
+@@ -184151,10 +184183,12 @@ opendb_out:
      db->eOpenState = SQLITE_STATE_SICK;
    }
  #ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
@@ -277,7 +297,7 @@ index 2953517..d3540ff 100644
  #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
  #ifdef SQLITE_ENABLE_BINLOG
    sqlite3BinlogReset(db);
-@@ -204600,6 +204633,39 @@ static int fts3ExprTermOffsetInit(Fts3Expr *pExpr, int iPhrase, void *ctx){
+@@ -204600,6 +204634,39 @@ static int fts3ExprTermOffsetInit(Fts3Expr *pExpr, int iPhrase, void *ctx){
    return rc;
  }
  
@@ -317,7 +337,7 @@ index 2953517..d3540ff 100644
  /*
  ** Implementation of offsets() function.
  */
-@@ -204636,6 +204702,12 @@ SQLITE_PRIVATE void sqlite3Fts3Offsets(
+@@ -204636,6 +204703,12 @@ SQLITE_PRIVATE void sqlite3Fts3Offsets(
    sCtx.iDocid = pCsr->iPrevId;
    sCtx.pCsr = pCsr;
  
@@ -330,7 +350,7 @@ index 2953517..d3540ff 100644
    /* Loop through the table columns, appending offset information to
    ** string-buffer res for each column.
    */
-@@ -254823,6 +254895,21 @@ SQLITE_API int sqlite3_stmt_init(
+@@ -254823,6 +254896,21 @@ SQLITE_API int sqlite3_stmt_init(
  SQLITE_API const char *sqlite3_sourceid(void){ return SQLITE_SOURCE_ID; }
  /************************** End of sqlite3.c ******************************/
  
@@ -352,7 +372,7 @@ index 2953517..d3540ff 100644
  #ifdef SQLITE_CKSUMVFS_STATIC
  extern sqlite3_file *cksmvfsGetOrigFile(sqlite3_file *file);
  #else
-@@ -255984,8 +256071,12 @@ void sqlite3CodecDetach(void *ctx){
+@@ -255984,8 +256072,12 @@ void sqlite3CodecDetach(void *ctx){
  #if SQLITE_OS_UNIX
  static int CodecFileLock(Pager *pPager, short lockType)
  {
@@ -367,7 +387,7 @@ index 2953517..d3540ff 100644
    unixInodeInfo *pInode = pFile->pInode;
    if (pInode == NULL) {
      sqlite3_log(SQLITE_IOERR_RDLOCK, "Codec file lock %d go wrong", lockType);
-@@ -256060,6 +256151,7 @@ int sqlite3CodecAttach(sqlite3* db, int nDb, const void *pKey, int nKey){
+@@ -256060,6 +256152,7 @@ int sqlite3CodecAttach(sqlite3* db, int nDb, const void *pKey, int nKey){
      }
    }
  #endif
@@ -375,7 +395,7 @@ index 2953517..d3540ff 100644
  #ifdef SQLITE_CODEC_ATTACH_CHANGED
    int rc = sqlite3CodecInitContext(ctx, p, pKey, nKey, nDb);
  #else
-@@ -256636,7 +256728,12 @@ typedef struct MetaDwrHdr {
+@@ -256636,7 +256729,12 @@ typedef struct MetaDwrHdr {
    u32 pageSz;
    u32 pageCnt;
    u64 dbFileInode;
@@ -389,7 +409,7 @@ index 2953517..d3540ff 100644
    u32 checkSum;
    u8 *zones;
    Pgno *pages;
-@@ -256991,6 +257088,87 @@ static inline u64 CaculateMetaDwrWriteOffset(int pageSz, u32 idx, u8 zone) {
+@@ -256991,6 +257089,88 @@ static inline u64 CaculateMetaDwrWriteOffset(int pageSz, u32 idx, u8 zone) {
    return META_DWR_HEADER_PAGE_SIZE + pageSz * (idx * 2 + zone);
  }
  
@@ -415,7 +435,7 @@ index 2953517..d3540ff 100644
 +  if (hdr == NULL || !hdr->checkFileId) {
 +    return;
 +  }
-+  unixFile *fd = (unixFile *)pPager->fd;
++  unixFile *fd = Sqlite3GetUnixFile(pPager->fd, hdr->checkFileId);
 +  if (fd == NULL || fd->pInode == NULL) {
 +    sqlite3_log(SQLITE_WARNING_DUMP, "MetaDwr dump invalid db fd");
 +    return;
@@ -459,6 +479,7 @@ index 2953517..d3540ff 100644
 +  if (!hdr->checkFileId) {
 +    return;
 +  }
++  unixFile *fd = Sqlite3GetUnixFile(pPager->fd, hdr->checkFileId);
 +  if (fd == NULL || fd->pShm == NULL || fd->pShm->pShmNode == NULL || fd->pShm->pShmNode->hShm < 0) {
 +    sqlite3_log(SQLITE_WARNING_DUMP, "update meta header invalid shm fd");
 +    return;
@@ -477,7 +498,7 @@ index 2953517..d3540ff 100644
  static void MetaDwrUpdateHeaderDbInfo(BtShared *pBt) {
    MetaDwrHdr *hdr = pBt->pPager->metaHdr;
    // 28 offset: dbSize, freelist pageNo, freelist pages count, schema cookie
-@@ -257211,11 +257389,12 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
+@@ -257211,11 +257391,12 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
    if (pPager->metaMapPage == NULL) {
      sqlite3_int64 sz = META_DWR_HEADER_PAGE_SIZE;
      sqlite3OsFileControlHint(metaFd, SQLITE_FCNTL_CHUNK_SIZE, &sz);
@@ -495,7 +516,7 @@ index 2953517..d3540ff 100644
      }
    }
  #endif /* SQLITE_OS_UNIX */
-@@ -257589,7 +257768,7 @@ CHK_RESTORE_OUT:
+@@ -257589,7 +257770,7 @@ CHK_RESTORE_OUT:
    return rc;
  }
  
@@ -504,7 +525,7 @@ index 2953517..d3540ff 100644
  {
  #if SQLITE_OS_UNIX
    u8 checkFileId = Sqlite3GetCheckFileId(pPager->pVfs);
-@@ -257597,10 +257776,18 @@ static inline u8 IsConnectionValidForCheck(Pager *pPager)
+@@ -257597,10 +257778,18 @@ static inline u8 IsConnectionValidForCheck(Pager *pPager)
      return 0;
    }
    unixFile *fd = Sqlite3GetUnixFile(pPager->fd, checkFileId);
@@ -524,7 +545,7 @@ index 2953517..d3540ff 100644
    return 1;
  #else
    return 0;
-@@ -257610,7 +257797,7 @@ static inline u8 IsConnectionValidForCheck(Pager *pPager)
+@@ -257610,7 +257799,7 @@ static inline u8 IsConnectionValidForCheck(Pager *pPager)
  static int MetaDwrOpenAndCheck(Btree *pBt)
  {
    Pager *pPager = pBt->pBt->pPager;
@@ -533,7 +554,7 @@ index 2953517..d3540ff 100644
      return SQLITE_OK;
    }
  #ifdef SQLITE_HAS_CODEC
-@@ -257655,7 +257842,7 @@ DWR_OPEN_OUT:
+@@ -257655,7 +257844,7 @@ DWR_OPEN_OUT:
  static void MetaDwrDisable(Btree *pBt)
  {
    Pager *pPager = pBt->pBt->pPager;
@@ -542,7 +563,7 @@ index 2953517..d3540ff 100644
      return;
    }
  #ifdef SQLITE_HAS_CODEC
-@@ -257681,19 +257868,6 @@ static void MetaDwrDisable(Btree *pBt)
+@@ -257681,19 +257870,6 @@ static void MetaDwrDisable(Btree *pBt)
  #endif /* SQLITE_META_DWR */
  
  #if SQLITE_OS_UNIX
@@ -562,7 +583,7 @@ index 2953517..d3540ff 100644
  static void ResetLockStatus(void)
  {
    (void)memset(&g_lockStatus, 0, sizeof(g_lockStatus));
-@@ -257797,8 +257971,13 @@ static inline const char *FlockToName(int l_type)
+@@ -257797,8 +257973,13 @@ static inline const char *FlockToName(int l_type)
  
  static int DumpProcessLocks(int fd, struct flock *lock, const char *lockName, char *dumpBuf, int bufLen)
  {
@@ -577,9 +598,12 @@ index 2953517..d3540ff 100644
      sqlite3_log(SQLITE_ERROR, "[SQLite]Get wal file lock ofs %u failed, errno: %d", lock->l_start, errno);
      return 0;
    }
-@@ -259041,7 +259220,11 @@ struct sqlite3_api_routines_hw {
+@@ -259039,9 +259220,13 @@ struct sqlite3_api_routines_hw {
+   int (*key_v2)(sqlite3*,const char*,const void*,int);
+   int (*rekey)(sqlite3*,const void*,int);
    int (*rekey_v2)(sqlite3*,const char*,const void*,int);
-   int (*is_support_binlog)(void);
+-  int (*is_support_binlog)(void);
++  int (*is_support_binlog)(const char*);
    int (*replay_binlog)(sqlite3*, sqlite3*);
 +#ifdef SQLITE_ENABLE_BINLOG
    int (*clean_binlog)(sqlite3*, BinlogFileCleanModeE);
