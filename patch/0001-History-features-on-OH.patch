@@ -1,7 +1,7 @@
 From 243b21cbaa3d360fbdfb91ea3e18398125129167 Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
 Date: Wed, 23 Jul 2025 17:38:02 +0800
-Subject: [PATCH 01/12] History features on OH
+Subject: [PATCH 01/12] History features of sqlite
 
 ---
  src/sqlite3.c | 2451 ++++++++++++++++++++++++++++++++++++++++++++++++-
@@ -27,7 +27,7 @@ index 730b247..b132937 100644
  );
  SQLITE_API void sqlite3_free_table(char **result);
  
-+// hw export the symbols
++// export the symbols
 +#ifdef SQLITE_EXPORT_SYMBOLS
 +#if defined(__GNUC__)
 +#  define EXPORT_SYMBOLS  __attribute__ ((visibility ("default")))
@@ -2999,9 +2999,9 @@ index 730b247..b132937 100644
 +/************** End file hw_codec.c *****************************************/
 +#endif
 +
-+// hw export the symbols
++// export the symbols
 +#ifdef SQLITE_EXPORT_SYMBOLS
-+struct sqlite3_api_routines_hw {
++struct sqlite3_api_routines_extra {
 +  int (*initialize)();
 +  int (*config)(int,...);
 +  int (*key)(sqlite3*,const void*,int);
@@ -3010,8 +3010,8 @@ index 730b247..b132937 100644
 +  int (*rekey_v2)(sqlite3*,const char*,const void*,int);
 +};
 +
-+typedef struct sqlite3_api_routines_hw sqlite3_api_routines_hw;
-+static const sqlite3_api_routines_hw sqlite3HwApis = {
++typedef struct sqlite3_api_routines_extra sqlite3_api_routines_extra;
++static const sqlite3_api_routines_extra sqlite3HwApis = {
 +  sqlite3_initialize,
 +  sqlite3_config,
 +#ifdef SQLITE_HAS_CODEC
@@ -3028,8 +3028,8 @@ index 730b247..b132937 100644
 +};
 +
 +EXPORT_SYMBOLS const sqlite3_api_routines *sqlite3_export_symbols = &sqlite3Apis;
-+EXPORT_SYMBOLS const sqlite3_api_routines_hw *sqlite3_export_hw_symbols = &sqlite3HwApis;
-+/************** End hw export the symbols *****************************************/
++EXPORT_SYMBOLS const sqlite3_api_routines_extra *sqlite3_export_extra_symbols = &sqlite3HwApis;
++/************** End export the symbols *****************************************/
 +#endif /* SQLITE_EXPORT_SYMBOLS */
 -- 
 2.47.0.windows.2

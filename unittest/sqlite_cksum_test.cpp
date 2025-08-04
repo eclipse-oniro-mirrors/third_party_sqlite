@@ -29,7 +29,7 @@
 #include "sqlite3sym.h"
 
 using namespace testing::ext;
-using namespace OHOS::SQLiteTest;
+using namespace UnitTest::SQLiteTest;
 
 #define TEST_DIR "./sqlitecksumtest"
 #define TEST_DB (TEST_DIR "/test.db")

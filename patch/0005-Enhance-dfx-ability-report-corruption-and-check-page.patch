@@ -186,7 +186,7 @@ index 0000000..6f4c55c
 +#include <string.h>
 +#include <assert.h>
 +
-+// hw export the symbols
++// export the symbols
 +#ifdef SQLITE_EXPORT_SYMBOLS
 +#if defined(__GNUC__)
 +#  define EXPORT_SYMBOLS  __attribute__ ((visibility ("default")))
@@ -2383,7 +2383,7 @@ index dc09c3c..e7e8b3c 100644
  
 @@ -256317,6 +256915,26 @@ static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime
  
- // hw export the symbols
+ // export the symbols
  #ifdef SQLITE_EXPORT_SYMBOLS
 +#ifndef SQLITE_CKSUMVFS_STATIC
 +int sqlite3_register_cksumvfs(const char *NotUsed){
@@ -2405,7 +2405,7 @@ index dc09c3c..e7e8b3c 100644
 +
 +EXPORT_SYMBOLS const sqlite3_api_routines_cksumvfs *sqlite3_export_cksumvfs_symbols = &sqlite3CksumvfsApis;
 +#endif
- struct sqlite3_api_routines_hw {
+ struct sqlite3_api_routines_extra {
    int (*initialize)();
    int (*config)(int,...);
 -- 

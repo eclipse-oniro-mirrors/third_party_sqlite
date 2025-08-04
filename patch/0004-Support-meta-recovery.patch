@@ -775,7 +775,7 @@ index 6f423a9..dc09c3c 100644
 +  if (!exists && !openCreate) {
 +    return SQLITE_PERM;
 +  }
-+#ifdef HARMONY_OS
++#ifdef OS_FEATURE
 +  // check if the path have enough permission
 +  rc = osAccess(metaPath, W_OK|R_OK);
 +  if (rc == 0 || errno == ENOENT) {

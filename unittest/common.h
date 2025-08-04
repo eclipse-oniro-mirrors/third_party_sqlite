@@ -15,7 +15,7 @@
 #ifndef COMMON_H
 #define COMMON_H
 
-namespace OHOS {
+namespace UnitTest {
 namespace SQLiteTest {
 
 #define TEST_STATUS_OK 0
@@ -28,6 +28,6 @@ public:
     static bool IsFileExist(const char *fullPath);
 };
 }  // namespace SQLiteTest
-}  // namespace OHOS
+}  // namespace UnitTest
 
 #endif /* COMMON_H */

@@ -26,7 +26,7 @@
 
 using namespace std;
 
-namespace OHOS {
+namespace UnitTest {
 namespace SQLiteTest {
 int Common::RemoveDir(const char *dir)
 {
@@ -98,4 +98,4 @@ bool Common::IsFileExist(const char *fullPath)
 }
 
 }  // namespace SQLiteTest
-}  // namespace OHOS
+}  // namespace UnitTest

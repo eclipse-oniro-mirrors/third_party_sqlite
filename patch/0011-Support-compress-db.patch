@@ -112,7 +112,7 @@ index 0000000..90a3f44
 +#include <dlfcn.h>
 +#endif
 +
-+// hw export the symbols
++// export the symbols
 +#ifdef SQLITE_EXPORT_SYMBOLS
 +#if defined(__GNUC__)
 +#  define EXPORT_SYMBOLS  __attribute__ ((visibility ("default")))
@@ -2071,7 +2071,7 @@ index c84348b..1abddb3 100644
      return;
    }
  #ifndef SQLITE_OMIT_WAL
-@@ -258615,6 +259042,11 @@ struct sqlite3_api_routines_hw {
+@@ -258615,6 +259042,11 @@ struct sqlite3_api_routines_extra {
    int (*is_support_binlog)(void);
    int (*replay_binlog)(sqlite3*, sqlite3*);
    int (*clean_binlog)(sqlite3*, BinlogFileCleanModeE);
@@ -2082,8 +2082,8 @@ index c84348b..1abddb3 100644
 +#endif /* SQLITE_ENABLE_PAGE_COMPRESS */
  };
  
- typedef struct sqlite3_api_routines_hw sqlite3_api_routines_hw;
-@@ -258641,6 +259073,11 @@ static const sqlite3_api_routines_hw sqlite3HwApis = {
+ typedef struct sqlite3_api_routines_extra sqlite3_api_routines_extra;
+@@ -258641,6 +259073,11 @@ static const sqlite3_api_routines_extra sqlite3HwApis = {
    0,
    0,
  #endif/* SQLITE_ENABLE_BINLOG */
