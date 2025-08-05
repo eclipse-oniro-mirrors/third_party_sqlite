@@ -18,6 +18,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <fcntl.h>
 #include <fstream>
 #include <random>
 #include <string>
@@ -45,11 +46,14 @@ public:
     void SetUp();
     void TearDown();
 
-    static void UtSqliteLogPrint(const void *data, int err, const char *msg);
+    static void UtSqliteLogPrint(void *data, int err, const char *msg);
     static void UtBackupDatabase(sqlite3 *srcDb, sqlite3 *destDb);
-    static void UtPresetDb(const std::string &dbFile, bool enableCksum);
+    static void UtPresetDb(const std::string &dbFile, const std::string &vfsStr);
     static int UtSqliteExecCallback(void *data, int argc, char **argv, char **azColName);
+    static int hitCksmFault_;
 };
+
+int SQLiteCksumTest::hitCksmFault_ = 0;
 
 void SQLiteCksumTest::SetUpTestCase(void)
 {
@@ -63,7 +67,7 @@ void SQLiteCksumTest::TearDownTestCase(void)
 
 void SQLiteCksumTest::SetUp(void)
 {
-    sqlite3_config(SQLITE_CONFIG_LOG, &SQLiteCksumTest::UtSqliteLogPrint, NULL);
+    sqlite3_config(SQLITE_CONFIG_LOG, &SQLiteCksumTest::UtSqliteLogPrint, nullptr);
     EXPECT_EQ(sqlite3_register_cksumvfs(NULL), SQLITE_OK);
 }
 
@@ -73,8 +77,13 @@ void SQLiteCksumTest::TearDown(void)
     sqlite3_config(SQLITE_CONFIG_LOG, NULL, NULL);
 }
 
-void SQLiteCksumTest::UtSqliteLogPrint(const void *data, int err, const char *msg)
+void SQLiteCksumTest::UtSqliteLogPrint(void *data, int err, const char *msg)
 {
+    std::string errStr = msg;
+    if (errStr.find("checksum fault") != std::string::npos) {
+        std::cout << "Hit checksum fault!!!" << std::endl;
+        hitCksmFault_++;
+    }
     std::cout << "SQLiteCksumTest xLog err:" << err << ", msg:" << msg << std::endl;
 }
 
@@ -97,22 +106,27 @@ void SQLiteCksumTest::UtBackupDatabase(sqlite3 *srcDb, sqlite3 *destDb)
     sqlite3_backup_finish(back);
 }
 
-void SQLiteCksumTest::UtPresetDb(const std::string &dbFile, bool enableCksum)
+void SQLiteCksumTest::UtPresetDb(const std::string &dbFile, const std::string &vfsStr)
 {
     /**
      * @tc.steps: step1. Prepare db used to simulate corrupted
      * @tc.expected: step1. Execute successfully
      */
     sqlite3 *db = NULL;
-    std::string dbFileUri = enableCksum ? "file:" : "";
+    std::string dbFileUri = vfsStr.empty() ? "" : "file:";
     dbFileUri += dbFile;
-    dbFileUri += enableCksum ? "?vfs=cksmvfs" : "";
+    if (vfsStr.empty()) {
+        dbFileUri += "";
+    } else {
+        dbFileUri += "?vfs=";
+        dbFileUri += vfsStr;
+    }
     EXPECT_EQ(sqlite3_open(dbFileUri.c_str(), &db), SQLITE_OK);
     /**
      * @tc.steps: step1. Enable cksumvfs using PRAGMA checksum_persist_enable,
      * @tc.expected: step1. Execute successfully
      */
-    if (enableCksum) {
+    if (!vfsStr.empty()) {
         EXPECT_EQ(sqlite3_exec(db, "PRAGMA checksum_persist_enable=ON;", NULL, NULL, NULL), SQLITE_OK);
     }
     EXPECT_EQ(sqlite3_exec(db, "PRAGMA meta_double_write=enabled;", NULL, NULL, NULL), SQLITE_OK);
@@ -162,7 +176,7 @@ HWTEST_F(SQLiteCksumTest, CksumTest001, TestSize.Level0)
      * @tc.expected: step1. Execute successfully
      */
     std::string dbPath = TEST_DIR "/test001.db";
-    UtPresetDb(dbPath, false);
+    UtPresetDb(dbPath, "");
     sqlite3 *db = nullptr;
     EXPECT_EQ(sqlite3_open(dbPath.c_str(), &db),SQLITE_OK);
 
@@ -181,6 +195,7 @@ HWTEST_F(SQLiteCksumTest, CksumTest001, TestSize.Level0)
     EXPECT_EQ(sqlite3_exec(slaveDb, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL), SQLITE_OK);
     UtBackupDatabase(db, slaveDb);
     sqlite3_close(slaveDb);
+    sqlite3_close(db);
     /**
      * @tc.steps: step3. Open slave db, make an integrity check
      * @tc.expected: step3. Execute successfully
@@ -189,6 +204,56 @@ HWTEST_F(SQLiteCksumTest, CksumTest001, TestSize.Level0)
     EXPECT_EQ(sqlite3_exec(slaveDb, "PRAGMA integrity_check;", UtSqliteExecCallback, (void *)"PRAGMA", nullptr),
         SQLITE_OK);
     sqlite3_close(slaveDb);
+}
+
+static int UtQueryResult(void *data, int argc, char **argv, char **azColName)
+{
+    int count = *static_cast<int *>(data);
+    *static_cast<int *>(data) = count + 1;
+    // 2 means 2 fields, entryId, entryName
+    EXPECT_EQ(argc, 2);
+    return SQLITE_OK;
+}
+
+static void UtDestroyFile(const std::string &dbPath, int offset, const std::string replaceStr)
+{
+    int fd = open(dbPath.c_str(), O_WRONLY | O_CREAT);
+    lseek(fd, offset, SEEK_SET);
+    write(fd, replaceStr.c_str(), replaceStr.size());
+    close(fd);
+}
+
+/**
+ * @tc.name: CksumTest002
+ * @tc.desc: Test to enable cksum on compress db
+ * @tc.type: FUNC
+ */
+HWTEST_F(SQLiteCksumTest, CksumTest002, TestSize.Level0)
+{
+    /**
+     * @tc.steps: step1. Create a new db as main, enable compress
+     * @tc.expected: step1. Execute successfully
+     */
+    std::string dbPath = TEST_DIR "/test002.db";
+    UtPresetDb(dbPath, "compressvfs");
+    /**
+     * @tc.steps: step2. Destory the db file to simulate corrupted
+     * @tc.expected: step2. Execute successfully
+     */
+    // 2 * 4096 + 512 means the corrupted position, which locate on the third page, 512 bytes offset
+    UtDestroyFile(dbPath, 2 * 4096 + 512, "123");
+    /**
+     * @tc.steps: step3. Reverse the table to get the info, check log info, should print "checksum fault"
+     * @tc.expected: step3. Execute successfully
+     */
+    hitCksmFault_ = 0;
+    sqlite3 *db = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READWRITE, "compressvfs"),SQLITE_OK);
+    int count = 0;
+    EXPECT_EQ(sqlite3_exec(db, "SELECT entryId, entryName FROM salary;", UtQueryResult, &count, nullptr), SQLITE_OK);
+    EXPECT_EQ(hitCksmFault_, 1);
+    EXPECT_EQ(count, TEST_PRESET_DATA_COUNT);
+    sqlite3_close_v2(db);
 }
 
 }  // namespace Test
