@@ -598,7 +598,7 @@ index 2953517..1e8fc0f 100644
      sqlite3_log(SQLITE_ERROR, "[SQLite]Get wal file lock ofs %u failed, errno: %d", lock->l_start, errno);
      return 0;
    }
-@@ -259039,9 +259220,13 @@ struct sqlite3_api_routines_hw {
+@@ -259039,9 +259220,13 @@ struct sqlite3_api_routines_extra {
    int (*key_v2)(sqlite3*,const char*,const void*,int);
    int (*rekey)(sqlite3*,const void*,int);
    int (*rekey_v2)(sqlite3*,const char*,const void*,int);

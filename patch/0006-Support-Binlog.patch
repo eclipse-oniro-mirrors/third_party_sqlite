@@ -1752,10 +1752,10 @@ index e7e8b3c..3f1195a 100644
 +/************** End of binlog implement ************************************/
 +#endif /* SQLITE_ENABLE_BINLOG */
 +
- // hw export the symbols
+ // export the symbols
  #ifdef SQLITE_EXPORT_SYMBOLS
  #ifndef SQLITE_CKSUMVFS_STATIC
-@@ -256942,6 +258420,9 @@ struct sqlite3_api_routines_hw {
+@@ -256942,6 +258420,9 @@ struct sqlite3_api_routines_extra {
    int (*key_v2)(sqlite3*,const char*,const void*,int);
    int (*rekey)(sqlite3*,const void*,int);
    int (*rekey_v2)(sqlite3*,const char*,const void*,int);
@@ -1764,8 +1764,8 @@ index e7e8b3c..3f1195a 100644
 +  int (*clean_binlog)(sqlite3*, BinlogFileCleanModeE);
  };
  
- typedef struct sqlite3_api_routines_hw sqlite3_api_routines_hw;
-@@ -256952,13 +258433,22 @@ static const sqlite3_api_routines_hw sqlite3HwApis = {
+ typedef struct sqlite3_api_routines_extra sqlite3_api_routines_extra;
+@@ -256952,13 +258433,22 @@ static const sqlite3_api_routines_extra sqlite3HwApis = {
    sqlite3_key,
    sqlite3_key_v2,
    sqlite3_rekey,

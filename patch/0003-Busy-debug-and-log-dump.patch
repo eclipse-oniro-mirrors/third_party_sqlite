@@ -92,7 +92,7 @@ index efc4cd4..6f423a9 100644
  #define F2FS_FEATURE_ATOMIC_WRITE 0x0004
  #endif /* __linux__ */
  
-+#ifdef HARMONY_OS
++#ifdef OS_FEATURE
 +#define HMFS_MONITOR_FL 0x00000002
 +#define HMFS_IOCTL_HW_GET_FLAGS _IOR(0xf5, 70, unsigned int)
 +#define HMFS_IOCTL_HW_SET_FLAGS _IOR(0xf5, 71, unsigned int)
@@ -114,7 +114,7 @@ index efc4cd4..6f423a9 100644
 +    }
 +}
 +
-+#endif /* HARMONY_OS */
++#endif /* OS_FEATURE */
  
  /*
  ** Different Unix systems declare open() in different ways.  Same use
@@ -129,11 +129,11 @@ index efc4cd4..6f423a9 100644
 +    fdsan_exchange_owner_tag(fd, 0, fdsan_create_owner_tag(FDSAN_OWNER_TYPE_FILE, SQLITE_FDSAN_TAG));
 +  }
 +#endif /* FDSAN_ENABLE */
-+#ifdef HARMONY_OS
++#ifdef OS_FEATURE
 +  if( fd >= 0 ){
 +    enableDbFileDelMonitor(fd);
 +  }
-+#endif /* HARMONY_OS */
++#endif /* OS_FEATURE */
 +  return fd;
 +}
 +
@@ -506,7 +506,7 @@ index efc4cd4..6f423a9 100644
    return SQLITE_OK;
  }
  
-+#ifdef HARMONY_OS
++#ifdef OS_FEATURE
 +/*
 +** If the last component of the pathname in z[0]..z[j-1] is something
 +** other than ".." then back it out and return true.  If the last
@@ -1409,9 +1409,9 @@ index efc4cd4..6f423a9 100644
 +}
 +#endif
 +
- // hw export the symbols
+ // export the symbols
  #ifdef SQLITE_EXPORT_SYMBOLS
- struct sqlite3_api_routines_hw {
+ struct sqlite3_api_routines_extra {
 -- 
 2.47.0.windows.2
 

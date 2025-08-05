@@ -45,7 +45,7 @@ ohos_shared_library("sqliteicu") {
     "NDEBUG=1",
     "SQLITE_EXPORT_SYMBOLS",
     "SQLITE_ENABLE_FTS3",
-    "HARMONY_OS",
+    "OS_FEATURE",
     "SQLITE_ENABLE_ICU",
   ]
   cflags_c = [
@@ -90,7 +90,7 @@ ohos_shared_library("sqlitecompressvfs") {
     "NDEBUG=1",
     "SQLITE_EXPORT_SYMBOLS",
     "SQLITE_ENABLE_PAGE_COMPRESS",
-    "HARMONY_OS",
+    "OS_FEATURE",
   ]
   cflags_c = [
     "-fvisibility=hidden",
@@ -162,7 +162,7 @@ ohos_shared_library("sqlite") {
     "OPENSSL_SUPPRESS_DEPRECATED",
     "LOG_DUMP",
     "FDSAN_ENABLE",
-    "HARMONY_OS",
+    "OS_FEATURE",
     "SQLITE_HDR_CHECK",
     "SQLITE_ENABLE_ICU",
     "SQLITE_META_DWR",
@@ -247,7 +247,7 @@ ohos_executable("sqlite3") {
     "OPENSSL_SUPPRESS_DEPRECATED",
     "LOG_DUMP",
     "FDSAN_ENABLE",
-    "HARMONY_OS",
+    "OS_FEATURE",
   ]
 
   cflags = [

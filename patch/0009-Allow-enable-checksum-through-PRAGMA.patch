@@ -597,7 +597,7 @@ index 4c538a1..c84348b 100644
      sqlite3_log(SQLITE_WARNING_DUMP, "Meta double write disabled, sysno %d", errno);
    }
 -#endif
-+#endif /* HARMONY_OS */
++#endif /* OS_FEATURE */
    return rc;
  }
  
@@ -731,7 +731,7 @@ index 4c538a1..c84348b 100644
 -#endif
 +#endif /* SQLITE_CKSUMVFS_STATIC */
 +
- struct sqlite3_api_routines_hw {
+ struct sqlite3_api_routines_extra {
    int (*initialize)();
    int (*config)(int,...);
 -- 

@@ -49,7 +49,7 @@ typedef struct Sqlite3BinlogConfig {
 ** END OF BINLOG CONFIG
 *************************************************************************/
 
-struct sqlite3_api_routines_hw {
+struct sqlite3_api_routines_extra {
   int (*initialize)();
   int (*config)(int,...);
   int (*key)(sqlite3*,const void*,int);
@@ -62,17 +62,17 @@ struct sqlite3_api_routines_hw {
   int (*compressdb_backup)(sqlite3*, const char*);
 };
 
-extern const struct sqlite3_api_routines_hw *sqlite3_export_hw_symbols;
-#define sqlite3_initialize          sqlite3_export_hw_symbols->initialize
-#define sqlite3_config              sqlite3_export_hw_symbols->config
-#define sqlite3_key                 sqlite3_export_hw_symbols->key
-#define sqlite3_key_v2              sqlite3_export_hw_symbols->key_v2
-#define sqlite3_rekey               sqlite3_export_hw_symbols->rekey
-#define sqlite3_rekey_v2            sqlite3_export_hw_symbols->rekey_v2
-#define sqlite3_is_support_binlog   sqlite3_export_hw_symbols->is_support_binlog
-#define sqlite3_replay_binlog       sqlite3_export_hw_symbols->replay_binlog
-#define sqlite3_clean_binlog        sqlite3_export_hw_symbols->clean_binlog
-#define sqlite3_compressdb_backup   sqlite3_export_hw_symbols->compressdb_backup
+extern const struct sqlite3_api_routines_extra *sqlite3_export_extra_symbols;
+#define sqlite3_initialize          sqlite3_export_extra_symbols->initialize
+#define sqlite3_config              sqlite3_export_extra_symbols->config
+#define sqlite3_key                 sqlite3_export_extra_symbols->key
+#define sqlite3_key_v2              sqlite3_export_extra_symbols->key_v2
+#define sqlite3_rekey               sqlite3_export_extra_symbols->rekey
+#define sqlite3_rekey_v2            sqlite3_export_extra_symbols->rekey_v2
+#define sqlite3_is_support_binlog   sqlite3_export_extra_symbols->is_support_binlog
+#define sqlite3_replay_binlog       sqlite3_export_extra_symbols->replay_binlog
+#define sqlite3_clean_binlog        sqlite3_export_extra_symbols->clean_binlog
+#define sqlite3_compressdb_backup   sqlite3_export_extra_symbols->compressdb_backup
 
 struct sqlite3_api_routines_cksumvfs {
   int (*register_cksumvfs)(const char *);
