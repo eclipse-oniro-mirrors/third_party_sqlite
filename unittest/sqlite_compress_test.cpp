@@ -99,10 +99,12 @@ void SQLiteCompressTest::SetUpTestCase(void)
 {
     Common::RemoveDir(TEST_DIR);
     Common::MakeDir(TEST_DIR);
+    EXPECT_EQ(sqlite3_register_cksumvfs(NULL), SQLITE_OK);
 }
 
 void SQLiteCompressTest::TearDownTestCase(void)
 {
+    EXPECT_EQ(sqlite3_unregister_cksumvfs(), SQLITE_OK);
 }
 
 void SQLiteCompressTest::SetUp(void)
