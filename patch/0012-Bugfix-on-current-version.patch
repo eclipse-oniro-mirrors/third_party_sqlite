@@ -1,4 +1,4 @@
-From cb6159523c20f6c9d0545d0a45b605743ef59c21 Mon Sep 17 00:00:00 2001
+From 2c64c2a700786ce5bf2cf0ad5a9f46ac725ff846 Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
 Date: Tue, 5 Aug 2025 22:40:40 +0800
 Subject: [PATCH] Bugfix on current version
@@ -7,8 +7,8 @@ Signed-off-by: MartinChoo <214582617@qq.com>
 ---
  ext/misc/cksumvfs.c |  11 +-
  src/compressvfs.c   |   5 +-
- src/sqlite3.c       | 297 +++++++++++++++++++++++++++++++++++---------
- 3 files changed, 249 insertions(+), 64 deletions(-)
+ src/sqlite3.c       | 302 +++++++++++++++++++++++++++++++++++---------
+ 3 files changed, 253 insertions(+), 65 deletions(-)
 
 diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
 index 27b1028..e89edcd 100644
@@ -83,7 +83,7 @@ index f2fe169..b6f1681 100644
    sqlite3_busy_timeout(db, 2000);  // Set time out:2s
    rc = sqlite3_exec(db, pre_pragma, NULL, NULL, NULL);
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index d5d6627..2bd0b71 100644
+index d5d6627..c491821 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -5363,7 +5363,7 @@ SQLITE_API int sqlite3_set_droptable_handle(sqlite3*, void (*xFunc)(sqlite3*,con
@@ -520,7 +520,19 @@ index d5d6627..2bd0b71 100644
  static void MetaDwrUpdateHeaderDbInfo(BtShared *pBt) {
    MetaDwrHdr *hdr = pBt->pPager->metaHdr;
    // 28 offset: dbSize, freelist pageNo, freelist pages count, schema cookie
-@@ -257211,11 +257391,12 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
+@@ -257146,7 +257326,10 @@ static int MetaDwrRestoreAllPages(Btree *pBt, const ScanPages *metaPages, MetaDw
+       return rc;
+     }
+   }
+-  hdr->pageCnt = metaPages->pageCnt;
++  hdr->pageCnt = i;
++  if (metaPages->pageCnt > META_DWR_MAX_PAGES) {
++    sqlite3_log(SQLITE_WARNING_DUMP, "Meta dwr restore pages %u out of range", metaPages->pageCnt);
++  }
+   MetaDwrUpdateHeaderDbInfo(pBt->pBt);
+   return rc;
+ }
+@@ -257211,11 +257394,12 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
    if (pPager->metaMapPage == NULL) {
      sqlite3_int64 sz = META_DWR_HEADER_PAGE_SIZE;
      sqlite3OsFileControlHint(metaFd, SQLITE_FCNTL_CHUNK_SIZE, &sz);
@@ -538,7 +550,7 @@ index d5d6627..2bd0b71 100644
      }
    }
  #endif /* SQLITE_OS_UNIX */
-@@ -257589,7 +257770,7 @@ CHK_RESTORE_OUT:
+@@ -257589,7 +257773,7 @@ CHK_RESTORE_OUT:
    return rc;
  }
  
@@ -547,7 +559,7 @@ index d5d6627..2bd0b71 100644
  {
  #if SQLITE_OS_UNIX
    u8 checkFileId = Sqlite3GetCheckFileId(pPager->pVfs);
-@@ -257597,10 +257778,18 @@ static inline u8 IsConnectionValidForCheck(Pager *pPager)
+@@ -257597,10 +257781,18 @@ static inline u8 IsConnectionValidForCheck(Pager *pPager)
      return 0;
    }
    unixFile *fd = Sqlite3GetUnixFile(pPager->fd, checkFileId);
@@ -567,7 +579,7 @@ index d5d6627..2bd0b71 100644
    return 1;
  #else
    return 0;
-@@ -257610,7 +257799,7 @@ static inline u8 IsConnectionValidForCheck(Pager *pPager)
+@@ -257610,7 +257802,7 @@ static inline u8 IsConnectionValidForCheck(Pager *pPager)
  static int MetaDwrOpenAndCheck(Btree *pBt)
  {
    Pager *pPager = pBt->pBt->pPager;
@@ -576,7 +588,7 @@ index d5d6627..2bd0b71 100644
      return SQLITE_OK;
    }
  #ifdef SQLITE_HAS_CODEC
-@@ -257655,7 +257844,7 @@ DWR_OPEN_OUT:
+@@ -257655,7 +257847,7 @@ DWR_OPEN_OUT:
  static void MetaDwrDisable(Btree *pBt)
  {
    Pager *pPager = pBt->pBt->pPager;
@@ -585,7 +597,7 @@ index d5d6627..2bd0b71 100644
      return;
    }
  #ifdef SQLITE_HAS_CODEC
-@@ -257681,19 +257870,6 @@ static void MetaDwrDisable(Btree *pBt)
+@@ -257681,19 +257873,6 @@ static void MetaDwrDisable(Btree *pBt)
  #endif /* SQLITE_META_DWR */
  
  #if SQLITE_OS_UNIX
@@ -605,7 +617,7 @@ index d5d6627..2bd0b71 100644
  static void ResetLockStatus(void)
  {
    (void)memset(&g_lockStatus, 0, sizeof(g_lockStatus));
-@@ -257797,8 +257973,13 @@ static inline const char *FlockToName(int l_type)
+@@ -257797,8 +257976,13 @@ static inline const char *FlockToName(int l_type)
  
  static int DumpProcessLocks(int fd, struct flock *lock, const char *lockName, char *dumpBuf, int bufLen)
  {
@@ -620,7 +632,7 @@ index d5d6627..2bd0b71 100644
      sqlite3_log(SQLITE_ERROR, "[SQLite]Get wal file lock ofs %u failed, errno: %d", lock->l_start, errno);
      return 0;
    }
-@@ -259039,9 +259220,13 @@ struct sqlite3_api_routines_extra {
+@@ -259039,9 +259223,13 @@ struct sqlite3_api_routines_extra {
    int (*key_v2)(sqlite3*,const char*,const void*,int);
    int (*rekey)(sqlite3*,const void*,int);
    int (*rekey_v2)(sqlite3*,const char*,const void*,int);
@@ -636,5 +648,5 @@ index d5d6627..2bd0b71 100644
    int (*compressdb_backup)(sqlite3*, const char*);
  #else
 -- 
-2.47.0.windows.2
+2.28.0.windows.1
 
