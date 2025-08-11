@@ -1,14 +1,13 @@
-From 2c64c2a700786ce5bf2cf0ad5a9f46ac725ff846 Mon Sep 17 00:00:00 2001
+From 0d849cdbe95e48a2a5e0a9414dca652fe73b0ba5 Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
-Date: Tue, 5 Aug 2025 22:40:40 +0800
+Date: Mon, 11 Aug 2025 14:21:08 +0800
 Subject: [PATCH] Bugfix on current version
 
-Signed-off-by: MartinChoo <214582617@qq.com>
 ---
  ext/misc/cksumvfs.c |  11 +-
- src/compressvfs.c   |   5 +-
- src/sqlite3.c       | 302 +++++++++++++++++++++++++++++++++++---------
- 3 files changed, 253 insertions(+), 65 deletions(-)
+ src/compressvfs.c   | 251 ++++++++++++++++++++++------------
+ src/sqlite3.c       | 327 ++++++++++++++++++++++++++++++++++++--------
+ 3 files changed, 439 insertions(+), 150 deletions(-)
 
 diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
 index 27b1028..e89edcd 100644
@@ -54,7 +53,7 @@ index 27b1028..e89edcd 100644
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE]=CKSUMVFS_MAGIC_NUM;
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE+1]=p->verifyCksm ? CKSUMVFS_CALC_CHECKSUM : CKSUMVFS_WITHOUT_CHECKSUM;
 diff --git a/src/compressvfs.c b/src/compressvfs.c
-index f2fe169..b6f1681 100644
+index f2fe169..83e5249 100644
 --- a/src/compressvfs.c
 +++ b/src/compressvfs.c
 @@ -151,6 +151,7 @@ typedef INT8_TYPE i8;              /* 1-byte signed integer */
@@ -65,25 +64,479 @@ index f2fe169..b6f1681 100644
  
  /* COMPRESSION OPTIONS */
  #define COMPRESSION_UNDEFINED 0
-@@ -919,14 +920,14 @@ static int compressOpen(
+@@ -162,6 +163,8 @@ typedef u32 Pgno;
+ #define SQLITE_SHMMAP_IS_WRITE       0x00000001  /* Flag for xShmMap, extend file if necessary */
+ #define SQLITE_OPEN_COMPRESS_SHM     0x00010000  /* Flag for xShmMap, need to rename shm file */
+ 
++#define SQLITE_WARNING_DUMP          (SQLITE_WARNING | (2<<8))
++
+ /* An open file */
+ typedef struct{
+   sqlite3_file base;        /* IO methods */
+@@ -170,8 +173,10 @@ typedef struct{
+   u8 bSubDbOpen;            /* True to SubDB is opened */
+   u8 bBegin;                /* True to xSync() need commit */
+   u8 compression;           /* Compression options */
+-  int page_size;            /* Uncompressed page size */
++  int pageSize;             /* Uncompressed page size */
+   int persistWalFlag;       /* Flag to persist flag */
++  int openFlags;            /* Flag to open file */
++  sqlite3_file *pLockFd;    /* File handle to lock file */
+ } CompressFile;
+ 
+ 
+@@ -505,14 +510,14 @@ static void getCompression(sqlite3 *db, CompressFile *pCompress){
+   const char *sql = "SELECT count(*), compression, pagesize FROM vfs_compression;";
+   int count = 0;
+   pCompress->compression = COMPRESSION_UNDEFINED;
+-  pCompress->page_size = 0;
++  pCompress->pageSize = 0;
+ 
+   if( sqlite3_prepare_v2(db, sql, -1, &stmt, NULL)==SQLITE_OK ){
+     if( sqlite3_step(stmt)==SQLITE_ROW ){
+       count = sqlite3_column_int(stmt, 0);
+       if( count==1 ){
+         pCompress->compression = sqlite3_column_int(stmt, 1);
+-        pCompress->page_size = sqlite3_column_int(stmt, 2);
++        pCompress->pageSize = sqlite3_column_int(stmt, 2);
+       }
+     }
+     sqlite3_finalize(stmt);
+@@ -590,7 +595,9 @@ static int compressDeviceCharacteristics(sqlite3_file *pFile){
+ */
+ static int compressLock(sqlite3_file *pFile, int eFileLock){
+   assert( pFile );
+-  return SQLITE_OK;
++  CompressFile *pCompress = (CompressFile *)pFile;
++  sqlite3_file *pSubFile = ORIGFILE(pFile);
++  return pSubFile->pMethods->xLock(pCompress->pLockFd, eFileLock);
+ }
+ 
+ /*
+@@ -598,7 +605,9 @@ static int compressLock(sqlite3_file *pFile, int eFileLock){
+ */
+ static int compressUnlock(sqlite3_file *pFile, int eFileLock){
+   assert( pFile );
+-  return SQLITE_OK;
++  CompressFile *pCompress = (CompressFile *)pFile;
++  sqlite3_file *pSubFile = ORIGFILE(pFile);
++  return pSubFile->pMethods->xUnlock(pCompress->pLockFd, eFileLock);
+ }
+ 
+ /*
+@@ -608,11 +617,11 @@ static int compressFileSize(sqlite3_file *pFile, i64 *pSize){
+   assert( pFile );
+   CompressFile *pCompress = (CompressFile *)pFile;
+   sqlite3 *db = pCompress->pDb;
+-  int rc = getCompressPgsize(db, &pCompress->page_size);
++  int rc = getCompressPgsize(db, &pCompress->pageSize);
+   if( rc!=SQLITE_OK ){
+     return SQLITE_IOERR_FSTAT;
+   }
+-  int pgsize = pCompress->page_size;
++  int pgsize = pCompress->pageSize;
+   int maxpgno = getMaxCompressPgno(db);
+   *pSize = (i64)maxpgno * pgsize;
+   return SQLITE_OK;
+@@ -625,11 +634,11 @@ static int compressTruncate(sqlite3_file *pFile, sqlite_int64 size){
+   assert( pFile );
+   CompressFile *pCompress = (CompressFile *)pFile;
+   sqlite3 *db = pCompress->pDb;
+-  int rc = getCompressPgsize(db, &pCompress->page_size);
+-  if( rc!=SQLITE_OK || pCompress->page_size==0 ){
++  int rc = getCompressPgsize(db, &pCompress->pageSize);
++  if( rc!=SQLITE_OK || pCompress->pageSize==0 ){
+     return SQLITE_IOERR_TRUNCATE;
+   }
+-  int pgsize = pCompress->page_size;
++  int pgsize = pCompress->pageSize;
+   int pgno = size / pgsize;
+   if( size % pgsize!=0 || getMaxCompressPgno(db) < pgno ){
+     return SQLITE_IOERR_TRUNCATE;
+@@ -661,58 +670,70 @@ static int compressWrite(sqlite3_file *pFile, const void *pBuf, int iAmt, sqlite
+   assert( iAmt>0 );
+   CompressFile *pCompress = (CompressFile *)pFile;
+   sqlite3 *db = pCompress->pDb;
+-  int rc = getCompressPgsize(db, &pCompress->page_size);
++  int rc = getCompressPgsize(db, &pCompress->pageSize);
+   if( rc!=SQLITE_OK ){
++    sqlite3_log(SQLITE_WARNING_DUMP, "Missing pgsz(%d), write ofst:%lld, iAmt:%d, flags:%d", pCompress->pageSize,
++      iOfst, iAmt, pCompress->openFlags);
+     return SQLITE_IOERR_WRITE;
    }
  
+-  if( pCompress->page_size<=0 && iAmt >= 512 && iAmt <= 64*1024 && !(iAmt & (iAmt - 1)) ){
++  if( pCompress->pageSize<=0 && iAmt >= 512 && iAmt <= 64*1024 && !(iAmt & (iAmt - 1)) ){
+     // new compress db need set orignal db's pagesize
+     rc = setCompressPgsize(db, iAmt);
+     if( rc!=SQLITE_OK ){
++      sqlite3_log(rc, "Save page size(%d) wrong, ofst:%lld, flags:%d", iAmt, iOfst, pCompress->openFlags);
+       return SQLITE_IOERR_WRITE;
+     }
+-    pCompress->page_size = iAmt;
++    pCompress->pageSize = iAmt;
+   }
+-  int pgsize = pCompress->page_size;
++  int pgsize = pCompress->pageSize;
+   int pgno = iOfst / pgsize + 1;
+   if( iAmt!=pgsize || iOfst % pgsize!=0 ){
++    sqlite3_log(SQLITE_IOERR_WRITE, "Mismatch info, iAmt(%d), pgsz(%d), offset:%ld", iAmt, pgsize, iOfst);
+     return SQLITE_IOERR_WRITE;
+   }
+ 
+-  int max_compress_size = compressLen(iAmt, pCompress->compression);
+-  if( max_compress_size<=0 ){
++  int maxSize = compressLen(iAmt, pCompress->compression);
++  if( maxSize<=0 ){
++    sqlite3_log(SQLITE_IOERR_WRITE, "Get compress size(%d) wrong, compression(%d)", maxSize, pCompress->compression);
+     return SQLITE_IOERR_WRITE;
+   }
+-  u8 *compressed_data = sqlite3_malloc(max_compress_size);
+-  if( compressed_data==NULL ){
++  u8 *tmpData = sqlite3_malloc(maxSize);
++  if( tmpData==NULL ){
++    sqlite3_log(SQLITE_NOMEM, "Malloc size(%d) wrong", maxSize);
+     return SQLITE_NOMEM;
+   }
+-  int compress_data_len = 0;
+-  if( compressBuf(compressed_data, max_compress_size, &compress_data_len, pBuf, iAmt, pCompress->compression) ){
+-    sqlite3_free(compressed_data);
++  int len = 0;
++  if( compressBuf(tmpData, maxSize, &len, pBuf, iAmt, pCompress->compression) ){
++    sqlite3_free(tmpData);
++    sqlite3_log(SQLITE_IOERR_WRITE, "Compress buf wrong, pgno(%d), amt(%d), ofst(%lld)", pgno, iAmt, iOfst);
+     return SQLITE_IOERR_WRITE;
+   }
+   if( pCompress->bBegin!=1 ){
+-    if( sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL)!=SQLITE_OK ){
+-      sqlite3_free(compressed_data);
++    if( (rc = sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL))!=SQLITE_OK ){
++      sqlite3_free(tmpData);
++      sqlite3_log(rc, "Begin transaction to insert compressed page wrong, pgno(%d), ofst(%lld)", pgno, iOfst);
+       return SQLITE_IOERR_WRITE;
+     }
+     pCompress->bBegin = 1;
+   }
+   sqlite3_stmt *stmt = NULL;
+   const char *sql = "INSERT OR REPLACE INTO vfs_pages(data, pageno) VALUES (?,?);";
+-  if( sqlite3_prepare_v2(db, sql, -1, &stmt, NULL)==SQLITE_OK ){
+-    sqlite3_bind_blob(stmt, 1, compressed_data, compress_data_len, SQLITE_STATIC);
+-    sqlite3_bind_int(stmt, 2, pgno);
+-    if( sqlite3_step(stmt)!=SQLITE_DONE ){
+-      sqlite3_free(compressed_data);
+-      sqlite3_finalize(stmt);
+-      return SQLITE_IOERR_WRITE;
+-    }
+-    sqlite3_finalize(stmt);
++  rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
++  if( rc!=SQLITE_OK ){
++    sqlite3_free(tmpData);
++    sqlite3_log(rc, "Prepare stat to insert page wrong, pgno(%d), ofst(%lld)", pgno, iOfst);
++    return SQLITE_IOERR_WRITE;
++  }
++  sqlite3_bind_blob(stmt, 1, tmpData, len, SQLITE_STATIC);
++  sqlite3_bind_int(stmt, 2, pgno);
++  rc = sqlite3_step(stmt);
++  sqlite3_finalize(stmt);
++  sqlite3_free(tmpData);
++  if( rc!=SQLITE_DONE ){
++    sqlite3_log(rc, "Insert page wrong, pgno(%d), ofst(%lld)", pgno, iOfst);
++    return SQLITE_IOERR_WRITE;
+   }
+-  sqlite3_free(compressed_data);
+   return SQLITE_OK;
+ }
+ 
+@@ -731,71 +752,83 @@ static int compressRead(sqlite3_file *pFile, void *pBuf, int iAmt, sqlite_int64
+   }
+   (void)memset_s(pBuf, iAmt, 0, iAmt);
+   sqlite3 *db = pCompress->pDb;
+-  int rc = getCompressPgsize(db, &pCompress->page_size);
+-  if( rc!=SQLITE_OK || pCompress->page_size==0 ){
++  int rc = getCompressPgsize(db, &pCompress->pageSize);
++  if( rc!=SQLITE_OK || pCompress->pageSize==0 ){
++    sqlite3_log(SQLITE_WARNING_DUMP, "Missing pgsz(%d), read ofst(%lld), amt(%d), flags(%d)", pCompress->pageSize,
++      iOfst, iAmt, pCompress->openFlags);
+     return SQLITE_IOERR_SHORT_READ;
+   }
+-  int pgsize = pCompress->page_size;
++  int pgsize = pCompress->pageSize;
+   int pgno = iOfst / pgsize + 1;
+   int dataidx = iOfst % pgsize;
+   sqlite3_stmt *stmt = NULL;
+   const char *sql = "SELECT data, length(data) FROM vfs_pages WHERE pageno=?;";
+   const void *data = NULL;
+-  int data_len = 0;
++  int dataLen = 0;
+   rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+   if( rc!=SQLITE_OK ){
++    sqlite3_log(rc, "Prepare to get compressed page(%d) wrong, ofst(%lld)", pgno, iOfst);
+     return SQLITE_CORRUPT;
+   }
+-  u8 *decompressed_data = NULL;
++  u8 *decompressedData = NULL;
+   if( pgsize!=iAmt ){
+-    decompressed_data = sqlite3_malloc(pgsize);
+-    if( decompressed_data==NULL ){
++    decompressedData = sqlite3_malloc(pgsize);
++    if( decompressedData==NULL ){
+       sqlite3_finalize(stmt);
++      sqlite3_log(SQLITE_NOMEM, "Malloc for decompress size(%d) wrong, amt(%d), ofst(%lld)", pgsize, iAmt, iOfst);
+       return SQLITE_NOMEM;
+     }
+   }else{
+-    decompressed_data = (u8*)pBuf;
++    decompressedData = (u8*)pBuf;
+   }
+ 
+-  int decompress_data_len = 0;
++  int decompressLen = 0;
+   sqlite3_bind_int(stmt, 1, pgno);
+   rc = sqlite3_step(stmt);
+   if( rc==SQLITE_ROW ){
+     data = sqlite3_column_blob(stmt, 0);
+     if( data==NULL ){
+       rc = SQLITE_IOERR_SHORT_READ;
+-      goto failed;
++      sqlite3_log(rc, "Get compress page(%d) wrong, empty data, amt(%d), ofst(%lld)", pgno, iAmt, iOfst);
++      goto END_OUT;
+     }
+-    data_len = sqlite3_column_int(stmt, 1);
+-    if( data_len==0 ){
++    dataLen = sqlite3_column_int(stmt, 1);
++    if( dataLen==0 ){
+       rc = SQLITE_IOERR_SHORT_READ;
+-      goto failed;
++      sqlite3_log(rc, "Get compress page(%d) wrong, short data, amt(%d), ofst(%lld)", pgno, iAmt, iOfst);
++      goto END_OUT;
+     }
+-    if( decompressBuf(decompressed_data, pgsize, &decompress_data_len, data, data_len,
+-      pCompress->compression)!=SQLITE_OK ){
++    if( decompressBuf(decompressedData, pgsize, &decompressLen, data, dataLen, pCompress->compression)!=SQLITE_OK ){
+       rc = SQLITE_IOERR_SHORT_READ;
+-      goto failed;
++      sqlite3_log(rc, "Decompress page(%d) wrong, compression(%d), len(%d), amt(%d), ofst(%lld)", pgno,
++        (int)pCompress->compression, dataLen, iAmt, iOfst);
++      goto END_OUT;
+     }
+-    if( decompress_data_len!=pgsize ){
++    if( decompressLen!=pgsize ){
+       rc = SQLITE_IOERR_SHORT_READ;
+-      goto failed;
++      sqlite3_log(rc, "Decompress page(%d) wrong, size(%d), pgsz(%d), amt(%d), ofst(%lld)", pgno,
++        decompressLen, pgsize, iAmt, iOfst);
++      goto END_OUT;
+     }
+     if( pgsize!=iAmt ){
+-      rc = memcpy_s(pBuf, iAmt, decompressed_data+dataidx, iAmt);
++      rc = memcpy_s(pBuf, iAmt, decompressedData+dataidx, iAmt);
+       if( rc!=SQLITE_OK ){
+         rc = SQLITE_IOERR_SHORT_READ;
+-        goto failed;
++        sqlite3_log(rc, "Copy decompress page(%d) wrong, size(%d), pgsz(%d), amt(%d), ofst(%lld)", pgno,
++          decompressLen, pgsize, iAmt, iOfst);
++        goto END_OUT;
+       }
+     }
+     rc = SQLITE_OK;
+   }else if( rc==SQLITE_DONE ){
+     rc = SQLITE_IOERR_SHORT_READ;
++    sqlite3_log(rc, "Missing page(%d) while try read", pgno);
+   }
+ 
+- failed:
++END_OUT:
+   sqlite3_finalize(stmt);
+   if( pgsize!=iAmt ){
+-    sqlite3_free(decompressed_data);
++    sqlite3_free(decompressedData);
+   }
+ 
+   return rc;
+@@ -808,6 +841,7 @@ static int compressClose(sqlite3_file *pFile){
+   assert( pFile );
+   CompressFile *pCompress = (CompressFile *)pFile;
+   sqlite3 *db = pCompress->pDb;
++  sqlite3_file *pSubFile = ORIGFILE(pFile);
+   int rc = compressSync(pFile, 0);
+   if( rc!=SQLITE_OK ){
+     return rc;
+@@ -821,9 +855,13 @@ static int compressClose(sqlite3_file *pFile){
+       pCompress->pDb = NULL;
+     }
+   }
++  if( pCompress->pLockFd ){
++    pSubFile->pMethods->xClose(pCompress->pLockFd);
++    sqlite3_free(pCompress->pLockFd);
++    pCompress->pLockFd = NULL;
++  }
+   if( pCompress->bSubDbOpen ){
+-    pFile = ORIGFILE(pFile);
+-    rc = pFile->pMethods->xClose(pFile);
++    rc = pSubFile->pMethods->xClose(pSubFile);
+   }
+   return rc;
+ }
+@@ -902,87 +940,128 @@ static int compressOpen(
+ ){
+   sqlite3_file *pSubFile = ORIGFILE(pFile);
+   CompressFile *pCompress = (CompressFile *)pFile;
++  pCompress->openFlags = flags;
+   int rc = SQLITE_OK;
+   if( !(flags & (SQLITE_OPEN_MAIN_DB|SQLITE_OPEN_TEMP_DB)) ){
+     return ORIGVFS(pVfs)->xOpen(ORIGVFS(pVfs), zName, pFile, flags, pOutFlags);
+   }
+   rc = ORIGVFS(pVfs)->xOpen(ORIGVFS(pVfs), zName, pSubFile, flags, pOutFlags);
+   if( rc!=SQLITE_OK ){
++    sqlite3_log(rc, "Compress file open wrong, path:%s, flags:%d", zName, flags);
+     return rc;
+   }
+   pCompress->bSubDbOpen = 1;
+   sqlite3_int64 fileSize = 0;
++  sqlite3 *db = NULL;
+   rc = pSubFile->pMethods->xFileSize(pSubFile, &fileSize);
+   if( rc!=SQLITE_OK ){
++    sqlite3_log(rc, "Calculate compress file size wrong, path:%s", zName);
++    rc = SQLITE_CANTOPEN;
++    goto END_OUT;
++  }
++  if( pVfs->szOsFile<=(int)sizeof(CompressFile) ){
++    sqlite3_log(rc, "Unexpected file handle size(%d), vfs:%s", pVfs->szOsFile, pVfs->zName);
+     rc = SQLITE_CANTOPEN;
+-    goto open_end;
++    goto END_OUT;
+   }
++  pCompress->pLockFd = sqlite3_malloc(pVfs->szOsFile - sizeof(CompressFile));
++  if( pCompress->pLockFd==NULL ){
++    rc = SQLITE_NOMEM;
++    sqlite3_log(rc, "Malloc file handle for lock wrong, size(%d)", (int)(pVfs->szOsFile - sizeof(CompressFile)));
++    goto END_OUT;
++  }
++  memset(pCompress->pLockFd, 0, pVfs->szOsFile - sizeof(CompressFile));
+ 
++  const char *walPath = sqlite3_filename_wal(zName);
++  const char *lockPath = walPath + strlen(walPath) + 1;  // For compress vfs, lock path place at this position
++  rc = ORIGVFS(pVfs)->xOpen(ORIGVFS(pVfs), lockPath, pCompress->pLockFd, flags, NULL);
++  if( rc!=SQLITE_OK ){
++    sqlite3_log(rc, "Compress vfs lock file open wrong, path:%s, flag(%d)", lockPath, flags);
++    goto END_OUT;
++  }
    pFile->pMethods = &compress_io_methods;
 -  rc = sqlite3_open_v2(zName, &pCompress->pDb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, ORIGVFS(pVfs)->zName);
-+  rc = sqlite3_open_v2(zName, &pCompress->pDb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, CKSM_VFS_NAME);
++  rc = sqlite3_open_v2(zName, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, CKSM_VFS_NAME);
    if( rc!=SQLITE_OK ){
++    sqlite3_log(rc, "Open compress db wrong, name:%s", zName);
      rc = SQLITE_CANTOPEN;
-     goto open_end;
+-    goto open_end;
++    goto END_OUT;
    }
    pCompress->bOutterDbOpen = 1;
-   sqlite3 *db = pCompress->pDb;
+-  sqlite3 *db = pCompress->pDb;
 -  const char *pre_pragma = "PRAGMA page_size=4096;"\
-+  const char *pre_pragma = "PRAGMA checksum_persist_enable=ON;PRAGMA page_size=4096;"\
-     "PRAGMA auto_vacuum=INCREMENTAL;PRAGMA journal_mode=OFF;";
+-    "PRAGMA auto_vacuum=INCREMENTAL;PRAGMA journal_mode=OFF;";
    sqlite3_busy_timeout(db, 2000);  // Set time out:2s
-   rc = sqlite3_exec(db, pre_pragma, NULL, NULL, NULL);
+-  rc = sqlite3_exec(db, pre_pragma, NULL, NULL, NULL);
+-  if( rc!=SQLITE_OK ){
+-    rc = SQLITE_CANTOPEN;
+-    goto open_end;
+-  }
+   if( tableExists(db, "vfs_compression") ){
+     getCompression(db, pCompress);
+     if( pCompress->compression!=COMPRESSION_BROTLI && pCompress->compression!=COMPRESSION_ZSTD ){
+       rc = SQLITE_CANTOPEN;
+-      goto open_end;
++      sqlite3_log(rc, "Unrecognized compression(%d), name:%s", pCompress->compression, zName);
++      goto END_OUT;
+     }
+-    if( loadCompressAlgorithmExtension(pCompress->compression)==SQLITE_ERROR ){
++    if( loadCompressAlgorithmExtension(pCompress->compression)!=SQLITE_OK ){
+       rc = SQLITE_CANTOPEN;
+-      goto open_end;
++      goto END_OUT;
+     }
+   }else if( flags&SQLITE_OPEN_MAIN_DB && fileSize!=0 ){
+     rc = SQLITE_WARNING_NOTCOMPRESSDB;
+     sqlite3_log(rc, "open compress database go wrong, it should be a compressed db");
+-    goto open_end;
++    goto END_OUT;
+   }else{
+     if( loadCompressAlgorithmExtension(COMPRESSION_UNDEFINED)==SQLITE_ERROR ){
+       rc = SQLITE_CANTOPEN;
+-      goto open_end;
++      goto END_OUT;
++    }
++    const char *pragmaStr = "PRAGMA checksum_persist_enable=ON;PRAGMA page_size=4096;"\
++      "PRAGMA auto_vacuum=INCREMENTAL;PRAGMA journal_mode=OFF;";
++    rc = sqlite3_exec(db, pragmaStr, NULL, NULL, NULL);
++    if( rc!=SQLITE_OK ){
++      sqlite3_log(rc, "Config compress db wrong, name:%s", zName);
++      rc = SQLITE_CANTOPEN;
++      goto END_OUT;
+     }
+-    const char *init_compression_sql = "CREATE TABLE vfs_compression (compression INTEGER, pagesize INTEGER);";
+-    rc = sqlite3_exec(db, init_compression_sql, NULL, NULL, NULL);
++    const char *initCompressionStr = "CREATE TABLE vfs_compression (compression INTEGER, pagesize INTEGER);";
++    rc = sqlite3_exec(db, initCompressionStr, NULL, NULL, NULL);
+     if( rc!=SQLITE_OK ){
++      sqlite3_log(rc, "Configure compress db wrong, name:%s, create vfs_compression failed", zName);
+       rc = SQLITE_CANTOPEN;
+-      goto open_end;
++      goto END_OUT;
+     }
+-    char set_compression_sql[COMPRESSION_SQL_MAX_LENGTH] = {0};
+-    if( sprintf_s(set_compression_sql, COMPRESSION_SQL_MAX_LENGTH,
++    char compressionSql[COMPRESSION_SQL_MAX_LENGTH] = {0};
++    if( sprintf_s(compressionSql, COMPRESSION_SQL_MAX_LENGTH,
+       "INSERT INTO vfs_compression(compression, pagesize) VALUES (%u, 0);", g_compress_algo_load)<=0 ){
+       rc = SQLITE_CANTOPEN;
+-      goto open_end;
++      sqlite3_log(rc, "Concatenate config stat wrong, name:%s, compression(%u)", zName, g_compress_algo_load);
++      goto END_OUT;
+     }
+-    rc = sqlite3_exec(db, set_compression_sql, NULL, NULL, NULL);
++    rc = sqlite3_exec(db, compressionSql, NULL, NULL, NULL);
+     if( rc!=SQLITE_OK ){
++      sqlite3_log(rc, "Config compress db wrong, name:%s, insert compression(%u) failed", zName, g_compress_algo_load);
+       rc = SQLITE_CANTOPEN;
+-      goto open_end;
++      goto END_OUT;
+     }
+     pCompress->compression = g_compress_algo_load;
+-    pCompress->page_size = 0;
++    pCompress->pageSize = 0;
+   }
+   if( tableExists(db, "vfs_pages") ){
+-    goto open_end;
++    goto END_OUT;
+   }
+-  const char *create_sql = "CREATE TABLE vfs_pages (pageno INTEGER PRIMARY KEY, data BLOB NOT NULL);";
+-  rc = sqlite3_exec(db, create_sql, NULL, NULL, NULL);
++  const char *pageDdlStr = "CREATE TABLE vfs_pages (pageno INTEGER PRIMARY KEY, data BLOB NOT NULL);";
++  rc = sqlite3_exec(db, pageDdlStr, NULL, NULL, NULL);
+   if( rc!=SQLITE_OK ){
++    sqlite3_log(rc, "Config compress db wrong, name:%s, create page table failed", zName);
+     rc = SQLITE_CANTOPEN;
+   }
+ 
+- open_end:
++END_OUT:
++  if( rc==SQLITE_OK ){
++    pCompress->pDb = db;
++  }else{
++    if( db!=NULL ){
++      sqlite3_close_v2(db);
++    }
++    if( pCompress->pLockFd ){
++      pSubFile->pMethods->xClose(pCompress->pLockFd);
++      sqlite3_free(pCompress->pLockFd);
++      pCompress->pLockFd = NULL;
++    }
++  }
+   return rc;
+ }
+ 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index d5d6627..c491821 100644
+index 0cdb348..5d8a6b0 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -5363,7 +5363,7 @@ SQLITE_API int sqlite3_set_droptable_handle(sqlite3*, void (*xFunc)(sqlite3*,con
@@ -150,7 +603,17 @@ index d5d6627..c491821 100644
  #define META_HEADER_CHANGED 1
  #define META_SCHEMA_CHANGED 2
  #define META_IN_RECOVERY 1
-@@ -59754,11 +59764,12 @@ static int pager_end_transaction(Pager *pPager, int hasSuper, int bCommit){
+@@ -58253,6 +58263,9 @@ struct Pager {
+   void *metaMapPage;
+   int (*xGetMethod)(Pager*,Pgno,DbPage**,int); /* Routine to fetch a patch */
+ #endif
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  char *zLock;                /* Point to the lock filename, use to replace main db to lock */
++#endif
+ };
+ 
+ /*
+@@ -59754,11 +59767,12 @@ static int pager_end_transaction(Pager *pPager, int hasSuper, int bCommit){
      sqlite3PcacheTruncate(pPager->pPCache, pPager->dbSize);
    }
  #ifdef SQLITE_META_DWR
@@ -168,7 +631,64 @@ index d5d6627..c491821 100644
    }
  #endif
    if( pagerUseWal(pPager) ){
-@@ -73773,7 +73784,13 @@ static void zeroPage(MemPage *pPage, int flags){
+@@ -62547,7 +62561,8 @@ SQLITE_PRIVATE int sqlite3PagerOpen(
+   ** specific formatting and order of the various filenames, so if the format
+   ** changes here, be sure to change it there as well.
+   **
+-  ** Addition, in case of enable page compression, journal&WAL filename will add a file extension:"compress"
++  ** Addition, in case of enable page compression, journal&WAL filename will add a file extension:"compress",
++  ** lock file need an other setting
+   ** So the final layout in memory is as follows:
+   **
+   **     Pager object                    (sizeof(Pager) bytes)
+@@ -62561,13 +62576,16 @@ SQLITE_PRIVATE int sqlite3PagerOpen(
+   **     URI query parameters            (nUriByte bytes)
+   **     Journal filename                (nPathname+16+1 bytes)
+   **     WAL filename                    (nPathname+12+1 bytes)
++  **     Lock filename                   (nPathname+13+1 bytes)
+   **     \0\0\0 terminator               (3 bytes)
+   **
+   */
+   int fileExtSz = 0;
++  int lockExtSz = 0;
+ #ifdef SQLITE_ENABLE_PAGE_COMPRESS
+   if( sqlite3_stricmp(pVfs->zName, "compressvfs")==0 ){
+     fileExtSz = 8;  /* 8 means the size of suffix:"compress" */
++    lockExtSz = 13;  /* 13 means the size of suffix:"-lockcompress" */
+   }
+ #endif
+   assert( SQLITE_PTRSIZE==sizeof(Pager*) );
+@@ -62583,6 +62601,9 @@ SQLITE_PRIVATE int sqlite3PagerOpen(
+     nPathname + 8 + fileExtSz + 1 +      /* Journal filename */
+ #ifndef SQLITE_OMIT_WAL
+     nPathname + 4 + fileExtSz + 1 +      /* WAL filename */
++#endif
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++    nPathname + lockExtSz + 1 +          /* Lock filename */
+ #endif
+     3                                    /* Terminator */
+   );
+@@ -62651,6 +62672,19 @@ SQLITE_PRIVATE int sqlite3PagerOpen(
+     pPager->zWal = 0;
+   }
+ #endif
++
++#ifdef SQLITE_ENABLE_PAGE_COMPRESS
++  if( nPathname>0 ){
++    pPager->zLock = (char*)pPtr;
++    memcpy(pPtr, zPathname, nPathname);   pPtr += nPathname;
++    if( lockExtSz>0 ){  /* 13 means the size of string:"-lockcompress" */
++      memcpy(pPtr, "-lockcompress", 13);  pPtr += lockExtSz;
++    }
++                                          pPtr += 1;  /* Skip zero suffix */
++  }else{
++    pPager->zLock = 0;
++  }
++#endif
+   (void)pPtr;  /* Suppress warning about unused pPtr value */
+ 
+   if( nPathname ) sqlite3DbFree(0, zPathname);
+@@ -73773,7 +73807,13 @@ static void zeroPage(MemPage *pPage, int flags){
    data[hdr+7] = 0;
    put2byte(&data[hdr+5], pBt->usableSize);
    pPage->nFree = (u16)(pBt->usableSize - first);
@@ -183,7 +703,7 @@ index d5d6627..c491821 100644
    pPage->cellOffset = first;
    pPage->aDataEnd = &data[pBt->pageSize];
    pPage->aCellIdx = &data[first];
-@@ -73982,7 +73999,9 @@ static void pageReinit(DbPage *pData){
+@@ -73982,7 +74022,9 @@ static void pageReinit(DbPage *pData){
        ** But no harm is done by this.  And it is very important that
        ** btreeInitPage() be called on every btree page so we make
        ** the call for every page that comes in for re-initializing. */
@@ -194,7 +714,7 @@ index d5d6627..c491821 100644
      }
    }
  }
-@@ -74898,6 +74917,11 @@ static int lockBtree(BtShared *pBt){
+@@ -74898,6 +74940,11 @@ static int lockBtree(BtShared *pBt){
      }
      if( nPage>nPageFile ){
        if( sqlite3WritableSchema(pBt->db)==0 ){
@@ -206,7 +726,7 @@ index d5d6627..c491821 100644
          rc = SQLITE_CORRUPT_BKPT;
          goto page1_init_failed;
        }else{
-@@ -92357,8 +92381,9 @@ SQLITE_API int sqlite3_set_droptable_handle(sqlite3 *db, void (*xFunc)(sqlite3*,
+@@ -92357,8 +92404,9 @@ SQLITE_API int sqlite3_set_droptable_handle(sqlite3 *db, void (*xFunc)(sqlite3*,
  #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
  
  #ifdef SQLITE_ENABLE_BINLOG
@@ -217,7 +737,7 @@ index d5d6627..c491821 100644
    return SQLITE_ERROR;
  }
  
-@@ -116854,7 +116879,9 @@ static void findOrCreateAggInfoColumn(
+@@ -116854,7 +116902,9 @@ static void findOrCreateAggInfoColumn(
  ){
    struct AggInfo_col *pCol;
    int k;
@@ -227,7 +747,7 @@ index d5d6627..c491821 100644
    assert( pAggInfo->iFirstReg==0 );
    pCol = pAggInfo->aCol;
    for(k=0; k<pAggInfo->nColumn; k++, pCol++){
-@@ -116872,6 +116899,10 @@ static void findOrCreateAggInfoColumn(
+@@ -116872,6 +116922,10 @@ static void findOrCreateAggInfoColumn(
      assert( pParse->db->mallocFailed );
      return;
    }
@@ -238,7 +758,7 @@ index d5d6627..c491821 100644
    pCol = &pAggInfo->aCol[k];
    assert( ExprUseYTab(pExpr) );
    pCol->pTab = pExpr->y.pTab;
-@@ -116905,6 +116936,7 @@ fix_up_expr:
+@@ -116905,6 +116959,7 @@ fix_up_expr:
    if( pExpr->op==TK_COLUMN ){
      pExpr->op = TK_AGG_COLUMN;
    }
@@ -246,7 +766,7 @@ index d5d6627..c491821 100644
    pExpr->iAgg = (i16)k;
  }
  
-@@ -116988,13 +117020,19 @@ static int analyzeAggregate(Walker *pWalker, Expr *pExpr){
+@@ -116988,13 +117043,19 @@ static int analyzeAggregate(Walker *pWalker, Expr *pExpr){
          ** function that is already in the pAggInfo structure
          */
          struct AggInfo_func *pItem = pAggInfo->aFunc;
@@ -267,7 +787,7 @@ index d5d6627..c491821 100644
            /* pExpr is original.  Make a new entry in pAggInfo->aFunc[]
            */
            u8 enc = ENC(pParse->db);
-@@ -117046,6 +117084,7 @@ static int analyzeAggregate(Walker *pWalker, Expr *pExpr){
+@@ -117046,6 +117107,7 @@ static int analyzeAggregate(Walker *pWalker, Expr *pExpr){
          */
          assert( !ExprHasProperty(pExpr, EP_TokenOnly|EP_Reduced) );
          ExprSetVVAProperty(pExpr, EP_NoReduce);
@@ -275,7 +795,7 @@ index d5d6627..c491821 100644
          pExpr->iAgg = (i16)i;
          pExpr->pAggInfo = pAggInfo;
          return WRC_Prune;
-@@ -121758,8 +121797,8 @@ static void attachFunc(
+@@ -121758,8 +121820,8 @@ static void attachFunc(
    if( rc==SQLITE_OK ){
      extern int sqlite3CodecAttach(sqlite3*, int, const void*, int);
      extern void sqlite3CodecGetKey(sqlite3*, int, void**, int*);
@@ -286,7 +806,7 @@ index d5d6627..c491821 100644
      int t = sqlite3_value_type(argv[2]);
      switch( t ){
        case SQLITE_INTEGER:
-@@ -121776,14 +121815,7 @@ static void attachFunc(
+@@ -121776,14 +121838,7 @@ static void attachFunc(
          break;
  
        case SQLITE_NULL:
@@ -302,7 +822,7 @@ index d5d6627..c491821 100644
          break;
      }
    }
-@@ -184151,10 +184183,12 @@ opendb_out:
+@@ -184151,10 +184206,12 @@ opendb_out:
      db->eOpenState = SQLITE_STATE_SICK;
    }
  #ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
@@ -319,7 +839,7 @@ index d5d6627..c491821 100644
  #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
  #ifdef SQLITE_ENABLE_BINLOG
    sqlite3BinlogReset(db);
-@@ -204600,6 +204634,39 @@ static int fts3ExprTermOffsetInit(Fts3Expr *pExpr, int iPhrase, void *ctx){
+@@ -204600,6 +204657,39 @@ static int fts3ExprTermOffsetInit(Fts3Expr *pExpr, int iPhrase, void *ctx){
    return rc;
  }
  
@@ -359,7 +879,7 @@ index d5d6627..c491821 100644
  /*
  ** Implementation of offsets() function.
  */
-@@ -204636,6 +204703,12 @@ SQLITE_PRIVATE void sqlite3Fts3Offsets(
+@@ -204636,6 +204726,12 @@ SQLITE_PRIVATE void sqlite3Fts3Offsets(
    sCtx.iDocid = pCsr->iPrevId;
    sCtx.pCsr = pCsr;
  
@@ -372,7 +892,7 @@ index d5d6627..c491821 100644
    /* Loop through the table columns, appending offset information to
    ** string-buffer res for each column.
    */
-@@ -254823,6 +254896,21 @@ SQLITE_API int sqlite3_stmt_init(
+@@ -254823,6 +254919,21 @@ SQLITE_API int sqlite3_stmt_init(
  SQLITE_API const char *sqlite3_sourceid(void){ return SQLITE_SOURCE_ID; }
  /************************** End of sqlite3.c ******************************/
  
@@ -394,7 +914,7 @@ index d5d6627..c491821 100644
  #ifdef SQLITE_CKSUMVFS_STATIC
  extern sqlite3_file *cksmvfsGetOrigFile(sqlite3_file *file);
  #else
-@@ -255984,8 +256072,12 @@ void sqlite3CodecDetach(void *ctx){
+@@ -255984,8 +256095,12 @@ void sqlite3CodecDetach(void *ctx){
  #if SQLITE_OS_UNIX
  static int CodecFileLock(Pager *pPager, short lockType)
  {
@@ -409,7 +929,7 @@ index d5d6627..c491821 100644
    unixInodeInfo *pInode = pFile->pInode;
    if (pInode == NULL) {
      sqlite3_log(SQLITE_IOERR_RDLOCK, "Codec file lock %d go wrong", lockType);
-@@ -256060,6 +256152,7 @@ int sqlite3CodecAttach(sqlite3* db, int nDb, const void *pKey, int nKey){
+@@ -256060,6 +256175,7 @@ int sqlite3CodecAttach(sqlite3* db, int nDb, const void *pKey, int nKey){
      }
    }
  #endif
@@ -417,7 +937,7 @@ index d5d6627..c491821 100644
  #ifdef SQLITE_CODEC_ATTACH_CHANGED
    int rc = sqlite3CodecInitContext(ctx, p, pKey, nKey, nDb);
  #else
-@@ -256636,7 +256729,12 @@ typedef struct MetaDwrHdr {
+@@ -256636,7 +256752,12 @@ typedef struct MetaDwrHdr {
    u32 pageSz;
    u32 pageCnt;
    u64 dbFileInode;
@@ -431,7 +951,7 @@ index d5d6627..c491821 100644
    u32 checkSum;
    u8 *zones;
    Pgno *pages;
-@@ -256991,6 +257089,88 @@ static inline u64 CaculateMetaDwrWriteOffset(int pageSz, u32 idx, u8 zone) {
+@@ -256991,6 +257112,88 @@ static inline u64 CaculateMetaDwrWriteOffset(int pageSz, u32 idx, u8 zone) {
    return META_DWR_HEADER_PAGE_SIZE + pageSz * (idx * 2 + zone);
  }
  
@@ -520,7 +1040,7 @@ index d5d6627..c491821 100644
  static void MetaDwrUpdateHeaderDbInfo(BtShared *pBt) {
    MetaDwrHdr *hdr = pBt->pPager->metaHdr;
    // 28 offset: dbSize, freelist pageNo, freelist pages count, schema cookie
-@@ -257146,7 +257326,10 @@ static int MetaDwrRestoreAllPages(Btree *pBt, const ScanPages *metaPages, MetaDw
+@@ -257146,7 +257349,10 @@ static int MetaDwrRestoreAllPages(Btree *pBt, const ScanPages *metaPages, MetaDw
        return rc;
      }
    }
@@ -532,7 +1052,7 @@ index d5d6627..c491821 100644
    MetaDwrUpdateHeaderDbInfo(pBt->pBt);
    return rc;
  }
-@@ -257211,11 +257394,12 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
+@@ -257211,11 +257417,12 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
    if (pPager->metaMapPage == NULL) {
      sqlite3_int64 sz = META_DWR_HEADER_PAGE_SIZE;
      sqlite3OsFileControlHint(metaFd, SQLITE_FCNTL_CHUNK_SIZE, &sz);
@@ -550,7 +1070,7 @@ index d5d6627..c491821 100644
      }
    }
  #endif /* SQLITE_OS_UNIX */
-@@ -257589,7 +257773,7 @@ CHK_RESTORE_OUT:
+@@ -257589,7 +257796,7 @@ CHK_RESTORE_OUT:
    return rc;
  }
  
@@ -559,7 +1079,7 @@ index d5d6627..c491821 100644
  {
  #if SQLITE_OS_UNIX
    u8 checkFileId = Sqlite3GetCheckFileId(pPager->pVfs);
-@@ -257597,10 +257781,18 @@ static inline u8 IsConnectionValidForCheck(Pager *pPager)
+@@ -257597,10 +257804,18 @@ static inline u8 IsConnectionValidForCheck(Pager *pPager)
      return 0;
    }
    unixFile *fd = Sqlite3GetUnixFile(pPager->fd, checkFileId);
@@ -579,7 +1099,7 @@ index d5d6627..c491821 100644
    return 1;
  #else
    return 0;
-@@ -257610,7 +257802,7 @@ static inline u8 IsConnectionValidForCheck(Pager *pPager)
+@@ -257610,7 +257825,7 @@ static inline u8 IsConnectionValidForCheck(Pager *pPager)
  static int MetaDwrOpenAndCheck(Btree *pBt)
  {
    Pager *pPager = pBt->pBt->pPager;
@@ -588,7 +1108,7 @@ index d5d6627..c491821 100644
      return SQLITE_OK;
    }
  #ifdef SQLITE_HAS_CODEC
-@@ -257655,7 +257847,7 @@ DWR_OPEN_OUT:
+@@ -257655,7 +257870,7 @@ DWR_OPEN_OUT:
  static void MetaDwrDisable(Btree *pBt)
  {
    Pager *pPager = pBt->pBt->pPager;
@@ -597,7 +1117,7 @@ index d5d6627..c491821 100644
      return;
    }
  #ifdef SQLITE_HAS_CODEC
-@@ -257681,19 +257873,6 @@ static void MetaDwrDisable(Btree *pBt)
+@@ -257681,19 +257896,6 @@ static void MetaDwrDisable(Btree *pBt)
  #endif /* SQLITE_META_DWR */
  
  #if SQLITE_OS_UNIX
@@ -617,7 +1137,7 @@ index d5d6627..c491821 100644
  static void ResetLockStatus(void)
  {
    (void)memset(&g_lockStatus, 0, sizeof(g_lockStatus));
-@@ -257797,8 +257976,13 @@ static inline const char *FlockToName(int l_type)
+@@ -257797,8 +257999,13 @@ static inline const char *FlockToName(int l_type)
  
  static int DumpProcessLocks(int fd, struct flock *lock, const char *lockName, char *dumpBuf, int bufLen)
  {
@@ -632,7 +1152,7 @@ index d5d6627..c491821 100644
      sqlite3_log(SQLITE_ERROR, "[SQLite]Get wal file lock ofs %u failed, errno: %d", lock->l_start, errno);
      return 0;
    }
-@@ -259039,9 +259223,13 @@ struct sqlite3_api_routines_extra {
+@@ -259039,9 +259246,13 @@ struct sqlite3_api_routines_extra {
    int (*key_v2)(sqlite3*,const char*,const void*,int);
    int (*rekey)(sqlite3*,const void*,int);
    int (*rekey_v2)(sqlite3*,const char*,const void*,int);
@@ -648,5 +1168,5 @@ index d5d6627..c491821 100644
    int (*compressdb_backup)(sqlite3*, const char*);
  #else
 -- 
-2.28.0.windows.1
+2.47.0.windows.2
 
