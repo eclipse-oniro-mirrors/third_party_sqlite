@@ -354,4 +354,72 @@ HWTEST_F(SQLiteCompressTest, CompressTest006, TestSize.Level0)
     sqlite3_close_v2(compDb);
 }
 
+/**
+ * @tc.name: CompressTest007
+ * @tc.desc: Test to create brand new db
+ * @tc.type: FUNC
+ */
+HWTEST_F(SQLiteCompressTest, CompressTest007, TestSize.Level0)
+{
+    /**
+     * @tc.steps: step1. Create a brand new db while page compression enabled through sqlite3_open_v2
+     * @tc.expected: step1. Execute successfully
+     */
+    std::string dbPath1 = TEST_DIR "/compresstest007.db";
+    sqlite3 *compDb = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(dbPath1.c_str(), &compDb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, "compressvfs"),
+        SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, UT_DDL_CREATE_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, UT_DML_INSERT_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, "PRAGMA meta_double_write=enabled;", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr), SQLITE_OK);
+    sqlite3_close_v2(compDb);
+    /**
+     * @tc.steps: step5. Check result, files should exist
+     * @tc.expected: step4. Execute successfully
+     */
+    std::string wal = dbPath1 + "-walcompress";
+    std::string shm = dbPath1 + "-shmcompress";
+    std::string dwr = dbPath1 + "-dwr";
+    std::string lock = dbPath1 + "-lockcompress";
+    EXPECT_TRUE(Common::IsFileExist(wal.c_str()));
+    EXPECT_TRUE(Common::IsFileExist(shm.c_str()));
+    EXPECT_TRUE(Common::IsFileExist(dwr.c_str()));
+    EXPECT_TRUE(Common::IsFileExist(lock.c_str()));
+}
+
+/**
+ * @tc.name: CompressTest008
+ * @tc.desc: Test to create brand new db disabled compression
+ * @tc.type: FUNC
+ */
+HWTEST_F(SQLiteCompressTest, CompressTest008, TestSize.Level0)
+{
+    /**
+     * @tc.steps: step1. Create a brand new db while page compression disabled
+     * @tc.expected: step1. Execute successfully
+     */
+    std::string dbPath1 = TEST_DIR "/test008.db";
+    sqlite3 *db = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(dbPath1.c_str(), &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr),
+        SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db, UT_DDL_CREATE_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db, UT_DML_INSERT_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db, "PRAGMA meta_double_write=enabled;", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr), SQLITE_OK);
+    sqlite3_close_v2(db);
+    /**
+     * @tc.steps: step5. Check result, files should exist except lock file
+     * @tc.expected: step4. Execute successfully
+     */
+    std::string wal = dbPath1 + "-walcompress";
+    std::string shm = dbPath1 + "-shmcompress";
+    std::string dwr = dbPath1 + "-dwr";
+    std::string lock = dbPath1 + "-lockcompress";
+    EXPECT_TRUE(Common::IsFileExist(wal.c_str()));
+    EXPECT_TRUE(Common::IsFileExist(shm.c_str()));
+    EXPECT_TRUE(Common::IsFileExist(dwr.c_str()));
+    EXPECT_FALSE(Common::IsFileExist(lock.c_str()));
+}
+
 }  // namespace Test
