@@ -50,6 +50,7 @@ public:
     static void UtBackupDatabase(sqlite3 *srcDb, sqlite3 *destDb);
     static void UtPresetDb(const std::string &dbFile, const std::string &vfsStr);
     static int UtSqliteExecCallback(void *data, int argc, char **argv, char **azColName);
+    static bool IsSupportPageCheck(void);
     static int hitCksmFault_;
 };
 
@@ -164,6 +165,15 @@ void SQLiteCksumTest::UtPresetDb(const std::string &dbFile, const std::string &v
     sqlite3_close(db);
 }
 
+bool SQLiteCksumTest::IsSupportPageCheck(void)
+{
+#ifdef SQLITE_SUPPORT_PAGE_CHECK_TEST
+    return true;
+#else
+    return false;
+#endif
+}
+
 /**
  * @tc.name: CksumTest001
  * @tc.desc: Test to enable cksum before backup
@@ -230,6 +240,9 @@ static void UtDestroyFile(const std::string &dbPath, int offset, const std::stri
  */
 HWTEST_F(SQLiteCksumTest, CksumTest002, TestSize.Level0)
 {
+    if (!IsSupportPageCheck()) {
+        GTEST_SKIP() << "Current testcase is not compatible";
+    }
     /**
      * @tc.steps: step1. Create a new db as main, enable compress
      * @tc.expected: step1. Execute successfully
