@@ -1,13 +1,13 @@
-From 0d849cdbe95e48a2a5e0a9414dca652fe73b0ba5 Mon Sep 17 00:00:00 2001
+From c5761b4ffbe2376f9f7ee1c67f139ecd214dd364 Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
-Date: Mon, 11 Aug 2025 14:21:08 +0800
+Date: Thu, 14 Aug 2025 19:51:56 +0800
 Subject: [PATCH] Bugfix on current version
 
 ---
  ext/misc/cksumvfs.c |  11 +-
- src/compressvfs.c   | 251 ++++++++++++++++++++++------------
+ src/compressvfs.c   | 270 ++++++++++++++++++++++++------------
  src/sqlite3.c       | 327 ++++++++++++++++++++++++++++++++++++--------
- 3 files changed, 439 insertions(+), 150 deletions(-)
+ 3 files changed, 458 insertions(+), 150 deletions(-)
 
 diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
 index 27b1028..e89edcd 100644
@@ -53,7 +53,7 @@ index 27b1028..e89edcd 100644
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE]=CKSUMVFS_MAGIC_NUM;
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE+1]=p->verifyCksm ? CKSUMVFS_CALC_CHECKSUM : CKSUMVFS_WITHOUT_CHECKSUM;
 diff --git a/src/compressvfs.c b/src/compressvfs.c
-index f2fe169..83e5249 100644
+index f2fe169..5f5ec20 100644
 --- a/src/compressvfs.c
 +++ b/src/compressvfs.c
 @@ -151,6 +151,7 @@ typedef INT8_TYPE i8;              /* 1-byte signed integer */
@@ -377,7 +377,47 @@ index f2fe169..83e5249 100644
    }
    return rc;
  }
-@@ -902,87 +940,128 @@ static int compressOpen(
+@@ -888,6 +926,39 @@ static int compressUnfetch(sqlite3_file *pFile, sqlite3_int64 iOfst, void *pPage
+   return SQLITE_OK;
+ }
+ 
++static int compressOpenLockFile(sqlite3_vfs *pVfs, const char *zName, int flags, sqlite3_file **pFile){
++  const char *walPath = sqlite3_filename_wal(zName);
++  const char *lockPath = walPath + strlen(walPath) + 1;  // For compress vfs, lock path place at thie position
++  int isLockExist = 0;
++  int rc = ORIGVFS(pVfs)->xAccess(ORIGVFS(pVfs), lockPath, SQLITE_ACCESS_READWRITE, &isLockExist);
++  if( rc!=SQLITE_OK ){
++    sqlite3_log(rc, "Access lock file failed, path:%s", lockPath);
++    return rc;
++  }
++  if( isLockExist==0 && ((flags&SQLITE_OPEN_CREATE)==0) ){
++    sqlite3_log(SQLITE_WARNING_NOTCOMPRESSDB, "Check lock wrong, compress db should have lock file");
++    return SQLITE_WARNING_NOTCOMPRESSDB;
++  }
++  if( pVfs->szOsFile<=(int)sizeof(CompressFile) ){
++    sqlite3_log(SQLITE_CANTOPEN, "Unexpected file handle size(%d), vfs:%s", pVfs->szOsFile, pVfs->zName);
++    return SQLITE_CANTOPEN;
++  }
++  sqlite3_file *pLockFd = sqlite3_malloc(pVfs->szOsFile - sizeof(CompressFile));
++  if( pLockFd==NULL ){
++    rc = SQLITE_NOMEM;
++    sqlite3_log(rc, "Malloc file handle for lock wrong, size(%d)", (int)(pVfs->szOsFile - sizeof(CompressFile)));
++    return rc;
++  }
++  memset(pLockFd, 0, pVfs->szOsFile - sizeof(CompressFile));
++  rc = ORIGVFS(pVfs)->xOpen(ORIGVFS(pVfs), lockPath, pLockFd, flags, NULL);
++  if( rc!=SQLITE_OK ){
++    sqlite3_log(rc, "Compress vfs lock file open wrong, path:%s, flag(%d)", lockPath, flags);
++    sqlite3_free(pLockFd);
++  }
++  *pFile = pLockFd;
++  return rc;
++}
++
+ /*
+ ** Open a compress file.If this file is not a journal or wal file,
+ ** it will open a OutterDB and create vfs_pages and vfs_compression table
+@@ -902,87 +973,114 @@ static int compressOpen(
  ){
    sqlite3_file *pSubFile = ORIGFILE(pFile);
    CompressFile *pCompress = (CompressFile *)pFile;
@@ -397,28 +437,14 @@ index f2fe169..83e5249 100644
    rc = pSubFile->pMethods->xFileSize(pSubFile, &fileSize);
    if( rc!=SQLITE_OK ){
 +    sqlite3_log(rc, "Calculate compress file size wrong, path:%s", zName);
-+    rc = SQLITE_CANTOPEN;
-+    goto END_OUT;
-+  }
-+  if( pVfs->szOsFile<=(int)sizeof(CompressFile) ){
-+    sqlite3_log(rc, "Unexpected file handle size(%d), vfs:%s", pVfs->szOsFile, pVfs->zName);
      rc = SQLITE_CANTOPEN;
 -    goto open_end;
 +    goto END_OUT;
    }
-+  pCompress->pLockFd = sqlite3_malloc(pVfs->szOsFile - sizeof(CompressFile));
-+  if( pCompress->pLockFd==NULL ){
-+    rc = SQLITE_NOMEM;
-+    sqlite3_log(rc, "Malloc file handle for lock wrong, size(%d)", (int)(pVfs->szOsFile - sizeof(CompressFile)));
-+    goto END_OUT;
-+  }
-+  memset(pCompress->pLockFd, 0, pVfs->szOsFile - sizeof(CompressFile));
  
-+  const char *walPath = sqlite3_filename_wal(zName);
-+  const char *lockPath = walPath + strlen(walPath) + 1;  // For compress vfs, lock path place at this position
-+  rc = ORIGVFS(pVfs)->xOpen(ORIGVFS(pVfs), lockPath, pCompress->pLockFd, flags, NULL);
++  rc = compressOpenLockFile(pVfs, zName, flags, &pCompress->pLockFd);
 +  if( rc!=SQLITE_OK ){
-+    sqlite3_log(rc, "Compress vfs lock file open wrong, path:%s, flag(%d)", lockPath, flags);
++    sqlite3_log(rc, "Compress vfs lock file open wrong, path:%s, flag(%d)", zName, flags);
 +    goto END_OUT;
 +  }
    pFile->pMethods = &compress_io_methods;
@@ -536,7 +562,7 @@ index f2fe169..83e5249 100644
  }
  
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 0cdb348..5d8a6b0 100644
+index 0cdb348..399c6b1 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -5363,7 +5363,7 @@ SQLITE_API int sqlite3_set_droptable_handle(sqlite3*, void (*xFunc)(sqlite3*,con
