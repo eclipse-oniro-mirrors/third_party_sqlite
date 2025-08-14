@@ -32,8 +32,10 @@ config("sqlite3_private_config") {
 group("libsqlite") {
   public_deps = [
     ":sqlite",
-    ":sqliteicu",
-    ":sqlitecompressvfs",
+    ":sqliteicu"
+  ]
+  deps = [
+    ":sqlitecompressvfs"
   ]
 }
 
