@@ -12,6 +12,7 @@
 # limitations under the License.
 import("//build/test.gni")
 import("//build/ohos.gni")
+import("//third_party/sqlite/sqlite.gni")
 
 module_output_path = "third_party_sqlite/third_party_sqlite"
 
@@ -40,6 +41,13 @@ ohos_unittest("libsqlittest") {
     "./sqlite_metadwr_test.cpp",
     "./sqlite_test.cpp",
   ]
+
+  if (sqlite_support_check_pages) {
+    defines = [
+      "SQLITE_SUPPORT_PAGE_CHECK_TEST",
+      "SQLITE_SUPPORT_PAGE_COMPRESS_TEST"
+    ]
+  }
 
   configs = [ ":module_private_config" ]
 

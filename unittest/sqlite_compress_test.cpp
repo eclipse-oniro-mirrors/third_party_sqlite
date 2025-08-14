@@ -49,6 +49,7 @@ public:
     static void UtCheckDb(const std::string &dbPath, int tableCount = TEST_COMPRESS_META_TABLE);
     static void UtBackupDatabase(sqlite3 *srcDb, sqlite3 *destDb);
     static void UtBackupCompressDatabase(sqlite3 *srcDb, sqlite3 *destDb);
+    static bool IsSupportPageCompress(void);
 
     static sqlite3 *db;
     static const std::string &UT_DDL_CREATE_DEMO;
@@ -93,6 +94,15 @@ void SQLiteCompressTest::UtBackupDatabase(sqlite3 *srcDb, sqlite3 *destDb)
     EXPECT_TRUE(back != nullptr);
     EXPECT_EQ(sqlite3_backup_step(back, -1), SQLITE_DONE);
     sqlite3_backup_finish(back);
+}
+
+bool SQLiteCompressTest::IsSupportPageCompress(void)
+{
+#ifdef SQLITE_SUPPORT_PAGE_COMPRESS_TEST
+    return true;
+#else
+    return false;
+#endif
 }
 
 void SQLiteCompressTest::SetUpTestCase(void)
@@ -149,6 +159,9 @@ void SQLiteCompressTest::TearDown(void)
  */
 HWTEST_F(SQLiteCompressTest, CompressTest001, TestSize.Level0)
 {
+    if (!IsSupportPageCompress()) {
+        GTEST_SKIP() << "Current testcase is not compatible";
+    }
     /**
      * @tc.steps: step1. Create a brand new db while page compression enabled with sqlite3_open_v2
      * @tc.expected: step1. Execute successfully
@@ -209,6 +222,9 @@ HWTEST_F(SQLiteCompressTest, CompressTest002, TestSize.Level0)
  */
 HWTEST_F(SQLiteCompressTest, CompressTest003, TestSize.Level0)
 {
+    if (!IsSupportPageCompress()) {
+        GTEST_SKIP() << "Current testcase is not compatible";
+    }
     /**
      * @tc.steps: step1. Compress db using Backup function:sqlite3_backup_step
      * @tc.expected: step1. Execute successfully
@@ -239,6 +255,9 @@ HWTEST_F(SQLiteCompressTest, CompressTest003, TestSize.Level0)
  */
 HWTEST_F(SQLiteCompressTest, CompressTest004, TestSize.Level0)
 {
+    if (!IsSupportPageCompress()) {
+        GTEST_SKIP() << "Current testcase is not compatible";
+    }
     /**
      * @tc.steps: step1. Create a brand new db while page compression enabled with sqlite3_open_v2
      * @tc.expected: step1. Execute successfully
@@ -286,6 +305,9 @@ HWTEST_F(SQLiteCompressTest, CompressTest004, TestSize.Level0)
  */
 HWTEST_F(SQLiteCompressTest, CompressTest005, TestSize.Level0)
 {
+    if (!IsSupportPageCompress()) {
+        GTEST_SKIP() << "Current testcase is not compatible";
+    }
     /**
      * @tc.steps: step1. Create a brand new db while page compression enabled with sqlite3_open_v2
      * @tc.expected: step1. Execute successfully
@@ -327,6 +349,9 @@ HWTEST_F(SQLiteCompressTest, CompressTest005, TestSize.Level0)
  */
 HWTEST_F(SQLiteCompressTest, CompressTest006, TestSize.Level0)
 {
+    if (!IsSupportPageCompress()) {
+        GTEST_SKIP() << "Current testcase is not compatible";
+    }
     /**
      * @tc.steps: step1. Create a brand new db while page compression enabled with sqlite3_open_v2
      * @tc.expected: step1. Execute successfully
@@ -361,6 +386,9 @@ HWTEST_F(SQLiteCompressTest, CompressTest006, TestSize.Level0)
  */
 HWTEST_F(SQLiteCompressTest, CompressTest007, TestSize.Level0)
 {
+    if (!IsSupportPageCompress()) {
+        GTEST_SKIP() << "Current testcase is not compatible";
+    }
     /**
      * @tc.steps: step1. Create a brand new db while page compression enabled through sqlite3_open_v2
      * @tc.expected: step1. Execute successfully
@@ -369,10 +397,12 @@ HWTEST_F(SQLiteCompressTest, CompressTest007, TestSize.Level0)
     sqlite3 *compDb = nullptr;
     EXPECT_EQ(sqlite3_open_v2(dbPath1.c_str(), &compDb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, "compressvfs"),
         SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(compDb, UT_DDL_CREATE_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(compDb, UT_DML_INSERT_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
     EXPECT_EQ(sqlite3_exec(compDb, "PRAGMA meta_double_write=enabled;", nullptr, nullptr, nullptr), SQLITE_OK);
     EXPECT_EQ(sqlite3_exec(compDb, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, UT_DDL_CREATE_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, UT_DML_INSERT_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    int persistMode = 1;
+    EXPECT_EQ(sqlite3_file_control(compDb, "main", SQLITE_FCNTL_PERSIST_WAL, &persistMode), SQLITE_OK);
     sqlite3_close_v2(compDb);
     /**
      * @tc.steps: step5. Check result, files should exist
@@ -403,17 +433,19 @@ HWTEST_F(SQLiteCompressTest, CompressTest008, TestSize.Level0)
     sqlite3 *db = nullptr;
     EXPECT_EQ(sqlite3_open_v2(dbPath1.c_str(), &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr),
         SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, UT_DDL_CREATE_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, UT_DML_INSERT_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
     EXPECT_EQ(sqlite3_exec(db, "PRAGMA meta_double_write=enabled;", nullptr, nullptr, nullptr), SQLITE_OK);
     EXPECT_EQ(sqlite3_exec(db, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db, UT_DDL_CREATE_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db, UT_DML_INSERT_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    int persistMode = 1;
+    EXPECT_EQ(sqlite3_file_control(db, "main", SQLITE_FCNTL_PERSIST_WAL, &persistMode), SQLITE_OK);
     sqlite3_close_v2(db);
     /**
      * @tc.steps: step5. Check result, files should exist except lock file
      * @tc.expected: step4. Execute successfully
      */
-    std::string wal = dbPath1 + "-walcompress";
-    std::string shm = dbPath1 + "-shmcompress";
+    std::string wal = dbPath1 + "-wal";
+    std::string shm = dbPath1 + "-shm";
     std::string dwr = dbPath1 + "-dwr";
     std::string lock = dbPath1 + "-lockcompress";
     EXPECT_TRUE(Common::IsFileExist(wal.c_str()));
