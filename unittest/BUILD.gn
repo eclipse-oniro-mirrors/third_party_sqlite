@@ -47,6 +47,10 @@ ohos_unittest("libsqlittest") {
       "SQLITE_SUPPORT_PAGE_CHECK_TEST",
       "SQLITE_SUPPORT_PAGE_COMPRESS_TEST"
     ]
+
+    sources += [
+      "./sqlite_binlog_test.cpp",
+    ]
   }
 
   configs = [ ":module_private_config" ]

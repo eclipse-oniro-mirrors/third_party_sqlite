@@ -1,14 +1,14 @@
-From d169331fa1819949f671071677cf4ac45c05a21a Mon Sep 17 00:00:00 2001
-From: MartinChoo <214582617@qq.com>
-Date: Wed, 23 Jul 2025 17:42:36 +0800
+From d9bf27e15f4d3ebe73de27fa608c06c5049d34e3 Mon Sep 17 00:00:00 2001
+From: Liu Hongyang <liuhongyang4@huawei.com>
+Date: Fri, 15 Aug 2025 14:28:12 +0800
 Subject: [PATCH 06/12] Support-Binlog
 
 ---
- src/sqlite3.c | 1508 ++++++++++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 1499 insertions(+), 9 deletions(-)
+ src/sqlite3.c | 1522 ++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 1513 insertions(+), 9 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index e7e8b3c..3f1195a 100644
+index b433dfb..4105866 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -2938,7 +2938,9 @@ SQLITE_API sqlite3_int64 sqlite3_last_insert_rowid(sqlite3*);
@@ -680,7 +680,7 @@ index e7e8b3c..3f1195a 100644
    *ppDb = db;
  #ifdef SQLITE_ENABLE_SQLLOG
    if( sqlite3GlobalConfig.xSqllog ){
-@@ -256913,6 +257323,1074 @@ static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime
+@@ -256913,6 +257323,1088 @@ static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime
  }
  #endif
  
@@ -1343,6 +1343,20 @@ index e7e8b3c..3f1195a 100644
 +  return zHex;
 +}
 +
++SQLITE_PRIVATE char *sqlite3BinlogGetEscapedText(sqlite3 *db, const char *originalStr) {
++  sqlite3_str *pStr = sqlite3_str_new(db);
++  size_t nOriginal = strlen(originalStr);
++  sqlite3_str_appendchar(pStr, 1, '\'');
++  for (size_t i=0; i<nOriginal; i++) {
++    if (originalStr[i] == '\'') {
++      sqlite3_str_appendchar(pStr, 1, '\'');
++    }
++    sqlite3_str_appendchar(pStr, 1, originalStr[i]);
++  }
++  sqlite3_str_appendchar(pStr, 1, '\'');
++  return sqlite3_str_finish(pStr);
++}
++
 +SQLITE_PRIVATE char *sqlite3BinlogGetNthCol(sqlite3 *db, const Table *pTab, const BinlogRow *pRow, int iCol) {
 +  assert( db != NULL && pTab != NULL && pRow != NULL );
 +  assert( iCol >= 0 );  
@@ -1369,7 +1383,7 @@ index e7e8b3c..3f1195a 100644
 +      res = sqlite3_mprintf("'%s'", temp);
 +    }
 +  } else if (type == SQLITE_TEXT) {
-+    res = sqlite3_mprintf("'%s'", temp);
++    res = sqlite3BinlogGetEscapedText(db, (const char *)temp);
 +  } else if (type == SQLITE_NULL) { 
 +    res = sqlite3_mprintf("NULL");
 +  } else {
@@ -1755,7 +1769,7 @@ index e7e8b3c..3f1195a 100644
  // export the symbols
  #ifdef SQLITE_EXPORT_SYMBOLS
  #ifndef SQLITE_CKSUMVFS_STATIC
-@@ -256942,6 +258420,9 @@ struct sqlite3_api_routines_extra {
+@@ -256942,6 +258434,9 @@ struct sqlite3_api_routines_extra {
    int (*key_v2)(sqlite3*,const char*,const void*,int);
    int (*rekey)(sqlite3*,const void*,int);
    int (*rekey_v2)(sqlite3*,const char*,const void*,int);
@@ -1765,7 +1779,7 @@ index e7e8b3c..3f1195a 100644
  };
  
  typedef struct sqlite3_api_routines_extra sqlite3_api_routines_extra;
-@@ -256952,13 +258433,22 @@ static const sqlite3_api_routines_extra sqlite3ExtraApis = {
+@@ -256952,13 +258447,22 @@ static const sqlite3_api_routines_extra sqlite3ExtraApis = {
    sqlite3_key,
    sqlite3_key_v2,
    sqlite3_rekey,
