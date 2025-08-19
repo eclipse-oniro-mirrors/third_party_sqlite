@@ -261,7 +261,7 @@ HWTEST_F(SQLiteCksumTest, CksumTest002, TestSize.Level0)
      */
     hitCksmFault_ = 0;
     sqlite3 *db = nullptr;
-    EXPECT_EQ(sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READWRITE, "compressvfs"),SQLITE_OK);
+    EXPECT_EQ(sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READWRITE, "compressvfs"), SQLITE_OK);
     int count = 0;
     EXPECT_EQ(sqlite3_exec(db, "SELECT entryId, entryName FROM salary;", UtQueryResult, &count, nullptr), SQLITE_OK);
     EXPECT_EQ(hitCksmFault_, 1);
