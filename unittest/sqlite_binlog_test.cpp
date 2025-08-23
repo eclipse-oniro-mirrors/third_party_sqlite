@@ -32,6 +32,7 @@ using namespace UnitTest::SQLiteTest;
 #define TEST_DATA_COUNT 1000
 #define TEST_DATA_REAL 16.1
 
+namespace BinlogTest {
 static void UtSqliteLogPrint(const void *data, int err, const char *msg)
 {
     std::cout << "SqliteBinlogTest SQLite xLog err:" << err << ", msg:" << msg << std::endl;
@@ -55,7 +56,8 @@ static void UtPresetDb(const char *dbFile)
         "entryId INTEGER PRIMARY KEY,"
         "entryName Text,"
         "salary REAL,"
-        "class INTEGER);";
+        "class INTEGER,"
+        "extra BLOB);";
     EXPECT_EQ(sqlite3_exec(db, UT_DDL_CREATE_TABLE, NULL, NULL, NULL), SQLITE_OK);
     sqlite3_close(db);
 }
@@ -174,3 +176,139 @@ HWTEST_F(SqliteBinlogTest, BinlogReplayTest001, TestSize.Level0)
     sqlite3_close_v2(db);
     sqlite3_close_v2(backupDb);
 }
+
+/**
+ * @tc.name: BinlogReplayTest002
+ * @tc.desc: Test replay sql with zero blob at the end of the record
+ * @tc.type: FUNC
+ */
+HWTEST_F(SqliteBinlogTest, BinlogReplayTest002, TestSize.Level1)
+{
+    /**
+     * @tc.steps: step1. open db and set binlog
+     * @tc.expected: step1. ok
+     */
+    sqlite3 *db = NULL;
+    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
+    ASSERT_NE(db, nullptr);
+    UtEnableBinlog(db);
+    /**
+     * @tc.steps: step2. Insert records with zeroblob
+     * @tc.expected: step2. Execute successfully
+     */
+    static const char *UT_SQL_INSERT_DATA =
+        "INSERT INTO salary(entryId, entryName, salary, class, extra) VALUES(?,?,?,?,?);";
+    sqlite3_stmt *insertStmt = NULL;
+    EXPECT_EQ(sqlite3_prepare_v2(db, UT_SQL_INSERT_DATA, -1, &insertStmt, NULL), SQLITE_OK);
+    for (int i = 0; i < TEST_DATA_COUNT; i++) {
+        // bind parameters, 1, 2, 3, 4, 5 are sequence number of fields
+        sqlite3_bind_int(insertStmt, 1, i + 1);
+        sqlite3_bind_text(insertStmt, 2, "'salary-entry-name'", -1, SQLITE_STATIC);
+        sqlite3_bind_double(insertStmt, 3, TEST_DATA_REAL + i);
+        sqlite3_bind_int(insertStmt, 4, i + 1);
+        sqlite3_bind_zeroblob(insertStmt, 5, i + 1);
+        EXPECT_EQ(sqlite3_step(insertStmt), SQLITE_DONE);
+        sqlite3_reset(insertStmt);
+    }
+    sqlite3_finalize(insertStmt);
+    /**
+     * @tc.steps: step3. binlog replay to write into backup db
+     * @tc.expected: step3. Return SQLITE_OK
+     */
+    sqlite3 *backupDb = NULL;
+    EXPECT_EQ(sqlite3_open_v2(TEST_BACKUP_DB, &backupDb,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
+    ASSERT_NE(backupDb, nullptr);
+    EXPECT_EQ(sqlite3_replay_binlog(db, backupDb), SQLITE_OK);
+    /**
+     * @tc.steps: step4. check db count
+     * @tc.expected: step4. both db have TEST_DATA_COUNT
+     */
+    EXPECT_EQ(UtGetRecordCount(db), TEST_DATA_COUNT);
+    EXPECT_EQ(UtGetRecordCount(backupDb), TEST_DATA_COUNT);
+    sqlite3_close_v2(db);
+    sqlite3_close_v2(backupDb);
+}
+
+/**
+ * @tc.name: BinlogInterfaceTest001
+ * @tc.desc: Test replay sql with invalid db pointer
+ * @tc.type: FUNC
+ */
+HWTEST_F(SqliteBinlogTest, BinlogInterfaceTest001, TestSize.Level0)
+{
+    /**
+     * @tc.steps: step1. open db and set binlog
+     * @tc.expected: step1. ok
+     */
+    sqlite3 *db = NULL;
+    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
+    ASSERT_NE(db, nullptr);
+    UtEnableBinlog(db);
+    /**
+     * @tc.steps: step2. Insert records
+     * @tc.expected: step2. Execute successfully
+     */
+    static const char *UT_SQL_INSERT_DATA =
+        "INSERT INTO salary(entryId, entryName, salary, class) VALUES(?,?,?,?);";
+    sqlite3_stmt *insertStmt = NULL;
+    EXPECT_EQ(sqlite3_prepare_v2(db, UT_SQL_INSERT_DATA, -1, &insertStmt, NULL), SQLITE_OK);
+    for (int i = 0; i < TEST_DATA_COUNT; i++) {
+        // bind parameters, 1, 2, 3, 4 are sequence number of fields
+        sqlite3_bind_int(insertStmt, 1, i + 1);
+        sqlite3_bind_text(insertStmt, 2, "'salary-entry-name'", -1, SQLITE_STATIC);
+        sqlite3_bind_double(insertStmt, 3, TEST_DATA_REAL + i);
+        sqlite3_bind_int(insertStmt, 4, i + 1);
+        EXPECT_EQ(sqlite3_step(insertStmt), SQLITE_DONE);
+        sqlite3_reset(insertStmt);
+    }
+    sqlite3_finalize(insertStmt);
+    /**
+     * @tc.steps: step3. binlog replay to write to a closed db
+     * @tc.expected: step3. Return SQLITE_MISUSE
+     */
+    sqlite3 *backupDb = NULL;
+    EXPECT_EQ(sqlite3_open_v2(TEST_BACKUP_DB, &backupDb,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
+    ASSERT_NE(backupDb, nullptr);
+    sqlite3_close_v2(backupDb);
+    EXPECT_EQ(sqlite3_replay_binlog(db, backupDb), SQLITE_MISUSE);
+    /**
+     * @tc.steps: step4. binlog replay to read from a closed db
+     * @tc.expected: step4. Return SQLITE_MISUSE
+     */
+    EXPECT_EQ(sqlite3_open_v2(TEST_BACKUP_DB, &backupDb,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
+    ASSERT_NE(backupDb, nullptr);
+    sqlite3_close_v2(db);
+    EXPECT_EQ(sqlite3_replay_binlog(db, backupDb), SQLITE_MISUSE);
+    sqlite3_close_v2(db);
+    sqlite3_close_v2(backupDb);
+}
+
+/**
+ * @tc.name: BinlogInterfaceTest002
+ * @tc.desc: Test clean with invalid db pointer
+ * @tc.type: FUNC
+ */
+HWTEST_F(SqliteBinlogTest, BinlogInterfaceTest002, TestSize.Level0)
+{
+    /**
+     * @tc.steps: step1. open db and set binlog
+     * @tc.expected: step1. ok
+     */
+    sqlite3 *db = NULL;
+    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
+    ASSERT_NE(db, nullptr);
+    UtEnableBinlog(db);
+    /**
+     * @tc.steps: step2. cal binlog clean with closed db pointer
+     * @tc.expected: step2. Return SQLITE_MISUSE
+     */
+    sqlite3_close_v2(db);
+    EXPECT_EQ(sqlite3_clean_binlog(db, BinlogFileCleanModeE::BINLOG_FILE_CLEAN_READ_MODE), SQLITE_MISUSE);
+}
+}  // namespace BinlogTest
