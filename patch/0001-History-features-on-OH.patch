@@ -2397,7 +2397,7 @@ index 730b247..b132937 100644
 +    if(sqlite3CodecCheckHmac(keyCtx, pgno, inputBuffer.bufferSize + keyCtx->codecConst.initVectorSize, input, input + inputBuffer.bufferSize + keyCtx->codecConst.initVectorSize)){
 +      sqlite3_log(SQLITE_ERROR, "codec: check hmac error at page %d, hmac %d, kdf %d, pageSize %d, iter %d.",
 +        pgno, keyCtx->codecConst.hmacAlgo, keyCtx->codecConst.kdfAlgo, keyCtx->codecConst.cipherPageSize, keyCtx->iter);
-+      return pgno == 1 ? SQLITE_NOTADB : SQLITE_CORRUPT;
++      return pgno == 1 ? SQLITE_NOTADB : SQLITE_ERROR;
 +    }
 +    unsigned char *initVector = input + inputBuffer.bufferSize;
 +    void *cipherCtx = opensslGetCtx(keyCtx->codecConst.cipher, CODEC_OPERATION_DECRYPT, keyCtx->key, initVector);
