@@ -50,8 +50,12 @@ public:
     static void UtBackupDatabase(sqlite3 *srcDb, sqlite3 *destDb);
     static void UtBackupCompressDatabase(sqlite3 *srcDb, sqlite3 *destDb);
     static bool IsSupportPageCompress(void);
+    static void UtPresetDb(const std::string &dbFile, const std::string &vfsOption);
+    static int UtQueryPresetDbResult(void *data, int argc, char **argv, char **azColName);
+    static void UtCheckPresetDb(const std::string &dbPath, const std::string &vfsOption);
 
-    static sqlite3 *db;
+    static sqlite3 *db_;
+    static int resCnt_;
     static const std::string &UT_DDL_CREATE_DEMO;
     static const std::string &UT_DML_INSERT_DEMO;
     static const std::string &UT_SQL_SELECT_META;
@@ -59,7 +63,8 @@ public:
     static const std::string &UT_PHONE_DESC;
 };
 
-sqlite3 *SQLiteCompressTest::db = nullptr;
+sqlite3 *SQLiteCompressTest::db_ = nullptr;
+int SQLiteCompressTest::resCnt_ = 0;
 const std::string &SQLiteCompressTest::UT_DDL_CREATE_DEMO = "CREATE TABLE demo(id INTEGER PRIMARY KEY, name TEXT);";
 const std::string &SQLiteCompressTest::UT_DML_INSERT_DEMO = "INSERT INTO demo(id, name) VALUES(110, 'Call 110!');";
 const std::string &SQLiteCompressTest::UT_SQL_SELECT_META = "SELECT COUNT(1) FROM sqlite_master;";
@@ -105,6 +110,82 @@ bool SQLiteCompressTest::IsSupportPageCompress(void)
 #endif
 }
 
+void SQLiteCompressTest::UtPresetDb(const std::string &dbFile, const std::string &vfsOption)
+{
+    sqlite3 *db = NULL;
+    EXPECT_EQ(sqlite3_open_v2(dbFile.c_str(), &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+        (vfsOption.empty()? nullptr : vfsOption.c_str())), SQLITE_OK);
+    if (vfsOption == "cksmvfs") {
+        EXPECT_EQ(sqlite3_exec(db, "PRAGMA checksum_persist_enable=ON;", NULL, NULL, NULL), SQLITE_OK);
+    }
+    EXPECT_EQ(sqlite3_exec(db, "PRAGMA meta_double_write=enabled;", NULL, NULL, NULL), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL), SQLITE_OK);
+    static const char *UT_DDL_CREATE_TABLE = "CREATE TABLE salary"
+        "(entryId INTEGER PRIMARY KEY, entryName Text, salary REAL, class INTEGER);";
+    EXPECT_EQ(sqlite3_exec(db, UT_DDL_CREATE_TABLE, NULL, NULL, NULL), SQLITE_OK);
+    std::string tmp = "CREATE TABLE test";
+    for (size_t i = 0; i < 10; i++) {  // 10 means the count of tables
+        std::string ddl = "CREATE TABLE test";
+        ddl += std::to_string(i);
+        ddl += "(entryId INTEGER PRIMARY KEY, entryName Text, salary REAL, class INTEGER);";
+        EXPECT_EQ(sqlite3_exec(db, ddl.c_str(), NULL, NULL, NULL), SQLITE_OK);
+    }
+    static const char *UT_SQL_INSERT_DATA = "INSERT INTO salary(entryId, entryName, salary, class) VALUES(?,?,?,?);";
+    sqlite3_stmt *insertStmt = NULL;
+    EXPECT_EQ(sqlite3_prepare_v2(db, UT_SQL_INSERT_DATA, -1, &insertStmt, NULL), SQLITE_OK);
+    for (int i = 0; i < 1000; i++) {  // 1000 means the total number of insert data
+        sqlite3_bind_int(insertStmt, 1, i + 1);  // 1 is the seq number of 1st field
+        sqlite3_bind_text(insertStmt, 2, "salary-entry-name", -1, SQLITE_STATIC);  // 2 is the seq number of 2nd field
+        sqlite3_bind_double(insertStmt, 3, i);  // 3 is the seq number of 3rd field
+        sqlite3_bind_int(insertStmt, 4, i + 1);  // 4 is the seq number of 4th field
+        EXPECT_EQ(sqlite3_step(insertStmt), SQLITE_DONE);
+        sqlite3_reset(insertStmt);
+    }
+    sqlite3_finalize(insertStmt);
+    sqlite3_close(db);
+}
+
+int SQLiteCompressTest::UtQueryPresetDbResult(void *data, int argc, char **argv, char **azColName)
+{
+    int type = *static_cast<int *>(data);
+    EXPECT_EQ(argc, 1);
+    if (type==0) { // Check tables
+        std::string tableName = argv[0] ? argv[0] : nullptr;
+        std::string expectTables[] = { "salary", "test0", "test1", "test2", "test3", "test4",
+            "test5", "test6", "test7", "test8", "test9" };
+        bool isExist = false;
+        for (size_t i = 0; i < 11; i++) {  // 11 is the number of array:expectTables
+            if (expectTables[i] == tableName) {
+                isExist = true;
+                break;
+            }
+        }
+        EXPECT_TRUE(isExist) << ", tableName:" << tableName;
+        return SQLITE_OK;
+    }
+
+    resCnt_++;
+    int entryId = atoi(argv[0]);
+    EXPECT_TRUE(entryId > 0 && entryId < 1001) << ", entryId:" << entryId;  // 1001 is the max id of entryId
+    return SQLITE_OK;
+}
+
+void SQLiteCompressTest::UtCheckPresetDb(const std::string &dbFile, const std::string &vfsOption)
+{
+    sqlite3 *db = NULL;
+    EXPECT_EQ(sqlite3_open_v2(dbFile.c_str(), &db, SQLITE_OPEN_READONLY,
+        (vfsOption.empty()? nullptr : vfsOption.c_str())), SQLITE_OK);
+    static const char *UT_SELECT_ALL_TABLES = "SELECT tbl_name FROM sqlite_master;";
+    int type = 0;
+    EXPECT_EQ(sqlite3_exec(db, UT_SELECT_ALL_TABLES, &UtQueryPresetDbResult, &type, nullptr), SQLITE_OK);
+    type = 1;  // 1 means query table: salary
+    resCnt_ = 0;
+    static const char *UT_SELECT_ALL_FROM_SALARY = "SELECT entryId FROM salary;";
+    EXPECT_EQ(sqlite3_exec(db, UT_SELECT_ALL_FROM_SALARY, &UtQueryPresetDbResult, &type, nullptr), SQLITE_OK);
+    EXPECT_EQ(resCnt_, 1000);
+    sqlite3_close(db);
+}
+
 void SQLiteCompressTest::SetUpTestCase(void)
 {
     Common::RemoveDir(TEST_DIR);
@@ -123,13 +204,13 @@ void SQLiteCompressTest::SetUp(void)
     command += TEST_DIR "/*";
     system(command.c_str());
     sqlite3_config(SQLITE_CONFIG_LOG, &SQLiteCompressTest::UtSqliteLogPrint, NULL);
-    EXPECT_EQ(sqlite3_open(TEST_DB, &db), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, UT_DDL_CREATE_PHONE.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_open(TEST_DB, &db_), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db_, UT_DDL_CREATE_PHONE.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
     for (int i = 0; i < TEST_PRESET_TABLE_COUNT; i++) {
         std::string ddl = "CREATE TABLE IF NOT EXISTS test";
         ddl += std::to_string(i + 1);
         ddl += "(id INTEGER PRIMARY KEY, field1 INTEGER, field2 REAL, field3 TEXT, field4 BLOB, field5 TEXT);";
-        EXPECT_EQ(sqlite3_exec(db, ddl.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+        EXPECT_EQ(sqlite3_exec(db_, ddl.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
     }
     std::vector<std::string> phoneList = {"Huawei", "Samsung", "Apple", "Xiaomi", "Oppo", "Vivo", "Realme"};
     for (int i = 0; i < TEST_PRESET_DATA_COUNT; i++) {
@@ -139,16 +220,16 @@ void SQLiteCompressTest::SetUp(void)
         dml += std::to_string(i + 1) + phoneList[i%phoneList.size()] + "',";
         dml += std::to_string(i + 1.0) + ",";
         dml += std::to_string(i + 1) + ",'" + UT_PHONE_DESC + UT_PHONE_DESC + UT_PHONE_DESC + UT_PHONE_DESC + "');";
-        EXPECT_EQ(sqlite3_exec(db, dml.c_str(), nullptr, nullptr, nullptr), SQLITE_OK) << sqlite3_errmsg(db);
+        EXPECT_EQ(sqlite3_exec(db_, dml.c_str(), nullptr, nullptr, nullptr), SQLITE_OK) << sqlite3_errmsg(db_);
     }
-    sqlite3_close(db);
-    EXPECT_EQ(sqlite3_open(TEST_DB, &db), SQLITE_OK);
+    sqlite3_close(db_);
+    EXPECT_EQ(sqlite3_open(TEST_DB, &db_), SQLITE_OK);
 }
 
 void SQLiteCompressTest::TearDown(void)
 {
-    sqlite3_close(db);
-    db = nullptr;
+    sqlite3_close(db_);
+    db_ = nullptr;
     sqlite3_config(SQLITE_CONFIG_LOG, NULL, NULL);
 }
 
@@ -233,7 +314,7 @@ HWTEST_F(SQLiteCompressTest, CompressTest003, TestSize.Level0)
     sqlite3 *compDb = nullptr;
     EXPECT_EQ(sqlite3_open_v2(dbPath1.c_str(), &compDb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, "compressvfs"),
         SQLITE_OK);
-    UtBackupDatabase(db, compDb);
+    UtBackupDatabase(db_, compDb);
     sqlite3_close_v2(compDb);
     UtCheckDb(dbPath1);
 
@@ -360,10 +441,10 @@ HWTEST_F(SQLiteCompressTest, CompressTest006, TestSize.Level0)
     sqlite3 *compDb = nullptr;
     EXPECT_EQ(sqlite3_open_v2(dbPath1.c_str(), &compDb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, "compressvfs"),
         SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(compDb, UT_DDL_CREATE_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(compDb, UT_DML_INSERT_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
     EXPECT_EQ(sqlite3_exec(compDb, "PRAGMA meta_double_write=enabled;", nullptr, nullptr, nullptr), SQLITE_OK);
     EXPECT_EQ(sqlite3_exec(compDb, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, UT_DDL_CREATE_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(compDb, UT_DML_INSERT_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
     /**
      * @tc.steps: step2. Open multi sqlite3 which enable page compression at the same time
      * @tc.expected: step2. Execute successfully
@@ -452,6 +533,156 @@ HWTEST_F(SQLiteCompressTest, CompressTest008, TestSize.Level0)
     EXPECT_TRUE(Common::IsFileExist(shm.c_str()));
     EXPECT_TRUE(Common::IsFileExist(dwr.c_str()));
     EXPECT_FALSE(Common::IsFileExist(lock.c_str()));
+}
+
+/**
+ * @tc.name: CompressTest009
+ * @tc.desc: Test to open an non-cmopress db through vfs option:compress
+ * @tc.type: FUNC
+ */
+HWTEST_F(SQLiteCompressTest, CompressTest009, TestSize.Level0)
+{
+    if (!IsSupportPageCompress()) {
+        GTEST_SKIP() << "Current testcase is not compatible";
+    }
+    /**
+     * @tc.steps: step1. Open the exist db through vfs option:compressvfs using SQLITE_OPEN_READONLY
+     * @tc.expected: step1. Execute successfully
+     */
+    sqlite3 *db1 = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db1, SQLITE_OPEN_READONLY, "compressvfs"), SQLITE_WARNING);
+    // lock file not exist, return not a compress db
+    EXPECT_EQ(sqlite3_extended_errcode(db1), SQLITE_WARNING_NOTCOMPRESSDB);
+    sqlite3_close_v2(db1);
+}
+
+/**
+ * @tc.name: CompressTest010
+ * @tc.desc: Test to insert data while transaction executing
+ * @tc.type: FUNC
+ */
+HWTEST_F(SQLiteCompressTest, CompressTest010, TestSize.Level0)
+{
+    if (!IsSupportPageCompress()) {
+        GTEST_SKIP() << "Current testcase is not compatible";
+    }
+    /**
+     * @tc.steps: step1. Create a brand new db while page compression enabled
+     * @tc.expected: step1. Execute successfully
+     */
+    std::string dbPath = TEST_DIR "/compresstest010.db";
+    UtPresetDb(dbPath, "compressvfs");
+    /**
+     * @tc.steps: step2. Open the db used to begin transaction, delete 5 entries
+     * @tc.expected: step2. Execute successfully
+     */
+    sqlite3 *db1 = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(dbPath.c_str(), &db1, SQLITE_OPEN_READWRITE, "compressvfs"), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db1, "BEGIN;", nullptr, nullptr, nullptr), SQLITE_OK);
+    // delete data from 996 ~ 1000
+    EXPECT_EQ(sqlite3_exec(db1, "DELETE FROM salary WHERE entryId > 995;", nullptr, nullptr, nullptr), SQLITE_OK);
+    /**
+     * @tc.steps: step3. Open another db used to insert data, before commit transaction
+     * @tc.expected: step3. Execute successfully
+     */
+    sqlite3 *db2 = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(dbPath.c_str(), &db2, SQLITE_OPEN_READWRITE, "compressvfs"), SQLITE_OK);
+    static const char *UT_DDL_CREATE_TABLE = "CREATE TABLE salary123"
+        "(entryId INTEGER PRIMARY KEY, entryName Text, salary REAL, class INTEGER);";
+    EXPECT_EQ(sqlite3_exec(db2, UT_DDL_CREATE_TABLE, NULL, NULL, NULL), SQLITE_BUSY);
+    sqlite3_close_v2(db2);
+    EXPECT_EQ(sqlite3_exec(db1, "COMMIT;", nullptr, nullptr, nullptr), SQLITE_OK);
+    sqlite3_close_v2(db1);
+}
+
+/**
+ * @tc.name: CompressTest011
+ * @tc.desc: Test to check lock file name
+ * @tc.type: FUNC
+ */
+HWTEST_F(SQLiteCompressTest, CompressTest011, TestSize.Level0)
+{
+    if (!IsSupportPageCompress()) {
+        GTEST_SKIP() << "Current testcase is not compatible";
+    }
+    /**
+     * @tc.steps: step1. Get lock file name from non-compress db connection
+     * @tc.expected: step1. Execute successfully
+     */
+    const char *dbName = sqlite3_db_filename(db_, "main");
+    const char *walName = sqlite3_filename_wal(dbName);
+    const char *lockName = walName + strlen(walName) + 1;
+    std::string expectLockFilenameSuffix = "/sqlitecompresstest/test.db";
+    std::string lockPathStr = lockName;
+    EXPECT_TRUE(lockPathStr.find(expectLockFilenameSuffix) != std::string::npos);
+    /**
+     * @tc.steps: step2. Create a brand new db while page compression enabled, check lock filename
+     * @tc.expected: step2. Execute successfully
+     */
+    std::string dbPath = TEST_DIR "/compresstest011.db";
+    UtPresetDb(dbPath, "compressvfs");
+    sqlite3 *db1 = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(dbPath.c_str(), &db1, SQLITE_OPEN_READWRITE, "compressvfs"), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db1, UT_DDL_CREATE_PHONE.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    const char *dbName1 = sqlite3_db_filename(db1, "main");
+    const char *walName1 = sqlite3_filename_wal(dbName1);
+    const char *lockName1 = walName1 + strlen(walName1) + 1;
+    std::string expectLockFilenameSuffix1 = "/sqlitecompresstest/compresstest011.db-lockcompress";
+    lockPathStr = lockName1;
+    EXPECT_TRUE(lockPathStr.find(expectLockFilenameSuffix1) != std::string::npos);
+    sqlite3_close_v2(db1);
+}
+
+/**
+ * @tc.name: CompressTest012
+ * @tc.desc: Test to check lock file name
+ * @tc.type: FUNC
+ */
+HWTEST_F(SQLiteCompressTest, CompressTest012, TestSize.Level0)
+{
+    if (!IsSupportPageCompress()) {
+        GTEST_SKIP() << "Current testcase is not compatible";
+    }
+    /**
+     * @tc.steps: step1. Create brand new db as main db, and a compress db as slave
+     * @tc.expected: step1. Execute successfully
+     */
+    std::string dbPath = TEST_DIR "/test011.db";
+    UtPresetDb(dbPath, "");
+    sqlite3 *db = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(dbPath.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr), SQLITE_OK);
+    std::string slavePath = TEST_DIR "/test011_slave.db";
+    sqlite3 *slaveDb = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(slavePath.c_str(), &slaveDb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, "compressvfs"),
+        SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(slaveDb, "PRAGMA meta_double_write=enabled;", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(slaveDb, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(slaveDb, UT_DDL_CREATE_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(slaveDb, UT_DML_INSERT_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    int persistMode = 1;
+    EXPECT_EQ(sqlite3_file_control(slaveDb, "main", SQLITE_FCNTL_PERSIST_WAL, &persistMode), SQLITE_OK);
+    UtBackupDatabase(db, slaveDb);
+    /**
+     * @tc.steps: step2. Insert serveral data into slave db, then backup again
+     * @tc.expected: step2. Execute successfully
+     */
+    static const char *UT_INSERT_DATA = "INSERT INTO salary(entryId, entryName, salary, class) VALUES(?,?,?,?);";
+    sqlite3_stmt *insertStmt = NULL;
+    EXPECT_EQ(sqlite3_prepare_v2(slaveDb, UT_INSERT_DATA, -1, &insertStmt, NULL), SQLITE_OK);
+    for (int i = 0; i < 100; i++) {  // 100 means the total number of insert data
+        sqlite3_bind_int(insertStmt, 1, i + 20000);  // 20000 is the begining of entryId to insert
+        sqlite3_bind_text(insertStmt, 2, "salary-entry-name", -1, SQLITE_STATIC);  // 2 is the seq number of 2nd field
+        sqlite3_bind_double(insertStmt, 3, i);  // 3 is the seq number of 3rd field
+        sqlite3_bind_int(insertStmt, 4, i + 1);  // 4 is the seq number of 4th field
+        EXPECT_EQ(sqlite3_step(insertStmt), SQLITE_DONE);
+        sqlite3_reset(insertStmt);
+    }
+    sqlite3_finalize(insertStmt);
+    // Backup again, all data insert above should be covered
+    UtBackupDatabase(db, slaveDb);
+    sqlite3_close_v2(slaveDb);
+    sqlite3_close_v2(db);
+    UtCheckPresetDb(slavePath, "compressvfs");
 }
 
 }  // namespace Test
