@@ -1,0 +1,16 @@
+diff --git a/src/shell.c b/src/shell.c
+index cedf118..e4cbd07 100644
+--- a/src/shell.c
++++ b/src/shell.c
+@@ -28388,6 +28388,10 @@ static int process_input(ShellState *p){
+       if( p->in==0 && stdin_is_interactive ) oputz("\n");
+       break;
+     }
++    if((sqlite3_strlike("%pragma%key%=%", zLine, 0)==0)){
++      printf("not support pragma key\n");
++      break;
++    }
+     if( seenInterrupt ){
+       if( p->in!=0 ) break;
+       seenInterrupt = 0;
+       
