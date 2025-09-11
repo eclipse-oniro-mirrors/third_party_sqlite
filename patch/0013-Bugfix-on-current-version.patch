@@ -1,13 +1,13 @@
-From c1fde2e5d38ea21512194bb1fd6cf8f2bfb0a1d9 Mon Sep 17 00:00:00 2001
+From cb972fc2c60b8dd88625e88916161be55e1029c5 Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
-Date: Wed, 10 Sep 2025 11:04:58 +0800
+Date: Thu, 11 Sep 2025 17:24:08 +0800
 Subject: [PATCH] Bugfix on current version
 
 ---
  ext/misc/cksumvfs.c |  11 +-
- src/compressvfs.c   | 271 +++++++++++++++++++++++-----------
+ src/compressvfs.c   | 327 ++++++++++++++++++++++++++++-------------
  src/sqlite3.c       | 349 ++++++++++++++++++++++++++++++++++++--------
- 3 files changed, 482 insertions(+), 149 deletions(-)
+ 3 files changed, 519 insertions(+), 168 deletions(-)
 
 diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
 index 27b1028..e89edcd 100644
@@ -53,7 +53,7 @@ index 27b1028..e89edcd 100644
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE]=CKSUMVFS_MAGIC_NUM;
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE+1]=p->verifyCksm ? CKSUMVFS_CALC_CHECKSUM : CKSUMVFS_WITHOUT_CHECKSUM;
 diff --git a/src/compressvfs.c b/src/compressvfs.c
-index f2fe169..20cf110 100644
+index f2fe169..999981f 100644
 --- a/src/compressvfs.c
 +++ b/src/compressvfs.c
 @@ -151,6 +151,7 @@ typedef INT8_TYPE i8;              /* 1-byte signed integer */
@@ -85,11 +85,45 @@ index f2fe169..20cf110 100644
  } CompressFile;
  
  
-@@ -505,14 +510,14 @@ static void getCompression(sqlite3 *db, CompressFile *pCompress){
+@@ -434,19 +439,22 @@ EXPORT_SYMBOLS int decompressBuf(
+ }
+ 
+ /* Check whether the table exists in the OutterDB. */
+-static int tableExists(sqlite3 *db, const char *table_name){
++static int tableExists(sqlite3 *db, const char *table_name, u8 *isExist){
+   sqlite3_stmt *stmt = NULL;
+   const char *sql = "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?;";
+-  int exists = 0;
+ 
+-  if( sqlite3_prepare_v2(db, sql, -1, &stmt, NULL)==SQLITE_OK ){
+-    sqlite3_bind_text(stmt, 1, table_name, -1, SQLITE_STATIC);
+-    if( sqlite3_step(stmt)==SQLITE_ROW ){
+-      exists = 1;
+-    }
+-    sqlite3_finalize(stmt);
++  int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
++  if( rc!=SQLITE_OK ){
++    return rc;
++  }
++  sqlite3_bind_text(stmt, 1, table_name, -1, SQLITE_STATIC);
++  rc = sqlite3_step(stmt);
++  sqlite3_finalize(stmt);
++  if( rc!=SQLITE_ROW && rc!=SQLITE_DONE ){
++    return rc;
+   }
+-  return exists;
++  *isExist = (rc==SQLITE_ROW) ? 1 : 0;
++  return SQLITE_OK;
+ }
+ 
+ /* Get page size before compressed from OutterDB. */
+@@ -504,15 +512,15 @@ static void getCompression(sqlite3 *db, CompressFile *pCompress){
+   sqlite3_stmt *stmt = NULL;
    const char *sql = "SELECT count(*), compression, pagesize FROM vfs_compression;";
    int count = 0;
-   pCompress->compression = COMPRESSION_UNDEFINED;
+-  pCompress->compression = COMPRESSION_UNDEFINED;
 -  pCompress->page_size = 0;
++  pCompress->compression = COMPRESSION_ZSTD;
 +  pCompress->pageSize = 0;
  
    if( sqlite3_prepare_v2(db, sql, -1, &stmt, NULL)==SQLITE_OK ){
@@ -102,7 +136,7 @@ index f2fe169..20cf110 100644
        }
      }
      sqlite3_finalize(stmt);
-@@ -590,7 +595,9 @@ static int compressDeviceCharacteristics(sqlite3_file *pFile){
+@@ -590,7 +598,9 @@ static int compressDeviceCharacteristics(sqlite3_file *pFile){
  */
  static int compressLock(sqlite3_file *pFile, int eFileLock){
    assert( pFile );
@@ -113,7 +147,7 @@ index f2fe169..20cf110 100644
  }
  
  /*
-@@ -598,7 +605,9 @@ static int compressLock(sqlite3_file *pFile, int eFileLock){
+@@ -598,7 +608,9 @@ static int compressLock(sqlite3_file *pFile, int eFileLock){
  */
  static int compressUnlock(sqlite3_file *pFile, int eFileLock){
    assert( pFile );
@@ -124,7 +158,7 @@ index f2fe169..20cf110 100644
  }
  
  /*
-@@ -608,11 +617,11 @@ static int compressFileSize(sqlite3_file *pFile, i64 *pSize){
+@@ -608,11 +620,11 @@ static int compressFileSize(sqlite3_file *pFile, i64 *pSize){
    assert( pFile );
    CompressFile *pCompress = (CompressFile *)pFile;
    sqlite3 *db = pCompress->pDb;
@@ -138,7 +172,7 @@ index f2fe169..20cf110 100644
    int maxpgno = getMaxCompressPgno(db);
    *pSize = (i64)maxpgno * pgsize;
    return SQLITE_OK;
-@@ -625,11 +634,11 @@ static int compressTruncate(sqlite3_file *pFile, sqlite_int64 size){
+@@ -625,11 +637,11 @@ static int compressTruncate(sqlite3_file *pFile, sqlite_int64 size){
    assert( pFile );
    CompressFile *pCompress = (CompressFile *)pFile;
    sqlite3 *db = pCompress->pDb;
@@ -153,7 +187,7 @@ index f2fe169..20cf110 100644
    int pgno = size / pgsize;
    if( size % pgsize!=0 || getMaxCompressPgno(db) < pgno ){
      return SQLITE_IOERR_TRUNCATE;
-@@ -661,58 +670,72 @@ static int compressWrite(sqlite3_file *pFile, const void *pBuf, int iAmt, sqlite
+@@ -661,58 +673,72 @@ static int compressWrite(sqlite3_file *pFile, const void *pBuf, int iAmt, sqlite
    assert( iAmt>0 );
    CompressFile *pCompress = (CompressFile *)pFile;
    sqlite3 *db = pCompress->pDb;
@@ -248,7 +282,7 @@ index f2fe169..20cf110 100644
    return SQLITE_OK;
  }
  
-@@ -731,71 +754,83 @@ static int compressRead(sqlite3_file *pFile, void *pBuf, int iAmt, sqlite_int64
+@@ -731,71 +757,83 @@ static int compressRead(sqlite3_file *pFile, void *pBuf, int iAmt, sqlite_int64
    }
    (void)memset_s(pBuf, iAmt, 0, iAmt);
    sqlite3 *db = pCompress->pDb;
@@ -354,7 +388,7 @@ index f2fe169..20cf110 100644
    }
  
    return rc;
-@@ -808,6 +843,7 @@ static int compressClose(sqlite3_file *pFile){
+@@ -808,6 +846,7 @@ static int compressClose(sqlite3_file *pFile){
    assert( pFile );
    CompressFile *pCompress = (CompressFile *)pFile;
    sqlite3 *db = pCompress->pDb;
@@ -362,7 +396,7 @@ index f2fe169..20cf110 100644
    int rc = compressSync(pFile, 0);
    if( rc!=SQLITE_OK ){
      return rc;
-@@ -821,9 +857,13 @@ static int compressClose(sqlite3_file *pFile){
+@@ -821,9 +860,13 @@ static int compressClose(sqlite3_file *pFile){
        pCompress->pDb = NULL;
      }
    }
@@ -378,13 +412,13 @@ index f2fe169..20cf110 100644
    }
    return rc;
  }
-@@ -888,6 +928,40 @@ static int compressUnfetch(sqlite3_file *pFile, sqlite3_int64 iOfst, void *pPage
+@@ -888,6 +931,70 @@ static int compressUnfetch(sqlite3_file *pFile, sqlite3_int64 iOfst, void *pPage
    return SQLITE_OK;
  }
  
 +static int compressOpenLockFile(sqlite3_vfs *pVfs, const char *zName, int flags, sqlite3_file **pFile){
 +  const char *walPath = sqlite3_filename_wal(zName);
-+  const char *lockPath = walPath + strlen(walPath) + 1;  // For compress vfs, lock path place at thie position
++  const char *lockPath = walPath + strlen(walPath) + 1;  // For compress vfs, lock path place at this position
 +  int isLockExist = 0;
 +  int rc = ORIGVFS(pVfs)->xAccess(ORIGVFS(pVfs), lockPath, SQLITE_ACCESS_READWRITE, &isLockExist);
 +  if( rc!=SQLITE_OK ){
@@ -416,10 +450,40 @@ index f2fe169..20cf110 100644
 +  return rc;
 +}
 +
++static int compressDbInitCompression(CompressFile *pCompress, sqlite3 *db, u32 compression){
++  const char *pragmaStr = "PRAGMA checksum_persist_enable=ON;PRAGMA page_size=4096;"\
++    "PRAGMA auto_vacuum=INCREMENTAL;PRAGMA journal_mode=OFF;";
++  int rc = sqlite3_exec(db, pragmaStr, NULL, NULL, NULL);
++  if( rc!=SQLITE_OK ){
++    sqlite3_log(rc, "Config compress db wrong, name");
++    return SQLITE_CANTOPEN;
++  }
++  const char *initCompressionStr = "CREATE TABLE IF NOT EXISTS vfs_compression(compression INTEGER, pagesize INTEGER);";
++  rc = sqlite3_exec(db, initCompressionStr, NULL, NULL, NULL);
++  if( rc!=SQLITE_OK ){
++    sqlite3_log(rc, "Configure compress db wrong, create vfs_compression failed");
++    return SQLITE_CANTOPEN;
++  }
++  char compressionSql[COMPRESSION_SQL_MAX_LENGTH] = {0};
++  if( sprintf_s(compressionSql, COMPRESSION_SQL_MAX_LENGTH,
++    "INSERT OR IGNORE INTO vfs_compression(compression, pagesize) VALUES (%u, 0);", compression)<=0 ){
++    sqlite3_log(rc, "Concatenate config stat wrong, compression(%u)", compression);
++    return SQLITE_CANTOPEN;
++  }
++  rc = sqlite3_exec(db, compressionSql, NULL, NULL, NULL);
++  if( rc!=SQLITE_OK ){
++    sqlite3_log(rc, "Config compress db wrong, insert compression(%u) failed", compression);
++    return SQLITE_CANTOPEN;
++  }
++  pCompress->compression = compression;
++  pCompress->pageSize = 0;
++  return SQLITE_OK;
++}
++
  /*
  ** Open a compress file.If this file is not a journal or wal file,
  ** it will open a OutterDB and create vfs_pages and vfs_compression table
-@@ -902,87 +976,114 @@ static int compressOpen(
+@@ -902,87 +1009,99 @@ static int compressOpen(
  ){
    sqlite3_file *pSubFile = ORIGFILE(pFile);
    CompressFile *pCompress = (CompressFile *)pFile;
@@ -435,6 +499,7 @@ index f2fe169..20cf110 100644
    }
    pCompress->bSubDbOpen = 1;
    sqlite3_int64 fileSize = 0;
++  u8 isExist = 0;
 +  sqlite3 *db = NULL;
    rc = pSubFile->pMethods->xFileSize(pSubFile, &fileSize);
    if( rc!=SQLITE_OK ){
@@ -467,8 +532,12 @@ index f2fe169..20cf110 100644
 -  if( rc!=SQLITE_OK ){
 -    rc = SQLITE_CANTOPEN;
 -    goto open_end;
--  }
-   if( tableExists(db, "vfs_compression") ){
++  rc = tableExists(db, "vfs_compression", &isExist);
++  if( rc!=SQLITE_OK ) {
++    return SQLITE_CANTOPEN;
+   }
+-  if( tableExists(db, "vfs_compression") ){
++  if( isExist ){
      getCompression(db, pCompress);
      if( pCompress->compression!=COMPRESSION_BROTLI && pCompress->compression!=COMPRESSION_ZSTD ){
        rc = SQLITE_CANTOPEN;
@@ -492,54 +561,43 @@ index f2fe169..20cf110 100644
        rc = SQLITE_CANTOPEN;
 -      goto open_end;
 +      goto END_OUT;
-+    }
-+    const char *pragmaStr = "PRAGMA checksum_persist_enable=ON;PRAGMA page_size=4096;"\
-+      "PRAGMA auto_vacuum=INCREMENTAL;PRAGMA journal_mode=OFF;";
-+    rc = sqlite3_exec(db, pragmaStr, NULL, NULL, NULL);
-+    if( rc!=SQLITE_OK ){
-+      sqlite3_log(rc, "Config compress db wrong, name:%s", zName);
-+      rc = SQLITE_CANTOPEN;
-+      goto END_OUT;
      }
 -    const char *init_compression_sql = "CREATE TABLE vfs_compression (compression INTEGER, pagesize INTEGER);";
 -    rc = sqlite3_exec(db, init_compression_sql, NULL, NULL, NULL);
-+    const char *initCompressionStr = "CREATE TABLE vfs_compression (compression INTEGER, pagesize INTEGER);";
-+    rc = sqlite3_exec(db, initCompressionStr, NULL, NULL, NULL);
++    rc = compressDbInitCompression(pCompress, db, g_compress_algo_load);
      if( rc!=SQLITE_OK ){
-+      sqlite3_log(rc, "Configure compress db wrong, name:%s, create vfs_compression failed", zName);
-       rc = SQLITE_CANTOPEN;
+-      rc = SQLITE_CANTOPEN;
 -      goto open_end;
-+      goto END_OUT;
-     }
+-    }
 -    char set_compression_sql[COMPRESSION_SQL_MAX_LENGTH] = {0};
 -    if( sprintf_s(set_compression_sql, COMPRESSION_SQL_MAX_LENGTH,
-+    char compressionSql[COMPRESSION_SQL_MAX_LENGTH] = {0};
-+    if( sprintf_s(compressionSql, COMPRESSION_SQL_MAX_LENGTH,
-       "INSERT INTO vfs_compression(compression, pagesize) VALUES (%u, 0);", g_compress_algo_load)<=0 ){
-       rc = SQLITE_CANTOPEN;
+-      "INSERT INTO vfs_compression(compression, pagesize) VALUES (%u, 0);", g_compress_algo_load)<=0 ){
+-      rc = SQLITE_CANTOPEN;
 -      goto open_end;
-+      sqlite3_log(rc, "Concatenate config stat wrong, name:%s, compression(%u)", zName, g_compress_algo_load);
++      sqlite3_log(rc, "Init compression info wrong, name:%s", zName);
 +      goto END_OUT;
      }
 -    rc = sqlite3_exec(db, set_compression_sql, NULL, NULL, NULL);
-+    rc = sqlite3_exec(db, compressionSql, NULL, NULL, NULL);
-     if( rc!=SQLITE_OK ){
-+      sqlite3_log(rc, "Config compress db wrong, name:%s, insert compression(%u) failed", zName, g_compress_algo_load);
-       rc = SQLITE_CANTOPEN;
+-    if( rc!=SQLITE_OK ){
+-      rc = SQLITE_CANTOPEN;
 -      goto open_end;
-+      goto END_OUT;
-     }
-     pCompress->compression = g_compress_algo_load;
+-    }
+-    pCompress->compression = g_compress_algo_load;
 -    pCompress->page_size = 0;
-+    pCompress->pageSize = 0;
    }
-   if( tableExists(db, "vfs_pages") ){
+-  if( tableExists(db, "vfs_pages") ){
 -    goto open_end;
++  rc = tableExists(db, "vfs_pages", &isExist);
++  if( rc!=SQLITE_OK ){
++    rc = SQLITE_CANTOPEN;
 +    goto END_OUT;
    }
 -  const char *create_sql = "CREATE TABLE vfs_pages (pageno INTEGER PRIMARY KEY, data BLOB NOT NULL);";
 -  rc = sqlite3_exec(db, create_sql, NULL, NULL, NULL);
-+  const char *pageDdlStr = "CREATE TABLE vfs_pages (pageno INTEGER PRIMARY KEY, data BLOB NOT NULL);";
++  if( isExist ){
++    goto END_OUT;
++  }
++  const char *pageDdlStr = "CREATE TABLE IF NOT EXISTS vfs_pages (pageno INTEGER PRIMARY KEY, data BLOB NOT NULL);";
 +  rc = sqlite3_exec(db, pageDdlStr, NULL, NULL, NULL);
    if( rc!=SQLITE_OK ){
 +    sqlite3_log(rc, "Config compress db wrong, name:%s, create page table failed", zName);

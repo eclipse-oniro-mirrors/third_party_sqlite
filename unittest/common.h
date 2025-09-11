@@ -15,6 +15,8 @@
 #ifndef COMMON_H
 #define COMMON_H
 
+#include <string>
+
 namespace UnitTest {
 namespace SQLiteTest {
 
@@ -26,6 +28,7 @@ public:
     static int RemoveDir(const char *dir);
     static int MakeDir(const char *dir);
     static bool IsFileExist(const char *fullPath);
+    static void DestroyDbFile(const std::string &dbPath, int offset, const std::string replaceStr);
 };
 }  // namespace SQLiteTest
 }  // namespace UnitTest
