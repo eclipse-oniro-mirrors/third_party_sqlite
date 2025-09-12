@@ -232,6 +232,72 @@ HWTEST_F(SqliteBinlogTest, BinlogReplayTest002, TestSize.Level1)
 }
 
 /**
+ * @tc.name: BinlogReplayTest003
+ * @tc.desc: Test replay binlog with transaction failed
+ * @tc.type: FUNC
+ */
+HWTEST_F(SqliteBinlogTest, BinlogReplayTest003, TestSize.Level1)
+{
+    /**
+     * @tc.steps: step1. open db and set binlog
+     * @tc.expected: step1. ok
+     */
+    sqlite3 *db = NULL;
+    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
+    ASSERT_NE(db, nullptr);
+    UtEnableBinlog(db);
+    /**
+     * @tc.steps: step2. Insert records
+     * @tc.expected: step2. Execute successfully
+     */
+    EXPECT_EQ(sqlite3_exec(db, "begin;", nullptr, nullptr, nullptr), SQLITE_OK);
+    static const char *UT_SQL_INSERT_DATA =
+        "INSERT INTO salary(entryId, entryName, salary, class) VALUES(1,'test',2,3);";
+    EXPECT_EQ(sqlite3_exec(db, UT_SQL_INSERT_DATA, nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db, "commit;", nullptr, nullptr, nullptr), SQLITE_OK);
+    /**
+     * @tc.steps: step3. drop table in backup and replay
+     * @tc.expected: step3. replay failed
+     */
+    sqlite3 *backupDb = NULL;
+    EXPECT_EQ(sqlite3_open_v2(TEST_BACKUP_DB, &backupDb,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
+    ASSERT_NE(backupDb, nullptr);
+    EXPECT_EQ(sqlite3_exec(backupDb, "drop table salary;", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_replay_binlog(db, backupDb), SQLITE_ERROR);
+    /**
+     * @tc.steps: step4. re-create table and clean binlog
+     * @tc.expected: step4. clean ok
+     */
+    static const char *UT_DDL_CREATE_TABLE = "CREATE TABLE salary("
+        "entryId INTEGER PRIMARY KEY,"
+        "entryName Text,"
+        "salary REAL,"
+        "class INTEGER,"
+        "extra BLOB);";
+    EXPECT_EQ(sqlite3_exec(backupDb, UT_DDL_CREATE_TABLE, NULL, NULL, NULL), SQLITE_OK);
+    UtEnableBinlog(db);
+    EXPECT_EQ(sqlite3_clean_binlog(db, BinlogFileCleanModeE::BINLOG_FILE_CLEAN_ALL_MODE), SQLITE_OK);
+    /**
+     * @tc.steps: step5. insert one more data with transaction
+     * @tc.expected: step5. insert ok
+     */
+    EXPECT_EQ(sqlite3_exec(db, "begin;", nullptr, nullptr, nullptr), SQLITE_OK);
+    static const char *UT_SQL_INSERT_DATA2 =
+        "INSERT INTO salary(entryId, entryName, salary, class) VALUES (2, 'test', 2, 3);";
+    EXPECT_EQ(sqlite3_exec(db, UT_SQL_INSERT_DATA2, nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db, "commit;", nullptr, nullptr, nullptr), SQLITE_OK);
+    /**
+     * @tc.steps: step5. replay transaction into backup
+     * @tc.expected: step5. replay success
+     */
+    EXPECT_EQ(sqlite3_replay_binlog(db, backupDb), SQLITE_OK);
+    sqlite3_close_v2(db);
+    sqlite3_close_v2(backupDb);
+}
+
+/**
  * @tc.name: BinlogInterfaceTest001
  * @tc.desc: Test replay sql with invalid db pointer
  * @tc.type: FUNC

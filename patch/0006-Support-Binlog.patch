@@ -1,14 +1,14 @@
-From bde4a0d2534ab3578c9ff04a35b1bb797e58cbfa Mon Sep 17 00:00:00 2001
+From 266fef0b19accb15bcde0bedb73d254cb9965651 Mon Sep 17 00:00:00 2001
 From: Liu Hongyang <liuhongyang4@huawei.com>
-Date: Fri, 5 Sep 2025 15:34:47 +0800
+Date: Thu, 11 Sep 2025 14:27:25 +0800
 [PATCH 06/12] Support-Binlog
 
 ---
- src/sqlite3.c | 1584 ++++++++++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 1575 insertions(+), 9 deletions(-)
+ src/sqlite3.c | 1587 ++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 1578 insertions(+), 9 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index b433dfb..a225fbc 100644
+index 3bbaf39..ebddb54 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -2938,7 +2938,9 @@ SQLITE_API sqlite3_int64 sqlite3_last_insert_rowid(sqlite3*);
@@ -697,7 +697,7 @@ index b433dfb..a225fbc 100644
    *ppDb = db;
  #ifdef SQLITE_ENABLE_SQLLOG
    if( sqlite3GlobalConfig.xSqllog ){
-@@ -256913,6 +257340,1133 @@ static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime
+@@ -256913,6 +257340,1136 @@ static void walLogCheckpointInfo(Wal *pWal, sqlite3 *db, sqlite3_int64 startTime
  }
  #endif
  
@@ -1793,6 +1793,9 @@ index b433dfb..a225fbc 100644
 +    }
 +  } while (1);
 +  destDb->xBinlogHandle.isSkipTrigger = oldIsSkipTrigger;
++  if (res != SQLITE_OK) {
++    sqlite3_exec(destDb, "rollback;", NULL, NULL, NULL);
++  }
 +  (void)srcDb->xBinlogHandle.binlogApi.binlogUnlockReadApi(srcDb->xBinlogHandle.binlogConn);
 +  if (res != SQLITE_OK) {
 +    sqlite3BinlogClose(srcDb);
@@ -1831,7 +1834,7 @@ index b433dfb..a225fbc 100644
  // export the symbols
  #ifdef SQLITE_EXPORT_SYMBOLS
  #ifndef SQLITE_CKSUMVFS_STATIC
-@@ -256942,6 +258496,9 @@ struct sqlite3_api_routines_extra {
+@@ -256942,6 +258499,9 @@ struct sqlite3_api_routines_extra {
    int (*key_v2)(sqlite3*,const char*,const void*,int);
    int (*rekey)(sqlite3*,const void*,int);
    int (*rekey_v2)(sqlite3*,const char*,const void*,int);
@@ -1841,7 +1844,7 @@ index b433dfb..a225fbc 100644
  };
  
  typedef struct sqlite3_api_routines_extra sqlite3_api_routines_extra;
-@@ -256952,13 +258509,22 @@ static const sqlite3_api_routines_extra sqlite3ExtraApis = {
+@@ -256952,13 +258512,22 @@ static const sqlite3_api_routines_extra sqlite3ExtraApis = {
    sqlite3_key,
    sqlite3_key_v2,
    sqlite3_rekey,
