@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <dirent.h>
+#include <fcntl.h>
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -95,6 +96,14 @@ bool Common::IsFileExist(const char *fullPath)
         return false;
     }
     return S_ISREG(statBuf.st_mode);
+}
+
+void Common::DestroyDbFile(const std::string &dbPath, int offset, const std::string replaceStr)
+{
+    int fd = open(dbPath.c_str(), O_WRONLY | O_CREAT);
+    lseek(fd, offset, SEEK_SET);
+    write(fd, replaceStr.c_str(), replaceStr.size());
+    close(fd);
 }
 
 }  // namespace SQLiteTest
