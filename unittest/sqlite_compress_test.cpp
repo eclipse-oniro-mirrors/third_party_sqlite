@@ -687,7 +687,7 @@ HWTEST_F(SQLiteCompressTest, CompressTest012, TestSize.Level0)
 
 /**
  * @tc.name: CompressTest013
- * @tc.desc: Test to open a file is not database
+ * @tc.desc: Test to open a file was corrupted
  * @tc.type: FUNC
  */
 HWTEST_F(SQLiteCompressTest, CompressTest013, TestSize.Level0)
@@ -713,7 +713,40 @@ HWTEST_F(SQLiteCompressTest, CompressTest013, TestSize.Level0)
      * @tc.expected: step1. Execute successfully
      */
     Common::DestroyDbFile(slavePath, 0, "testcase013");
-    EXPECT_EQ(sqlite3_open_v2(slavePath.c_str(), &slaveDb, SQLITE_OPEN_READWRITE, "compressvfs"), SQLITE_CANTOPEN);
+    EXPECT_EQ(sqlite3_open_v2(slavePath.c_str(), &slaveDb, SQLITE_OPEN_READWRITE, "compressvfs"), SQLITE_NOTADB);
+}
+
+/**
+ * @tc.name: CompressTest014
+ * @tc.desc: Test to open a file is corrupted
+ * @tc.type: FUNC
+ */
+HWTEST_F(SQLiteCompressTest, CompressTest014, TestSize.Level0)
+{
+    if (!IsSupportPageCompress()) {
+        GTEST_SKIP() << "Current testcase is not compatible";
+    }
+    /**
+     * @tc.steps: step1. Create brand new db as slave db using compress
+     * @tc.expected: step1. Execute successfully
+     */
+    std::string slavePath = TEST_DIR "/test013_slave.db";
+    sqlite3 *slaveDb = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(slavePath.c_str(), &slaveDb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, "compressvfs"),
+        SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(slaveDb, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(slaveDb, UT_DDL_CREATE_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(slaveDb, UT_DML_INSERT_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    sqlite3_close_v2(slaveDb);
+    slaveDb = nullptr;
+    /**
+     * @tc.steps: step2. Corrupted db file
+     * @tc.expected: step1. Execute successfully
+     */
+    Common::DestroyDbFile(slavePath, 2 * 4096, "testcase013");  // 2 * 4096 means the 2rd page's offset
+    EXPECT_EQ(sqlite3_open_v2(slavePath.c_str(), &slaveDb, SQLITE_OPEN_READWRITE, "compressvfs"), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(slaveDb, "SELECT COUNT(name) FROM demo;", nullptr, nullptr, nullptr), SQLITE_IOERR);
+    sqlite3_close_v2(slaveDb);
 }
 
 }  // namespace Test
