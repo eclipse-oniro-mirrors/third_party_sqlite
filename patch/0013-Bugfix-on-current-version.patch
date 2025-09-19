@@ -1,13 +1,13 @@
-From cb972fc2c60b8dd88625e88916161be55e1029c5 Mon Sep 17 00:00:00 2001
-From: MartinChoo <214582617@qq.com>
-Date: Thu, 11 Sep 2025 17:24:08 +0800
+From 35bc6fd85cf59f8b090279bd2baa8f114ea29893 Mon Sep 17 00:00:00 2001
+From: zhujinlin <214582617@qq.com>
+Date: Thu, 18 Sep 2025 14:57:01 +0800
 Subject: [PATCH] Bugfix on current version
 
 ---
  ext/misc/cksumvfs.c |  11 +-
- src/compressvfs.c   | 327 ++++++++++++++++++++++++++++-------------
+ src/compressvfs.c   | 326 ++++++++++++++++++++++++++++-------------
  src/sqlite3.c       | 349 ++++++++++++++++++++++++++++++++++++--------
- 3 files changed, 519 insertions(+), 168 deletions(-)
+ 3 files changed, 518 insertions(+), 168 deletions(-)
 
 diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
 index 27b1028..e89edcd 100644
@@ -53,7 +53,7 @@ index 27b1028..e89edcd 100644
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE]=CKSUMVFS_MAGIC_NUM;
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE+1]=p->verifyCksm ? CKSUMVFS_CALC_CHECKSUM : CKSUMVFS_WITHOUT_CHECKSUM;
 diff --git a/src/compressvfs.c b/src/compressvfs.c
-index f2fe169..999981f 100644
+index f2fe169..bee29b1 100644
 --- a/src/compressvfs.c
 +++ b/src/compressvfs.c
 @@ -151,6 +151,7 @@ typedef INT8_TYPE i8;              /* 1-byte signed integer */
@@ -483,7 +483,7 @@ index f2fe169..999981f 100644
  /*
  ** Open a compress file.If this file is not a journal or wal file,
  ** it will open a OutterDB and create vfs_pages and vfs_compression table
-@@ -902,87 +1009,99 @@ static int compressOpen(
+@@ -902,87 +1009,98 @@ static int compressOpen(
  ){
    sqlite3_file *pSubFile = ORIGFILE(pFile);
    CompressFile *pCompress = (CompressFile *)pFile;
@@ -534,7 +534,7 @@ index f2fe169..999981f 100644
 -    goto open_end;
 +  rc = tableExists(db, "vfs_compression", &isExist);
 +  if( rc!=SQLITE_OK ) {
-+    return SQLITE_CANTOPEN;
++    return rc;
    }
 -  if( tableExists(db, "vfs_compression") ){
 +  if( isExist ){
@@ -568,15 +568,15 @@ index f2fe169..999981f 100644
      if( rc!=SQLITE_OK ){
 -      rc = SQLITE_CANTOPEN;
 -      goto open_end;
--    }
++      sqlite3_log(rc, "Init compression info wrong, name:%s", zName);
++      goto END_OUT;
+     }
 -    char set_compression_sql[COMPRESSION_SQL_MAX_LENGTH] = {0};
 -    if( sprintf_s(set_compression_sql, COMPRESSION_SQL_MAX_LENGTH,
 -      "INSERT INTO vfs_compression(compression, pagesize) VALUES (%u, 0);", g_compress_algo_load)<=0 ){
 -      rc = SQLITE_CANTOPEN;
 -      goto open_end;
-+      sqlite3_log(rc, "Init compression info wrong, name:%s", zName);
-+      goto END_OUT;
-     }
+-    }
 -    rc = sqlite3_exec(db, set_compression_sql, NULL, NULL, NULL);
 -    if( rc!=SQLITE_OK ){
 -      rc = SQLITE_CANTOPEN;
@@ -589,7 +589,6 @@ index f2fe169..999981f 100644
 -    goto open_end;
 +  rc = tableExists(db, "vfs_pages", &isExist);
 +  if( rc!=SQLITE_OK ){
-+    rc = SQLITE_CANTOPEN;
 +    goto END_OUT;
    }
 -  const char *create_sql = "CREATE TABLE vfs_pages (pageno INTEGER PRIMARY KEY, data BLOB NOT NULL);";
@@ -622,7 +621,7 @@ index f2fe169..999981f 100644
  }
  
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index f959149..a143598 100644
+index f01224d..a5d8e3e 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -5363,7 +5363,7 @@ SQLITE_API int sqlite3_set_droptable_handle(sqlite3*, void (*xFunc)(sqlite3*,con
@@ -1275,7 +1274,7 @@ index f959149..a143598 100644
      sqlite3_log(SQLITE_ERROR, "[SQLite]Get wal file lock ofs %u failed, errno: %d", lock->l_start, errno);
      return 0;
    }
-@@ -259115,9 +259344,13 @@ struct sqlite3_api_routines_extra {
+@@ -259118,9 +259347,13 @@ struct sqlite3_api_routines_extra {
    int (*key_v2)(sqlite3*,const char*,const void*,int);
    int (*rekey)(sqlite3*,const void*,int);
    int (*rekey_v2)(sqlite3*,const char*,const void*,int);
