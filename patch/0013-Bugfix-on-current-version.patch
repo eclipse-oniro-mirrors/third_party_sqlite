@@ -1,13 +1,13 @@
-From 35bc6fd85cf59f8b090279bd2baa8f114ea29893 Mon Sep 17 00:00:00 2001
-From: zhujinlin <214582617@qq.com>
-Date: Thu, 18 Sep 2025 14:57:01 +0800
+From 06db1267d99188e1c75b07e8367f26f0c3a35cb3 Mon Sep 17 00:00:00 2001
+From: MartinChoo <214582617@qq.com>
+Date: Sat, 20 Sep 2025 11:56:23 +0800
 Subject: [PATCH] Bugfix on current version
 
 ---
  ext/misc/cksumvfs.c |  11 +-
- src/compressvfs.c   | 326 ++++++++++++++++++++++++++++-------------
+ src/compressvfs.c   | 330 ++++++++++++++++++++++++++++-------------
  src/sqlite3.c       | 349 ++++++++++++++++++++++++++++++++++++--------
- 3 files changed, 518 insertions(+), 168 deletions(-)
+ 3 files changed, 522 insertions(+), 168 deletions(-)
 
 diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
 index 27b1028..e89edcd 100644
@@ -53,7 +53,7 @@ index 27b1028..e89edcd 100644
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE]=CKSUMVFS_MAGIC_NUM;
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE+1]=p->verifyCksm ? CKSUMVFS_CALC_CHECKSUM : CKSUMVFS_WITHOUT_CHECKSUM;
 diff --git a/src/compressvfs.c b/src/compressvfs.c
-index f2fe169..bee29b1 100644
+index f2fe169..3b64648 100644
 --- a/src/compressvfs.c
 +++ b/src/compressvfs.c
 @@ -151,6 +151,7 @@ typedef INT8_TYPE i8;              /* 1-byte signed integer */
@@ -412,7 +412,7 @@ index f2fe169..bee29b1 100644
    }
    return rc;
  }
-@@ -888,6 +931,70 @@ static int compressUnfetch(sqlite3_file *pFile, sqlite3_int64 iOfst, void *pPage
+@@ -888,6 +931,69 @@ static int compressUnfetch(sqlite3_file *pFile, sqlite3_int64 iOfst, void *pPage
    return SQLITE_OK;
  }
  
@@ -451,8 +451,7 @@ index f2fe169..bee29b1 100644
 +}
 +
 +static int compressDbInitCompression(CompressFile *pCompress, sqlite3 *db, u32 compression){
-+  const char *pragmaStr = "PRAGMA checksum_persist_enable=ON;PRAGMA page_size=4096;"\
-+    "PRAGMA auto_vacuum=INCREMENTAL;PRAGMA journal_mode=OFF;";
++  const char *pragmaStr = "PRAGMA checksum_persist_enable=ON;PRAGMA page_size=4096;PRAGMA auto_vacuum=INCREMENTAL;";
 +  int rc = sqlite3_exec(db, pragmaStr, NULL, NULL, NULL);
 +  if( rc!=SQLITE_OK ){
 +    sqlite3_log(rc, "Config compress db wrong, name");
@@ -483,7 +482,7 @@ index f2fe169..bee29b1 100644
  /*
  ** Open a compress file.If this file is not a journal or wal file,
  ** it will open a OutterDB and create vfs_pages and vfs_compression table
-@@ -902,87 +1009,98 @@ static int compressOpen(
+@@ -902,87 +1008,103 @@ static int compressOpen(
  ){
    sqlite3_file *pSubFile = ORIGFILE(pFile);
    CompressFile *pCompress = (CompressFile *)pFile;
@@ -521,6 +520,11 @@ index f2fe169..bee29b1 100644
 +    sqlite3_log(rc, "Open compress db wrong, name:%s", zName);
      rc = SQLITE_CANTOPEN;
 -    goto open_end;
++    goto END_OUT;
++  }
++  rc = sqlite3_exec(db, "PRAGMA journal_mode=OFF;", NULL, NULL, NULL);
++  if( rc!=SQLITE_OK ){
++    sqlite3_log(rc, "Config compress db journal mode wrong, name:%s", zName);
 +    goto END_OUT;
    }
    pCompress->bOutterDbOpen = 1;
@@ -621,7 +625,7 @@ index f2fe169..bee29b1 100644
  }
  
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index f01224d..a5d8e3e 100644
+index 02885e0..40c15ec 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -5363,7 +5363,7 @@ SQLITE_API int sqlite3_set_droptable_handle(sqlite3*, void (*xFunc)(sqlite3*,con
@@ -1290,5 +1294,5 @@ index f01224d..a5d8e3e 100644
    int (*compressdb_backup)(sqlite3*, const char*);
  #else
 -- 
-2.47.0.windows.2
+2.51.0.windows.1
 
