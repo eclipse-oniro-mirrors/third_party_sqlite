@@ -1,13 +1,13 @@
-From e1a04700ca4c27e08361e9bbae19a4dc6e8354a9 Mon Sep 17 00:00:00 2001
+From dadfbd93c5b60de737c61f9f698ca99386370dd9 Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
-Date: Sat, 20 Sep 2025 11:56:23 +0800
-Subject: [PATCH 2/2] Bugfix on current version
+Date: Mon, 22 Sep 2025 15:26:37 +0800
+Subject: [PATCH] Bugfix on current version
 
 ---
  ext/misc/cksumvfs.c |  11 +-
- src/compressvfs.c   | 330 +++++++++++++++++++++++++++-------------
+ src/compressvfs.c   | 332 ++++++++++++++++++++++++++++-------------
  src/sqlite3.c       | 355 ++++++++++++++++++++++++++++++++++++--------
- 3 files changed, 526 insertions(+), 170 deletions(-)
+ 3 files changed, 527 insertions(+), 171 deletions(-)
 
 diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
 index 27b1028..e89edcd 100644
@@ -53,7 +53,7 @@ index 27b1028..e89edcd 100644
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE]=CKSUMVFS_MAGIC_NUM;
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE+1]=p->verifyCksm ? CKSUMVFS_CALC_CHECKSUM : CKSUMVFS_WITHOUT_CHECKSUM;
 diff --git a/src/compressvfs.c b/src/compressvfs.c
-index f2fe169..3b64648 100644
+index f2fe169..ddfdb45 100644
 --- a/src/compressvfs.c
 +++ b/src/compressvfs.c
 @@ -151,6 +151,7 @@ typedef INT8_TYPE i8;              /* 1-byte signed integer */
@@ -375,8 +375,9 @@ index f2fe169..3b64648 100644
      }
      rc = SQLITE_OK;
    }else if( rc==SQLITE_DONE ){
-     rc = SQLITE_IOERR_SHORT_READ;
-+    sqlite3_log(rc, "Missing page(%d) while try read", pgno);
+-    rc = SQLITE_IOERR_SHORT_READ;
++    rc = SQLITE_BUSY;
++    sqlite3_log(SQLITE_WARNING_DUMP, "Missing page(%d) while try read, may busy now", pgno);
    }
  
 - failed:
@@ -521,21 +522,21 @@ index f2fe169..3b64648 100644
      rc = SQLITE_CANTOPEN;
 -    goto open_end;
 +    goto END_OUT;
-+  }
-+  rc = sqlite3_exec(db, "PRAGMA journal_mode=OFF;", NULL, NULL, NULL);
-+  if( rc!=SQLITE_OK ){
-+    sqlite3_log(rc, "Config compress db journal mode wrong, name:%s", zName);
-+    goto END_OUT;
    }
-   pCompress->bOutterDbOpen = 1;
+-  pCompress->bOutterDbOpen = 1;
 -  sqlite3 *db = pCompress->pDb;
 -  const char *pre_pragma = "PRAGMA page_size=4096;"\
 -    "PRAGMA auto_vacuum=INCREMENTAL;PRAGMA journal_mode=OFF;";
    sqlite3_busy_timeout(db, 2000);  // Set time out:2s
 -  rc = sqlite3_exec(db, pre_pragma, NULL, NULL, NULL);
--  if( rc!=SQLITE_OK ){
++  rc = sqlite3_exec(db, "PRAGMA journal_mode=OFF;", NULL, NULL, NULL);
+   if( rc!=SQLITE_OK ){
 -    rc = SQLITE_CANTOPEN;
 -    goto open_end;
++    sqlite3_log(rc, "Config compress db journal mode wrong, name:%s", zName);
++    goto END_OUT;
++  }
++  pCompress->bOutterDbOpen = 1;
 +  rc = tableExists(db, "vfs_compression", &isExist);
 +  if( rc!=SQLITE_OK ) {
 +    return rc;
@@ -1315,5 +1316,5 @@ index 02885e0..c849443 100644
    int (*compressdb_backup)(sqlite3*, const char*);
  #else
 -- 
-2.28.0.windows.1
+2.51.0.windows.1
 
