@@ -1,13 +1,13 @@
-From 555b308b9edfddb70e3525ea9bfbf3d302c2a3e0 Mon Sep 17 00:00:00 2001
+From 5f19f1c8d1389243379364c66d62dfb9bafd441c Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
-Date: Thu, 25 Sep 2025 16:22:03 +0800
+Date: Thu, 9 Oct 2025 15:24:39 +0800
 Subject: [PATCH] Bugfix on current version
 
 ---
  ext/misc/cksumvfs.c |  11 +-
- src/compressvfs.c   | 326 +++++++++++++++++++++++++++++--------------
- src/sqlite3.c       | 327 ++++++++++++++++++++++++++++++++++++--------
- 3 files changed, 495 insertions(+), 169 deletions(-)
+ src/compressvfs.c   | 332 ++++++++++++++++++++++++++++++--------------
+ src/sqlite3.c       | 327 +++++++++++++++++++++++++++++++++++--------
+ 3 files changed, 500 insertions(+), 170 deletions(-)
 
 diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
 index 27b1028..e89edcd 100644
@@ -53,7 +53,7 @@ index 27b1028..e89edcd 100644
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE]=CKSUMVFS_MAGIC_NUM;
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE+1]=p->verifyCksm ? CKSUMVFS_CALC_CHECKSUM : CKSUMVFS_WITHOUT_CHECKSUM;
 diff --git a/src/compressvfs.c b/src/compressvfs.c
-index f2fe169..f4a631d 100644
+index f2fe169..a38630d 100644
 --- a/src/compressvfs.c
 +++ b/src/compressvfs.c
 @@ -151,6 +151,7 @@ typedef INT8_TYPE i8;              /* 1-byte signed integer */
@@ -374,8 +374,9 @@ index f2fe169..f4a631d 100644
      }
      rc = SQLITE_OK;
    }else if( rc==SQLITE_DONE ){
-     rc = SQLITE_IOERR_SHORT_READ;
-+    sqlite3_log(rc, "Missing page(%d) while try read", pgno);
+-    rc = SQLITE_IOERR_SHORT_READ;
++    rc = SQLITE_BUSY;
++    sqlite3_log(SQLITE_WARNING_DUMP, "Missing page(%d) while try read, may busy now", pgno);
    }
  
 - failed:
@@ -411,7 +412,7 @@ index f2fe169..f4a631d 100644
    }
    return rc;
  }
-@@ -888,6 +929,70 @@ static int compressUnfetch(sqlite3_file *pFile, sqlite3_int64 iOfst, void *pPage
+@@ -888,6 +929,69 @@ static int compressUnfetch(sqlite3_file *pFile, sqlite3_int64 iOfst, void *pPage
    return SQLITE_OK;
  }
  
@@ -450,8 +451,7 @@ index f2fe169..f4a631d 100644
 +}
 +
 +static int compressDbInitCompression(CompressFile *pCompress, sqlite3 *db, u32 compression){
-+  const char *pragmaStr = "PRAGMA checksum_persist_enable=ON;PRAGMA page_size=4096;"\
-+    "PRAGMA auto_vacuum=INCREMENTAL;PRAGMA journal_mode=OFF;";
++  const char *pragmaStr = "PRAGMA checksum_persist_enable=ON;PRAGMA page_size=4096;PRAGMA auto_vacuum=INCREMENTAL;";
 +  int rc = sqlite3_exec(db, pragmaStr, NULL, NULL, NULL);
 +  if( rc!=SQLITE_OK ){
 +    sqlite3_log(rc, "Config compress db wrong, name");
@@ -482,7 +482,7 @@ index f2fe169..f4a631d 100644
  /*
  ** Open a compress file.If this file is not a journal or wal file,
  ** it will open a OutterDB and create vfs_pages and vfs_compression table
-@@ -902,87 +1007,98 @@ static int compressOpen(
+@@ -902,87 +1006,103 @@ static int compressOpen(
  ){
    sqlite3_file *pSubFile = ORIGFILE(pFile);
    CompressFile *pCompress = (CompressFile *)pFile;
@@ -522,15 +522,20 @@ index f2fe169..f4a631d 100644
 -    goto open_end;
 +    goto END_OUT;
    }
-   pCompress->bOutterDbOpen = 1;
+-  pCompress->bOutterDbOpen = 1;
 -  sqlite3 *db = pCompress->pDb;
 -  const char *pre_pragma = "PRAGMA page_size=4096;"\
 -    "PRAGMA auto_vacuum=INCREMENTAL;PRAGMA journal_mode=OFF;";
    sqlite3_busy_timeout(db, 2000);  // Set time out:2s
 -  rc = sqlite3_exec(db, pre_pragma, NULL, NULL, NULL);
--  if( rc!=SQLITE_OK ){
++  rc = sqlite3_exec(db, "PRAGMA journal_mode=OFF;", NULL, NULL, NULL);
+   if( rc!=SQLITE_OK ){
 -    rc = SQLITE_CANTOPEN;
 -    goto open_end;
++    sqlite3_log(rc, "Config compress db journal mode wrong, name:%s", zName);
++    goto END_OUT;
++  }
++  pCompress->bOutterDbOpen = 1;
 +  rc = tableExists(db, "vfs_compression", &isExist);
 +  if( rc!=SQLITE_OK ) {
 +    return rc;
