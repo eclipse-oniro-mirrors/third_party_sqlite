@@ -29,7 +29,7 @@ using namespace testing::ext;
 using namespace std;
 
 #define TEST_DIR "./sqlitetest"
-#define TEST_DB (TEST_DIR "/test.db")
+#define TEST_DB TEST_DIR "/test.db"
 #define CORRUPT_DATA "SQLITE_CORRUPT_PAGE_SIGNATURE"
 namespace Test {
 static void UtSqliteLogPrint(const void *data, int err, const char *msg)
@@ -59,11 +59,11 @@ void LibSQLiteCodecTest::TearDownTestCase(void)
 
 void LibSQLiteCodecTest::SetUp(void)
 {
+    system("rm -rf " TEST_DB "*");
 }
 
 void LibSQLiteCodecTest::TearDown(void)
 {
-    unlink(TEST_DB);
 }
 
 static void SetEncryptDb(sqlite3* db)
