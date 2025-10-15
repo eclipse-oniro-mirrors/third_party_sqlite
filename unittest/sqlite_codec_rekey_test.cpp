@@ -36,6 +36,10 @@ using namespace std;
 #define REKEY_EXPORT_SUFFIX "-rekey-export"
 #define REKEY_LOCK_SUFFIX "-rekey-lock"
 
+#define MULPROC_STEP_1 0
+#define MULPROC_STEP_2 1
+#define MULPROC_STEP_3 2
+
 namespace Test {
 static void UtSqliteLogPrint(const void *data, int err, const char *msg)
 {
@@ -44,11 +48,6 @@ static void UtSqliteLogPrint(const void *data, int err, const char *msg)
 
 class LibSQLiteRekeyTest : public testing::Test {
 public:
-    enum MultiProcessStep {
-        MULPROC_STEP_1 = 0,
-        MULPROC_STEP_2,
-        MULPROC_STEP_3
-    };
     static void SetUpTestCase(void);
     static void TearDownTestCase(void);
     void SetUp();
@@ -146,7 +145,7 @@ static int QueryIndexInfo(sqlite3* db, const std::string &indexName)
 
     // Print header
     for (int i = 0; i < cols; ++i) {
-        std::cout << sqlite3_column_name(stmt, i) << "\t";
+        std::cout << sqlite3_column_name(stmt, i) << " ";
     }
     int queryCnt = 0;
     // Fetch rows
@@ -154,7 +153,6 @@ static int QueryIndexInfo(sqlite3* db, const std::string &indexName)
         queryCnt++;
     }
     sqlite3_finalize(stmt);
-    std::cout << "query count " << queryCnt << "-----------------------------------\n";
     return (queryCnt == 1) ? SQLITE_OK : SQLITE_ERROR;
 }
 
@@ -336,8 +334,18 @@ HWTEST_F(LibSQLiteRekeyTest, LibSQLiteRekeyTest003, TestSize.Level0)
     };
     ASSERT_EQ(sqlite3_rekey_v3(&rekeyCfg), SQLITE_OK);
     /**
-     * @tc.steps: step3. Decrypt with valid passwd
+     * @tc.steps: step3. assert rekey relevant file is deleted
      * @tc.expected: step3. Return SQLITE_OK
+     */
+    ASSERT_EQ(access(TEST_DB REKEY_LOCK_SUFFIX, F_OK), -1)
+     << "File unexpectedly exists: " << TEST_DB REKEY_LOCK_SUFFIX;
+    ASSERT_EQ(access(TEST_DB REKEY_EXPORT_SUFFIX, F_OK), -1)
+     << "File unexpectedly exists: " << TEST_DB REKEY_EXPORT_SUFFIX;
+    ASSERT_EQ(access(TEST_DB REKEY_RENAME_SUFFIX, F_OK), -1)
+     << "File unexpectedly exists: " << TEST_DB REKEY_RENAME_SUFFIX;
+    /**
+     * @tc.steps: step4. Decrypt with valid passwd
+     * @tc.expected: step4. Return SQLITE_OK
      */
     ASSERT_EQ(sqlite3_open(TEST_DB, &db), SQLITE_OK);
     config = {
@@ -695,7 +703,7 @@ HWTEST_F(LibSQLiteRekeyTest, LibSQLiteRekeyTest012, TestSize.Level0)
     system("touch " TEST_DB REKEY_LOCK_SUFFIX);
     system("touch " TEST_DB REKEY_EXPORT_SUFFIX);
     /**
-     * @tc.steps: step3. open and query 
+     * @tc.steps: step3. open and query
      * @tc.expected: step3. Return SQLITE_OK
      */
     ASSERT_EQ(sqlite3_open(TEST_DB, &db), SQLITE_OK);
@@ -742,7 +750,7 @@ HWTEST_F(LibSQLiteRekeyTest, LibSQLiteRekeyTest013, TestSize.Level0)
     system("touch " TEST_DB REKEY_EXPORT_SUFFIX);
     system("mv " TEST_DB " " TEST_DB REKEY_RENAME_SUFFIX);
     /**
-     * @tc.steps: step3. open and query 
+     * @tc.steps: step3. open and query
      * @tc.expected: step3. Return SQLITE_OK
      */
     ASSERT_EQ(sqlite3_open(TEST_DB, &db), SQLITE_OK);
@@ -762,6 +770,67 @@ HWTEST_F(LibSQLiteRekeyTest, LibSQLiteRekeyTest013, TestSize.Level0)
      << "File unexpectedly exists: " << TEST_DB REKEY_EXPORT_SUFFIX;
     ASSERT_EQ(access(TEST_DB REKEY_RENAME_SUFFIX, F_OK), -1)
      << "File unexpectedly exists: " << TEST_DB REKEY_RENAME_SUFFIX;
+}
+
+/**
+ * @tc.name: LibSQLiteRekeyTest014
+ * @tc.desc: Test rekey with invalid argument
+ * @tc.type: FUNC
+ */
+HWTEST_F(LibSQLiteRekeyTest, LibSQLiteRekeyTest014, TestSize.Level0)
+{
+    sqlite3* db;
+    /**
+     * @tc.steps: step1. Open database and create table
+     * @tc.expected: step1. Return SQLITE_OK
+     */
+    ASSERT_EQ(sqlite3_open(TEST_DB, &db), SQLITE_OK);
+    CodecConfig config = {
+        "aes-256-gcm", "SHA1", "KDF_SHA1", "01234567890123456789012345678901", 32, 5000, 1024
+    };
+    EncryptDbConfig(db, &config);
+    PrepareDataForDb(db);
+    sqlite3_close(db);
+    /**
+     * @tc.steps: step2. Rekey with invalid cipher aes-128-gcm
+     * @tc.expected: step2. Return SQLITE_OK
+     */
+    CodecRekeyConfig rekeyCfg = {
+        TEST_DB,
+        { "aes-256-gcm", "SHA1", "KDF_SHA1", "01234567890123456789012345678901", 32, 5000, 1024 },
+        { "aes-128-gcm", "SHA256", "KDF_SHA256", "11234567890123456789012345678901", 32, 5000, 4096 }
+    };
+    ASSERT_EQ(sqlite3_rekey_v3(&rekeyCfg), SQLITE_ERROR);
+    /**
+     * @tc.steps: step3. Rekey with invalid iter
+     * @tc.expected: step3. Return SQLITE_OK
+     */
+    rekeyCfg = {
+        TEST_DB,
+        { "aes-256-gcm", "SHA1", "KDF_SHA1", "01234567890123456789012345678901", 32, 5000, 1024 },
+        { "aes-256-gcm", "SHA256", "KDF_SHA256", "11234567890123456789012345678901", 32, 0, 4096 }
+    };
+    ASSERT_EQ(sqlite3_rekey_v3(&rekeyCfg), SQLITE_ERROR);
+    /**
+     * @tc.steps: step4. Rekey with invalid sha algo SHA192
+     * @tc.expected: step4. Return SQLITE_OK
+     */
+    rekeyCfg = {
+        TEST_DB,
+        { "aes-256-gcm", "SHA1", "KDF_SHA1", "01234567890123456789012345678901", 32, 5000, 1024 },
+        { "aes-256-gcm", "SHA192", "SHA192", "11234567890123456789012345678901", 32, 5000, 4096 }
+    };
+    ASSERT_EQ(sqlite3_rekey_v3(&rekeyCfg), SQLITE_ERROR);
+    /**
+     * @tc.steps: step5. Rekey with invalid cipher aes-128-gcm
+     * @tc.expected: step5. Return SQLITE_OK
+     */
+    rekeyCfg = {
+        TEST_DB,
+        { "aes-128-gcm", "SHA1", "KDF_SHA1", "01234567890123456789012345678901", 32, 5000, 1024 },
+        { "aes-256-gcm", "SHA256", "SHA256", "11234567890123456789012345678901", 32, 5000, 4096 }
+    };
+    ASSERT_EQ(sqlite3_rekey_v3(&rekeyCfg), SQLITE_ERROR);
 }
 
 }  // namespace Test

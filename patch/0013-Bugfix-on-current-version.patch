@@ -1283,9 +1283,9 @@ index 74366de..367eef9 100644
      return 0;
    }
 @@ -259845,9 +260063,13 @@ struct sqlite3_api_routines_extra {
-   int (*rekey)(sqlite3*,const void*,int);
-   int (*rekey_v2)(sqlite3*,const char*,const void*,int);
-   int (*rekey_v3)(CodecRekeyConfig *);
+ #else
+   void *dymmyRekeyV3Func;
+ #endif
 -  int (*is_support_binlog)(void);
 +  int (*is_support_binlog)(const char*);
    int (*replay_binlog)(sqlite3*, sqlite3*);
