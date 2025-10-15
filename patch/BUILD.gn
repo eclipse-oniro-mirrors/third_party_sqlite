@@ -20,7 +20,21 @@ sqlite_patch_dir = sqlite_src_dir + "/patch"
 action("apply_patch") {
   visibility = [ "*" ]
   script = "${sqlite_patch_dir}/apply_patch.sh"
-  inputs = [ "$sqlite_src_dir" ]
+  inputs = [ 
+    "./0001-History-features-on-OH.patch",
+    "./0002-Enable-and-optimize-ICU.patch",
+    "./0003-Busy-debug-and-log-dump.patch",
+    "./0004-Support-meta-recovery.patch",
+    "./0005-Enhance-dfx-ability-report-corruption-and-check-page.patch",
+    "./0006-Support-Binlog.patch",
+    "./0007-DatabaseDebugTool.patch",
+    "./0008-Rekey-multi-process.patch",
+    "./0009-Allow-enable-checksum-through-PRAGMA.patch",
+    "./0010-EnableExtensionLoading-LoadCustomTokenizer.patch",
+    "./0011-Support-compress-db.patch",
+    "./0012-enhance-rekey.patch",
+    "./0013-Bugfix-on-current-version.patch",
+  ]
   outputs = [
     "$sqlite_dst_dir/ext/misc/cksumvfs.c",
     "$sqlite_dst_dir/src/shell.c",
