@@ -1,14 +1,14 @@
-From 8d979f06d87d2a789dc4c3345a8c4444505e64cd Mon Sep 17 00:00:00 2001
+From 43c813a2f99f68268b86afa5fadf684941649aad Mon Sep 17 00:00:00 2001
 From: ryne3366 <ryne3366@noreply.gitcode.com>
 Date: Thu, 18 Sep 2025 17:28:51 +0800
-Subject: [PATCH 1/2] enhance rekey
+Subject: [PATCH] enhance rekey
 
 ---
- src/sqlite3.c | 1248 ++++++++++++++++++++++++++++++++++++++++---------
- 1 file changed, 1021 insertions(+), 227 deletions(-)
+ src/sqlite3.c | 1274 ++++++++++++++++++++++++++++++++++++++++---------
+ 1 file changed, 1047 insertions(+), 227 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 02885e0..30b9daf 100644
+index 02885e0..571bbf9 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -17631,16 +17631,17 @@ SQLITE_PRIVATE void sqlite3CryptFunc(sqlite3_context*,int,sqlite3_value**);
@@ -73,14 +73,12 @@ index 02885e0..30b9daf 100644
  /* This variable holds the process id (pid) from when the xRandomness()
  ** method was called.  If xOpen() is called from a different process id,
  ** indicating that a fork() has occurred, the PRNG will be reset.
-@@ -44877,6 +44878,14 @@ static int unixOpen(
+@@ -44877,6 +44878,12 @@ static int unixOpen(
  #endif
  
    if( eType==SQLITE_OPEN_MAIN_DB ){
 +#if defined(SQLITE_HAS_CODEC) && SQLITE_OS_UNIX
-+    sqlite3BeginBenignMalloc();
 +    rc = CodecCheckRecoverRekey(zName);
-+    sqlite3EndBenignMalloc();
 +    if (rc != SQLITE_OK) {
 +      return rc;
 +    }
@@ -88,7 +86,7 @@ index 02885e0..30b9daf 100644
      UnixUnusedFd *pUnused;
      pUnused = findReusableFd(zName, flags);
      if( pUnused ){
-@@ -44888,7 +44897,6 @@ static int unixOpen(
+@@ -44888,7 +44895,6 @@ static int unixOpen(
        }
      }
      p->pPreallocatedUnused = pUnused;
@@ -96,7 +94,7 @@ index 02885e0..30b9daf 100644
      /* Database filenames are double-zero terminated if they are not
      ** URIs with parameters.  Hence, they can always be passed into
      ** sqlite3_uri_parameter(). */
-@@ -44928,6 +44936,7 @@ static int unixOpen(
+@@ -44928,6 +44934,7 @@ static int unixOpen(
        assert( eType==SQLITE_OPEN_WAL || eType==SQLITE_OPEN_MAIN_JOURNAL );
        return rc;
      }
@@ -104,7 +102,7 @@ index 02885e0..30b9daf 100644
      fd = robust_open(zName, openFlags, openMode);
      OSTRACE(("OPENX   %-3d %s 0%o\n", fd, zName, openFlags));
      assert( !isExclusive || (openFlags & O_CREAT)!=0 );
-@@ -61893,7 +61902,7 @@ SQLITE_PRIVATE int sqlite3PagerClose(Pager *pPager, sqlite3 *db){
+@@ -61893,7 +61900,7 @@ SQLITE_PRIVATE int sqlite3PagerClose(Pager *pPager, sqlite3 *db){
    IOTRACE(("CLOSE %p\n", pPager))
    sqlite3OsClose(pPager->jfd);
  #if SQLITE_OS_UNIX && defined(SQLITE_HAS_CODEC)
@@ -113,7 +111,7 @@ index 02885e0..30b9daf 100644
  #endif
    sqlite3OsClose(pPager->fd);
    sqlite3PageFree(pTmp);
-@@ -62748,9 +62757,14 @@ act_like_temp_file:
+@@ -62748,9 +62755,14 @@ act_like_temp_file:
                         !memDb?pagerStress:0, (void *)pPager, pPager->pPCache);
    }
  #ifdef SQLITE_META_DWR
@@ -129,7 +127,7 @@ index 02885e0..30b9daf 100644
  #endif
    /* If an error occurred above, free the  Pager structure and close the file.
    */
-@@ -64899,6 +64913,20 @@ SQLITE_PRIVATE void sqlite3PagerSetCodec(
+@@ -64899,6 +64911,20 @@ SQLITE_PRIVATE void sqlite3PagerSetCodec(
    setGetterMethod(pPager);
    pagerReportSize(pPager);
  }
@@ -150,7 +148,7 @@ index 02885e0..30b9daf 100644
  SQLITE_PRIVATE void *sqlite3PagerGetCodec(Pager *pPager){
    return pPager->pCodec;
  }
-@@ -184186,9 +184214,8 @@ opendb_out:
+@@ -184186,9 +184212,8 @@ opendb_out:
  #endif
  #ifdef SQLITE_HAS_CODEC
    if( rc==SQLITE_OK ) {
@@ -162,6 +160,16 @@ index 02885e0..30b9daf 100644
      sqlite3CodecQueryParameters(db, 0, zOpen);
    }
  #endif /* SQLITE_HAS_CODEC */
+@@ -254862,7 +254887,9 @@ static u8 Sqlite3GetCheckFileId(const sqlite3_vfs *vfs){
+   }else if( sqlite3_stricmp(vfs->zName, "compressvfs")==0 ){
+     return SQLITE_CHECK_FILE_ID_COMPRESS;
+   }
++#ifndef SQLITE_TEST
+   sqlite3_log(SQLITE_WARNING_DUMP, "Not support pVfs type %s", vfs->zName);
++#endif
+   return 0;
+ }
+ 
 @@ -254925,7 +254952,6 @@ typedef struct{
    int reserveSize;
    int hmacAlgo;
@@ -556,10 +564,10 @@ index 02885e0..30b9daf 100644
        return pCtx->buffer;
        break;
      case 7:
-+      if (pCtx->writeCtx == NULL) {
++      if (pCtx->readCtx == NULL) {
 +        return pData;
 +      }
-+      cipherPageSize = pCtx->writeCtx->codecConst.cipherPageSize;
++      cipherPageSize = pCtx->readCtx->codecConst.cipherPageSize;
        if(pgno == 1){
          memcpyRc = memcpy_s(pCtx->buffer, cipherPageSize, pCtx->salt, FILE_HEADER_SIZE);
          if(memcpyRc != EOK){
@@ -1150,7 +1158,7 @@ index 02885e0..30b9daf 100644
 +    if(ctx != NULL && ctx->writeCtx != NULL){
 +      sqlite3CodecFreeKeyContext(ctx->readCtx);
 +      if (ctx->readCtx == NULL) {
-+        ctx->readCtx = (KeyContext *)sqlite3Malloc(sizeof(KeyContext));
++        ctx->readCtx = (KeyContext *)sqlite3MallocZero(sizeof(KeyContext));
 +      }
 +      (void)sqlite3CodecCopyKeyContext(ctx->writeCtx, ctx->readCtx);
 +    }
@@ -1216,7 +1224,7 @@ index 02885e0..30b9daf 100644
 +    rc = CodecRekeyWriteDirectly(db, iDb, pKey, nKey);
 +    (void)sqlite3Close(db, 1);
 +  }
-+  sqlite3_log(rc, "[rekey]end...");
++  sqlite3_log(SQLITE_WARNING_DUMP, "[rekey]end...");
 +  return rc;
 +}
 +
@@ -1273,7 +1281,7 @@ index 02885e0..30b9daf 100644
        sqlite3CodecSetHmacAlgorithm(ctx->writeCtx, oldHmacAlgo);
        sqlite3CodecSetKdfAlgorithm(ctx->writeCtx, oldHmacAlgo);
      }
-@@ -256216,9 +256790,133 @@ int sqlite3_rekey_v2(sqlite3 *db, const char *zDb, const void *pKey, int nKey){
+@@ -256216,9 +256790,159 @@ int sqlite3_rekey_v2(sqlite3 *db, const char *zDb, const void *pKey, int nKey){
    (void)CodecFileLock(pPager, F_RDLCK);
  #endif
    sqlite3_mutex_leave(db->mutex);
@@ -1334,6 +1342,38 @@ index 02885e0..30b9daf 100644
 +  return SQLITE_OK;
 +}
 +
++CODEC_STATIC int RekeyHandleWal(sqlite3 *db)
++{
++  Btree *p = db->aDb[0].pBt;
++  if (unlikely(p == NULL || p->pBt == NULL || p->pBt->pPager == NULL)) {
++    sqlite3_log(SQLITE_ERROR, "[rekey]PRAGMA pager error failed: %d");
++    return SQLITE_ERROR;
++  }
++  Pager *pPager = p->pBt->pPager;
++  int isWal;
++  int rc = sqlite3OsAccess(pPager->pVfs, pPager->zWal, SQLITE_ACCESS_EXISTS, &isWal);
++  // wal file not exist
++  if (rc != SQLITE_OK || isWal == 0) {
++    return SQLITE_OK;
++  }
++  rc = sqlite3_exec(db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
++  if (rc != SQLITE_OK) {
++    sqlite3_log(rc, "[rekey]PRAGMA wal failed: %d", rc);
++    return rc;
++  }
++  int persistEnabled = 1;
++  rc = sqlite3_file_control(db, "main", SQLITE_FCNTL_PERSIST_WAL, &persistEnabled);
++  if (rc != SQLITE_OK) {
++    sqlite3_log(rc, "[rekey]set persist failed: %d", rc);
++    return rc;
++  }
++  rc = sqlite3_wal_checkpoint_v2(db, "main", SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
++  if (rc != SQLITE_OK) {
++    sqlite3_log(rc, "[rekey]checkpoint failed: %d", rc);
++  }
++  return rc;
++}
++
 +CODEC_STATIC int RekeyPrepare(CodecRekeyConfig *rekeyConfig, sqlite3 **rekeyDb)
 +{
 +  int rc = CheckCodecRekeyConfig(rekeyConfig);
@@ -1368,14 +1408,8 @@ index 02885e0..30b9daf 100644
 +      goto cleanup;
 +    }
 +  }
-+  rc = sqlite3_exec(db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
++  rc = RekeyHandleWal(db);
 +  if (rc != SQLITE_OK) {
-+    sqlite3_log(rc, "[rekey]PRAGMA wal failed: %d", rc);
-+    goto cleanup;
-+  }
-+  rc = sqlite3_wal_checkpoint_v2(db, "main", SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
-+  if (rc != SQLITE_OK) {
-+    sqlite3_log(rc, "[rekey]checkpoint failed: %d", rc);
 +    goto cleanup;
 +  }
 +  codecSql = GenerateSQLFromCodeConfig(&rekeyConfig->rekeyCfg, 0);
@@ -1407,7 +1441,7 @@ index 02885e0..30b9daf 100644
  void sqlite3_activate_see(const char* zPassPhrase){
    return;
  }
-@@ -256232,20 +256930,116 @@ CODEC_STATIC void sqlite3CodecReturnPragmaResult(Parse *parse, const char *label
+@@ -256232,20 +256956,116 @@ CODEC_STATIC void sqlite3CodecReturnPragmaResult(Parse *parse, const char *label
    return;
  }
  
@@ -1527,7 +1561,7 @@ index 02885e0..30b9daf 100644
      return 1;
    }else if( sqlite3StrICmp(zLeft, "cipher_default_attach_hmac_algo")==0 && zRight!=NULL ){
      /*
-@@ -256262,7 +257056,7 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
+@@ -256262,7 +257082,7 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
        sqlite3CodecSetDefaultAttachHmacAlgo(parm, CIPHER_HMAC_ALGORITHM_SHA512);
        sqlite3CodecSetDefaultAttachKdfAlgo(parm, CIPHER_KDF_ALGORITHM_SHA512);
      }else{
@@ -1536,7 +1570,7 @@ index 02885e0..30b9daf 100644
      }
      return 1;
    }else if( sqlite3StrICmp(zLeft, "cipher_default_attach_kdf_algo")==0 && zRight!=NULL ){
-@@ -256273,7 +257067,7 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
+@@ -256273,7 +257093,7 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
      }else if( sqlite3_stricmp(zRight, CIPHER_KDF_ALGORITHM_NAME_SHA512)==0 ){
        sqlite3CodecSetDefaultAttachKdfAlgo(parm, CIPHER_KDF_ALGORITHM_SHA512);
      }else{
@@ -1545,7 +1579,7 @@ index 02885e0..30b9daf 100644
      }
      return 1;
    }else if( sqlite3StrICmp(zLeft, "cipher_default_attach_page_size")==0 && zRight!=NULL ){
-@@ -256281,11 +257075,17 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
+@@ -256281,11 +257101,17 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
      return 1;
    }
  #endif /* SQLITE_CODEC_ATTACH_CHANGED */
@@ -1563,7 +1597,7 @@ index 02885e0..30b9daf 100644
        sqlite3_mutex_enter(db->mutex);
        (void)sqlite3CodecSetCodecConstant(ctx->readCtx, zRight);
        (void)sqlite3CodecSetHmacAlgorithm(ctx->readCtx, ctx->readCtx->codecConst.hmacAlgo);
-@@ -256332,7 +257132,7 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
+@@ -256332,7 +257158,7 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
          (void)sqlite3CodecSetKdfAlgorithm(ctx->writeCtx, CIPHER_KDF_ALGORITHM_SHA512);
        }else{
          sqlite3_mutex_leave(db->mutex);
@@ -1572,7 +1606,7 @@ index 02885e0..30b9daf 100644
        }
        sqlite3BtreeSetPageSize(p, ctx->readCtx->codecConst.cipherPageSize, ctx->readCtx->codecConst.reserveSize, 0);
        sqlite3_mutex_leave(db->mutex);
-@@ -256359,7 +257159,7 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
+@@ -256359,7 +257185,7 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
          (void)sqlite3CodecSetKdfAlgorithm(ctx->writeCtx, CIPHER_KDF_ALGORITHM_SHA512);
        }else{
          sqlite3_mutex_leave(db->mutex);
@@ -1581,7 +1615,7 @@ index 02885e0..30b9daf 100644
        }
        sqlite3BtreeSetPageSize(p, ctx->readCtx->codecConst.cipherPageSize, ctx->readCtx->codecConst.reserveSize, 0);
        sqlite3_mutex_leave(db->mutex);
-@@ -256375,10 +257175,10 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
+@@ -256375,10 +257201,10 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
    }else if( sqlite3StrICmp(zLeft, "codec_page_size")==0 ){
      if(zRight){
        sqlite3_mutex_enter(db->mutex);
@@ -1594,7 +1628,7 @@ index 02885e0..30b9daf 100644
        }
        sqlite3BtreeSetPageSize(p, ctx->readCtx->codecConst.cipherPageSize, ctx->readCtx->codecConst.reserveSize, 0);
        sqlite3_mutex_leave(db->mutex);
-@@ -256389,33 +257189,12 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
+@@ -256389,33 +257215,12 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
          sqlite3_free(pageSize);
        }
      }
@@ -1631,7 +1665,7 @@ index 02885e0..30b9daf 100644
  }
  
  CODEC_STATIC int sqlite3CodecExportMetadata(sqlite3 *db, const char *dbName, const char *metaName){
-@@ -257606,24 +258385,6 @@ CHK_RESTORE_OUT:
+@@ -257606,24 +258411,6 @@ CHK_RESTORE_OUT:
    return rc;
  }
  
@@ -1656,7 +1690,7 @@ index 02885e0..30b9daf 100644
  static int MetaDwrOpenAndCheck(Btree *pBt)
  {
    Pager *pPager = pBt->pBt->pPager;
-@@ -257711,6 +258472,32 @@ static inline int OsGetTid(void)
+@@ -257711,6 +258498,32 @@ static inline int OsGetTid(void)
  #endif
  }
  
@@ -1689,7 +1723,7 @@ index 02885e0..30b9daf 100644
  static void ResetLockStatus(void)
  {
    (void)memset(&g_lockStatus, 0, sizeof(g_lockStatus));
-@@ -259118,6 +259905,11 @@ struct sqlite3_api_routines_extra {
+@@ -259118,6 +259931,11 @@ struct sqlite3_api_routines_extra {
    int (*key_v2)(sqlite3*,const char*,const void*,int);
    int (*rekey)(sqlite3*,const void*,int);
    int (*rekey_v2)(sqlite3*,const char*,const void*,int);
@@ -1701,7 +1735,7 @@ index 02885e0..30b9daf 100644
    int (*is_support_binlog)(void);
    int (*replay_binlog)(sqlite3*, sqlite3*);
    int (*clean_binlog)(sqlite3*, BinlogFileCleanModeE);
-@@ -259137,11 +259929,13 @@ static const sqlite3_api_routines_extra sqlite3ExtraApis = {
+@@ -259137,11 +259955,13 @@ static const sqlite3_api_routines_extra sqlite3ExtraApis = {
    sqlite3_key_v2,
    sqlite3_rekey,
    sqlite3_rekey_v2,
