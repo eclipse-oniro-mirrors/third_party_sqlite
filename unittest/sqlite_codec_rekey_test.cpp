@@ -793,7 +793,7 @@ HWTEST_F(LibSQLiteRekeyTest, LibSQLiteRekeyTest014, TestSize.Level0)
     sqlite3_close(db);
     /**
      * @tc.steps: step2. Rekey with invalid cipher aes-128-gcm
-     * @tc.expected: step2. Return SQLITE_OK
+     * @tc.expected: step2. Return SQLITE_ERROR
      */
     CodecRekeyConfig rekeyCfg = {
         TEST_DB,
@@ -803,7 +803,7 @@ HWTEST_F(LibSQLiteRekeyTest, LibSQLiteRekeyTest014, TestSize.Level0)
     ASSERT_EQ(sqlite3_rekey_v3(&rekeyCfg), SQLITE_ERROR);
     /**
      * @tc.steps: step3. Rekey with invalid iter
-     * @tc.expected: step3. Return SQLITE_OK
+     * @tc.expected: step3. Return SQLITE_ERROR
      */
     rekeyCfg = {
         TEST_DB,
@@ -813,7 +813,7 @@ HWTEST_F(LibSQLiteRekeyTest, LibSQLiteRekeyTest014, TestSize.Level0)
     ASSERT_EQ(sqlite3_rekey_v3(&rekeyCfg), SQLITE_ERROR);
     /**
      * @tc.steps: step4. Rekey with invalid sha algo SHA192
-     * @tc.expected: step4. Return SQLITE_OK
+     * @tc.expected: step4. Return SQLITE_ERROR
      */
     rekeyCfg = {
         TEST_DB,
@@ -823,7 +823,7 @@ HWTEST_F(LibSQLiteRekeyTest, LibSQLiteRekeyTest014, TestSize.Level0)
     ASSERT_EQ(sqlite3_rekey_v3(&rekeyCfg), SQLITE_ERROR);
     /**
      * @tc.steps: step5. Rekey with invalid cipher aes-128-gcm
-     * @tc.expected: step5. Return SQLITE_OK
+     * @tc.expected: step5. Return SQLITE_ERROR
      */
     rekeyCfg = {
         TEST_DB,
@@ -831,6 +831,66 @@ HWTEST_F(LibSQLiteRekeyTest, LibSQLiteRekeyTest014, TestSize.Level0)
         { "aes-256-gcm", "SHA256", "SHA256", "11234567890123456789012345678901", 32, 5000, 4096 }
     };
     ASSERT_EQ(sqlite3_rekey_v3(&rekeyCfg), SQLITE_ERROR);
+    /**
+     * @tc.steps: step6. Rekey with null config
+     * @tc.expected: step6. Return SQLITE_ERROR
+     */
+    ASSERT_EQ(sqlite3_rekey_v3(NULL), SQLITE_ERROR);
 }
 
+/**
+ * @tc.name: LibSQLiteRekeyTest015
+ * @tc.desc: Test rekey wal mode db
+ * @tc.type: FUNC
+ */
+HWTEST_F(LibSQLiteRekeyTest, LibSQLiteRekeyTest015, TestSize.Level0)
+{
+    sqlite3* db;
+    /**
+     * @tc.steps: step1. Open database and create table
+     * @tc.expected: step1. Return SQLITE_OK
+     */
+    ASSERT_EQ(sqlite3_open(TEST_DB, &db), SQLITE_OK);
+    CodecConfig config = {
+        "aes-256-gcm", "SHA1", "KDF_SHA1", "01234567890123456789012345678901", 32, 5000, 1024
+    };
+    EncryptDbConfig(db, &config);
+    /**
+     * @tc.steps: step2. config wal mode
+     * @tc.expected: step2. Return SQLITE_OK
+     */
+    ASSERT_EQ(sqlite3_exec(db, "PRAGMA journal_mode=WAL", nullptr, nullptr, nullptr), SQLITE_OK)
+        << "PRAGMA journal_mode=WAL failed: " << sqlite3_errmsg(db);
+    int persistEnabled = 1;
+    ASSERT_EQ(sqlite3_file_control(db, "main", SQLITE_FCNTL_PERSIST_WAL, &persistEnabled), SQLITE_OK)
+        << "set persist wal failed: " << sqlite3_errmsg(db);
+    ASSERT_EQ(sqlite3_db_config(db, SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE), SQLITE_OK)
+        << "set no ckpt failed: " << sqlite3_errmsg(db);
+    ASSERT_EQ(sqlite3_wal_autocheckpoint(db, 0), SQLITE_OK)
+        << "set auto ckpt failed: " << sqlite3_errmsg(db);
+    PrepareDataForDb(db);
+    sqlite3_close(db);
+
+    /**
+     * @tc.steps: step3. Rekey with new passwd and pagesize changed
+     * @tc.expected: step3. Return SQLITE_OK
+     */
+    CodecRekeyConfig rekeyCfg = {
+        TEST_DB,
+        { "aes-256-gcm", "SHA1", "KDF_SHA1", "01234567890123456789012345678901", 32, 5000, 1024 },
+        { "aes-256-gcm", "SHA1", "KDF_SHA1", "11234567890123456789012345678901", 32, 5000, 4096 }
+    };
+    ASSERT_EQ(sqlite3_rekey_v3(&rekeyCfg), SQLITE_OK);
+    /**
+     * @tc.steps: step4. Open and Decrypt with valid passwd
+     * @tc.expected: step4. Return SQLITE_OK
+     */
+    ASSERT_EQ(sqlite3_open(TEST_DB, &db), SQLITE_OK);
+    config = {
+        "aes-256-gcm", "SHA1", "KDF_SHA1", "11234567890123456789012345678901", 32, 5000, 4096
+    };
+    EncryptDbConfig(db, &config);
+    QueryData(db);
+    sqlite3_close(db);
+}
 }  // namespace Test
