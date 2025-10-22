@@ -1,13 +1,13 @@
-From 5f19f1c8d1389243379364c66d62dfb9bafd441c Mon Sep 17 00:00:00 2001
+From 4c87dc09e4e8b6204433c4b2907b7fafcd06883c Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
-Date: Thu, 9 Oct 2025 15:24:39 +0800
+Date: Wed, 22 Oct 2025 11:31:32 +0800
 Subject: [PATCH] Bugfix on current version
 
 ---
  ext/misc/cksumvfs.c |  11 +-
- src/compressvfs.c   | 332 ++++++++++++++++++++++++++++++--------------
- src/sqlite3.c       | 327 +++++++++++++++++++++++++++++++++++--------
- 3 files changed, 500 insertions(+), 170 deletions(-)
+ src/compressvfs.c   | 352 ++++++++++++++++++++++++++++++--------------
+ src/sqlite3.c       | 327 ++++++++++++++++++++++++++++++++--------
+ 3 files changed, 519 insertions(+), 171 deletions(-)
 
 diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
 index 27b1028..e89edcd 100644
@@ -53,7 +53,7 @@ index 27b1028..e89edcd 100644
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE]=CKSUMVFS_MAGIC_NUM;
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE+1]=p->verifyCksm ? CKSUMVFS_CALC_CHECKSUM : CKSUMVFS_WITHOUT_CHECKSUM;
 diff --git a/src/compressvfs.c b/src/compressvfs.c
-index f2fe169..a38630d 100644
+index f2fe169..5b849e0 100644
 --- a/src/compressvfs.c
 +++ b/src/compressvfs.c
 @@ -151,6 +151,7 @@ typedef INT8_TYPE i8;              /* 1-byte signed integer */
@@ -85,7 +85,41 @@ index f2fe169..a38630d 100644
  } CompressFile;
  
  
-@@ -434,19 +439,22 @@ EXPORT_SYMBOLS int decompressBuf(
+@@ -233,7 +238,24 @@ typedef enum{
+   BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT = 3,
+ } BrotliDecoderResult;
+ 
+-typedef BROTLI_BOOL (*brotliCompress_ptr)(u32, u32, size_t, const u8*, size_t*, u8*);
++/** Options for ::BROTLI_PARAM_MODE parameter. */
++typedef enum BrotliEncoderMde {
++  /**
++   * Default compression mode.
++   *
++   * In this mode compressor does not know anything in advance about the
++   * properties of the input.
++   */
++  BROTLI_MODE_GENERIC = 0,
++  /** Compression mode for UTF-8 formatted text input. */
++  BROTLI_MODE_TEXT = 1,
++  /** Compression mode used in WOFF 2.0 */
++  BROTLI_MODE_FONT = 2
++} BrotliEncoderMde;
++/** Default value for ::BROTLI_PARAM_MODE parameter. */
++#define BROTLI_DEFAULT_MODE BROTLI_MODE_GENERIC
++
++typedef BROTLI_BOOL (*brotliCompress_ptr)(int, int, BrotliEncoderMde, size_t, const u8*, size_t*, u8*);
+ typedef BrotliDecoderResult (*brotliDecompress_ptr)(size_t, const u8*, size_t*, u8*);
+ /*----------------------------brotli header end----------------------------*/
+ 
+@@ -380,6 +402,7 @@ static int compressBuf(
+     int ret = brotliCompressPtr(
+       3,                        // COMPRESS QUALITY (1-11)
+       BROTLI_MAX_WINDOW_BITS,   // WINDOWS SIZE (10-24)
++      BROTLI_DEFAULT_MODE,      // MODE(BROTLI_MODE_GENERIC, TEXT, FONT)
+       (size_t)src_len,
+       (const u8 *)src,
+       &dst_len,
+@@ -434,19 +457,22 @@ EXPORT_SYMBOLS int decompressBuf(
  }
  
  /* Check whether the table exists in the OutterDB. */
@@ -117,7 +151,7 @@ index f2fe169..a38630d 100644
  }
  
  /* Get page size before compressed from OutterDB. */
-@@ -504,15 +512,15 @@ static void getCompression(sqlite3 *db, CompressFile *pCompress){
+@@ -504,15 +530,15 @@ static void getCompression(sqlite3 *db, CompressFile *pCompress){
    sqlite3_stmt *stmt = NULL;
    const char *sql = "SELECT count(*), compression, pagesize FROM vfs_compression;";
    int count = 0;
@@ -136,7 +170,7 @@ index f2fe169..a38630d 100644
        }
      }
      sqlite3_finalize(stmt);
-@@ -590,7 +598,9 @@ static int compressDeviceCharacteristics(sqlite3_file *pFile){
+@@ -590,7 +616,9 @@ static int compressDeviceCharacteristics(sqlite3_file *pFile){
  */
  static int compressLock(sqlite3_file *pFile, int eFileLock){
    assert( pFile );
@@ -147,7 +181,7 @@ index f2fe169..a38630d 100644
  }
  
  /*
-@@ -598,7 +608,9 @@ static int compressLock(sqlite3_file *pFile, int eFileLock){
+@@ -598,7 +626,9 @@ static int compressLock(sqlite3_file *pFile, int eFileLock){
  */
  static int compressUnlock(sqlite3_file *pFile, int eFileLock){
    assert( pFile );
@@ -158,7 +192,7 @@ index f2fe169..a38630d 100644
  }
  
  /*
-@@ -608,11 +620,11 @@ static int compressFileSize(sqlite3_file *pFile, i64 *pSize){
+@@ -608,11 +638,11 @@ static int compressFileSize(sqlite3_file *pFile, i64 *pSize){
    assert( pFile );
    CompressFile *pCompress = (CompressFile *)pFile;
    sqlite3 *db = pCompress->pDb;
@@ -172,7 +206,7 @@ index f2fe169..a38630d 100644
    int maxpgno = getMaxCompressPgno(db);
    *pSize = (i64)maxpgno * pgsize;
    return SQLITE_OK;
-@@ -625,11 +637,11 @@ static int compressTruncate(sqlite3_file *pFile, sqlite_int64 size){
+@@ -625,11 +655,11 @@ static int compressTruncate(sqlite3_file *pFile, sqlite_int64 size){
    assert( pFile );
    CompressFile *pCompress = (CompressFile *)pFile;
    sqlite3 *db = pCompress->pDb;
@@ -187,7 +221,7 @@ index f2fe169..a38630d 100644
    int pgno = size / pgsize;
    if( size % pgsize!=0 || getMaxCompressPgno(db) < pgno ){
      return SQLITE_IOERR_TRUNCATE;
-@@ -661,58 +673,70 @@ static int compressWrite(sqlite3_file *pFile, const void *pBuf, int iAmt, sqlite
+@@ -661,58 +691,70 @@ static int compressWrite(sqlite3_file *pFile, const void *pBuf, int iAmt, sqlite
    assert( iAmt>0 );
    CompressFile *pCompress = (CompressFile *)pFile;
    sqlite3 *db = pCompress->pDb;
@@ -281,7 +315,7 @@ index f2fe169..a38630d 100644
    return SQLITE_OK;
  }
  
-@@ -731,71 +755,83 @@ static int compressRead(sqlite3_file *pFile, void *pBuf, int iAmt, sqlite_int64
+@@ -731,71 +773,83 @@ static int compressRead(sqlite3_file *pFile, void *pBuf, int iAmt, sqlite_int64
    }
    (void)memset_s(pBuf, iAmt, 0, iAmt);
    sqlite3 *db = pCompress->pDb;
@@ -388,7 +422,7 @@ index f2fe169..a38630d 100644
    }
  
    return rc;
-@@ -808,6 +844,7 @@ static int compressClose(sqlite3_file *pFile){
+@@ -808,6 +862,7 @@ static int compressClose(sqlite3_file *pFile){
    assert( pFile );
    CompressFile *pCompress = (CompressFile *)pFile;
    sqlite3 *db = pCompress->pDb;
@@ -396,7 +430,7 @@ index f2fe169..a38630d 100644
    int rc = compressSync(pFile, 0);
    if( rc!=SQLITE_OK ){
      return rc;
-@@ -821,9 +858,13 @@ static int compressClose(sqlite3_file *pFile){
+@@ -821,9 +876,13 @@ static int compressClose(sqlite3_file *pFile){
        pCompress->pDb = NULL;
      }
    }
@@ -412,7 +446,7 @@ index f2fe169..a38630d 100644
    }
    return rc;
  }
-@@ -888,6 +929,69 @@ static int compressUnfetch(sqlite3_file *pFile, sqlite3_int64 iOfst, void *pPage
+@@ -888,6 +947,69 @@ static int compressUnfetch(sqlite3_file *pFile, sqlite3_int64 iOfst, void *pPage
    return SQLITE_OK;
  }
  
@@ -482,7 +516,7 @@ index f2fe169..a38630d 100644
  /*
  ** Open a compress file.If this file is not a journal or wal file,
  ** it will open a OutterDB and create vfs_pages and vfs_compression table
-@@ -902,87 +1006,103 @@ static int compressOpen(
+@@ -902,87 +1024,103 @@ static int compressOpen(
  ){
    sqlite3_file *pSubFile = ORIGFILE(pFile);
    CompressFile *pCompress = (CompressFile *)pFile;
