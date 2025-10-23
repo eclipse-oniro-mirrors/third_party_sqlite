@@ -48,24 +48,6 @@ typedef struct Sqlite3BinlogConfig {
 /*
 ** END OF BINLOG CONFIG
 *************************************************************************/
-typedef struct {
-  // aes-256-gcm, aes-256-cbc
-  const void *pCipher;
-  // SHA1, SHA256, SHA512
-  const void *pHmacAlgo;
-  // KDF_SHA1, KDF_SHA256, KDF_SHA512
-  const void *pKdfAlgo;
-  const void *pKey;
-  int nKey;
-  int kdfIter;
-  int pageSize;
-} CodecConfig;
-
-typedef struct {
-  const char *dbPath;
-  CodecConfig dbCfg;
-  CodecConfig rekeyCfg;
-} CodecRekeyConfig;
 
 struct sqlite3_api_routines_extra {
   int (*initialize)();
@@ -74,7 +56,6 @@ struct sqlite3_api_routines_extra {
   int (*key_v2)(sqlite3*,const char*,const void*,int);
   int (*rekey)(sqlite3*,const void*,int);
   int (*rekey_v2)(sqlite3*,const char*,const void*,int);
-  int (*rekey_v3)(CodecRekeyConfig *);
   int (*is_support_binlog)(const char*);
   int (*replay_binlog)(sqlite3*, sqlite3*);
   int (*clean_binlog)(sqlite3*, BinlogFileCleanModeE);
@@ -88,7 +69,6 @@ extern const struct sqlite3_api_routines_extra *sqlite3_export_extra_symbols;
 #define sqlite3_key_v2              sqlite3_export_extra_symbols->key_v2
 #define sqlite3_rekey               sqlite3_export_extra_symbols->rekey
 #define sqlite3_rekey_v2            sqlite3_export_extra_symbols->rekey_v2
-#define sqlite3_rekey_v3            sqlite3_export_extra_symbols->rekey_v3
 #define sqlite3_is_support_binlog   sqlite3_export_extra_symbols->is_support_binlog
 #define sqlite3_replay_binlog       sqlite3_export_extra_symbols->replay_binlog
 #define sqlite3_clean_binlog        sqlite3_export_extra_symbols->clean_binlog
