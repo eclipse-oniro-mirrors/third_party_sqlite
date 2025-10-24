@@ -1,14 +1,14 @@
-From 43c813a2f99f68268b86afa5fadf684941649aad Mon Sep 17 00:00:00 2001
+From 7257a247f64b41da0ee01965cebdb26cc7cf1d82 Mon Sep 17 00:00:00 2001
 From: ryne3366 <ryne3366@noreply.gitcode.com>
 Date: Thu, 18 Sep 2025 17:28:51 +0800
 Subject: [PATCH] enhance rekey
 
 ---
- src/sqlite3.c | 1274 ++++++++++++++++++++++++++++++++++++++++---------
- 1 file changed, 1047 insertions(+), 227 deletions(-)
+ src/sqlite3.c | 1254 +++++++++++++++++++++++++++++++++++++++++--------
+ 1 file changed, 1056 insertions(+), 198 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 02885e0..571bbf9 100644
+index 9802a46..bdef937 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -17631,16 +17631,17 @@ SQLITE_PRIVATE void sqlite3CryptFunc(sqlite3_context*,int,sqlite3_value**);
@@ -148,7 +148,7 @@ index 02885e0..571bbf9 100644
  SQLITE_PRIVATE void *sqlite3PagerGetCodec(Pager *pPager){
    return pPager->pCodec;
  }
-@@ -184186,9 +184212,8 @@ opendb_out:
+@@ -184187,9 +184213,8 @@ opendb_out:
  #endif
  #ifdef SQLITE_HAS_CODEC
    if( rc==SQLITE_OK ) {
@@ -160,7 +160,7 @@ index 02885e0..571bbf9 100644
      sqlite3CodecQueryParameters(db, 0, zOpen);
    }
  #endif /* SQLITE_HAS_CODEC */
-@@ -254862,7 +254887,9 @@ static u8 Sqlite3GetCheckFileId(const sqlite3_vfs *vfs){
+@@ -254863,7 +254888,9 @@ static u8 Sqlite3GetCheckFileId(const sqlite3_vfs *vfs){
    }else if( sqlite3_stricmp(vfs->zName, "compressvfs")==0 ){
      return SQLITE_CHECK_FILE_ID_COMPRESS;
    }
@@ -170,7 +170,7 @@ index 02885e0..571bbf9 100644
    return 0;
  }
  
-@@ -254925,7 +254952,6 @@ typedef struct{
+@@ -254926,7 +254953,6 @@ typedef struct{
    int reserveSize;
    int hmacAlgo;
    int kdfAlgo;
@@ -178,7 +178,7 @@ index 02885e0..571bbf9 100644
  }CodecConstant;
  
  typedef struct{
-@@ -255026,6 +255052,7 @@ CODEC_STATIC int opensslGetInitVectorSize(void *cipher){
+@@ -255027,6 +255053,7 @@ CODEC_STATIC int opensslGetInitVectorSize(void *cipher){
    return EVP_CIPHER_iv_length((EVP_CIPHER *)cipher);
  }
  
@@ -186,7 +186,7 @@ index 02885e0..571bbf9 100644
  #define CIPHER_HMAC_ALGORITHM_SHA1 1
  #define CIPHER_HMAC_ALGORITHM_SHA256 2
  #define CIPHER_HMAC_ALGORITHM_SHA512 3
-@@ -255036,6 +255063,7 @@ CODEC_STATIC int opensslGetInitVectorSize(void *cipher){
+@@ -255037,6 +255064,7 @@ CODEC_STATIC int opensslGetInitVectorSize(void *cipher){
  #define CIPHER_HMAC_ALGORITHM_NAME_SHA256 "SHA256"
  #define CIPHER_HMAC_ALGORITHM_NAME_SHA512 "SHA512"
  
@@ -194,7 +194,7 @@ index 02885e0..571bbf9 100644
  #define CIPHER_KDF_ALGORITHM_SHA1 1
  #define CIPHER_KDF_ALGORITHM_SHA256 2
  #define CIPHER_KDF_ALGORITHM_SHA512 3
-@@ -255046,21 +255074,24 @@ CODEC_STATIC int opensslGetInitVectorSize(void *cipher){
+@@ -255047,21 +255075,24 @@ CODEC_STATIC int opensslGetInitVectorSize(void *cipher){
  #define CIPHER_KDF_ALGORITHM_NAME_SHA256 "KDF_SHA256"
  #define CIPHER_KDF_ALGORITHM_NAME_SHA512 "KDF_SHA512"
  
@@ -227,7 +227,7 @@ index 02885e0..571bbf9 100644
  CODEC_STATIC int opensslGetBlockSize(void *cipher){
    return EVP_CIPHER_block_size((EVP_CIPHER *)cipher);
  }
-@@ -255198,6 +255229,7 @@ CODEC_STATIC int sqlite3CodecIsKeyInfoFormat(const unsigned char *input, int inp
+@@ -255199,6 +255230,7 @@ CODEC_STATIC int sqlite3CodecIsKeyInfoFormat(const unsigned char *input, int inp
  CODEC_STATIC void sqlite3CodecSetError(CodecContext *ctx, int error){
    if(ctx->pBt){
      ctx->pBt->pBt->pPager->errCode = error;
@@ -235,7 +235,7 @@ index 02885e0..571bbf9 100644
      ctx->pBt->pBt->db->errCode = error;
    }
    return;
-@@ -255256,6 +255288,9 @@ CODEC_STATIC int sqlite3CodecKeyCtxCmp(KeyContext *first, KeyContext *second){
+@@ -255257,6 +255289,9 @@ CODEC_STATIC int sqlite3CodecKeyCtxCmp(KeyContext *first, KeyContext *second){
  
  // This function will free all resources of key context, except it self.
  CODEC_STATIC void sqlite3CodecFreeKeyContext(KeyContext *keyCtx){
@@ -245,7 +245,7 @@ index 02885e0..571bbf9 100644
    sqlite3CodecClearDeriveKey(keyCtx);
    sqlite3CodecClearPassword(keyCtx);
    (void)opensslFreeCipher(keyCtx->codecConst.cipher);
-@@ -255391,7 +255426,8 @@ CODEC_STATIC int sqlite3CodecDeriveKey(CodecContext *ctx, OperateContext whichKe
+@@ -255392,7 +255427,8 @@ CODEC_STATIC int sqlite3CodecDeriveKey(CodecContext *ctx, OperateContext whichKe
    hmacKey.bufferSize = keyCtx->codecConst.keySize;
    opensslKdf(&hmacPassword, &hmacSalt, HMAC_ITER, &hmacKey, keyCtx->codecConst.kdfAlgo);
    keyCtx->deriveFlag = 1;
@@ -255,7 +255,7 @@ index 02885e0..571bbf9 100644
      sqlite3CodecClearDeriveKey(secondKeyCtx);
      int rc = sqlite3CodecCopyDeriveKey(keyCtx, secondKeyCtx);
      if(rc == SQLITE_OK){
-@@ -255435,9 +255471,9 @@ CODEC_STATIC int sqlite3CodecSetIter(KeyContext *keyCtx, int iter){
+@@ -255436,9 +255472,9 @@ CODEC_STATIC int sqlite3CodecSetIter(KeyContext *keyCtx, int iter){
    return SQLITE_OK;
  }
  
@@ -266,7 +266,7 @@ index 02885e0..571bbf9 100644
  
  #define CIPHER_TOTAL_NUM 2
  
-@@ -255454,26 +255490,100 @@ static const struct CodecCipherNameId g_cipherNameIdMap[CIPHER_TOTAL_NUM] = {
+@@ -255455,26 +255491,100 @@ static const struct CodecCipherNameId g_cipherNameIdMap[CIPHER_TOTAL_NUM] = {
    { CIPHER_ID_AES_256_GCM, CIPHER_NAME_AES_256_GCM }
  };
  
@@ -369,7 +369,7 @@ index 02885e0..571bbf9 100644
  }
  
  CODEC_STATIC const char *sqlite3CodecGetDefaultAttachCipher(CodecParameter *parm){
-@@ -255486,13 +255596,14 @@ CODEC_STATIC const char *sqlite3CodecGetDefaultAttachCipher(CodecParameter *parm
+@@ -255487,13 +255597,14 @@ CODEC_STATIC const char *sqlite3CodecGetDefaultAttachCipher(CodecParameter *parm
    return attachedCipher;
  }
  
@@ -386,7 +386,7 @@ index 02885e0..571bbf9 100644
  }
  
  CODEC_STATIC int sqlite3CodecGetDefaultAttachKdfIter(CodecParameter *parm){
-@@ -255541,8 +255652,6 @@ CODEC_STATIC int sqlite3CodecGetDefaultAttachPageSize(CodecParameter *parm){
+@@ -255542,8 +255653,6 @@ CODEC_STATIC int sqlite3CodecGetDefaultAttachPageSize(CodecParameter *parm){
    return pageSize;
  }
  
@@ -395,7 +395,7 @@ index 02885e0..571bbf9 100644
  // You should clear key derive infos and password infos before you call this function
  CODEC_STATIC int sqlite3CodecSetPassword(KeyContext *keyCtx, const void *zKey, int nKey){
    keyCtx->passwordSize = nKey;
-@@ -255581,9 +255690,17 @@ CODEC_STATIC int sqlite3CodecSetKdfAlgorithm(KeyContext *keyCtx, int kdfAlgo){
+@@ -255582,9 +255691,17 @@ CODEC_STATIC int sqlite3CodecSetKdfAlgorithm(KeyContext *keyCtx, int kdfAlgo){
    return SQLITE_OK;
  }
  
@@ -414,7 +414,7 @@ index 02885e0..571bbf9 100644
      return SQLITE_ERROR;
    }
    int cipherPageSize = ctx->readCtx->codecConst.cipherPageSize;
-@@ -255622,48 +255739,30 @@ CODEC_STATIC int sqlite3CodecCopyKeyContext(KeyContext *input, KeyContext *outpu
+@@ -255623,48 +255740,30 @@ CODEC_STATIC int sqlite3CodecCopyKeyContext(KeyContext *input, KeyContext *outpu
  }
  
  // You should clear key context before you call this function
@@ -483,7 +483,7 @@ index 02885e0..571bbf9 100644
    rc += sqlite3CodecSetPassword(keyCtx, zKey, nKey);
    if(rc != SQLITE_OK){
      sqlite3CodecFreeKeyContext(keyCtx);
-@@ -255693,15 +255792,9 @@ CODEC_STATIC void sqlite3CodecFreeContext(CodecContext *ctx){
+@@ -255694,15 +255793,9 @@ CODEC_STATIC void sqlite3CodecFreeContext(CodecContext *ctx){
    (void)memset_s(ctx, sizeof(CodecContext), 0, sizeof(CodecContext));
    return;
  }
@@ -502,7 +502,7 @@ index 02885e0..571bbf9 100644
    ctx->pBt = p;
    ctx->savePassword = 0;
    ctx->buffer = (unsigned char *)sqlite3Malloc(defaultPageSz);
-@@ -255720,11 +255813,7 @@ CODEC_STATIC int sqlite3CodecInitContext(CodecContext *ctx, Btree *p, const void
+@@ -255721,11 +255814,7 @@ CODEC_STATIC int sqlite3CodecInitContext(CodecContext *ctx, Btree *p, const void
    }
    ctx->readCtx->codecConst.cipherPageSize = defaultPageSz;
    ctx->writeCtx->codecConst.cipherPageSize = defaultPageSz;
@@ -515,7 +515,7 @@ index 02885e0..571bbf9 100644
    if(rc != SQLITE_OK){
      sqlite3CodecFreeContext(ctx);
      return SQLITE_ERROR;
-@@ -255734,16 +255823,6 @@ CODEC_STATIC int sqlite3CodecInitContext(CodecContext *ctx, Btree *p, const void
+@@ -255735,16 +255824,6 @@ CODEC_STATIC int sqlite3CodecInitContext(CodecContext *ctx, Btree *p, const void
      sqlite3CodecFreeContext(ctx);
      return SQLITE_ERROR;
    }
@@ -532,7 +532,7 @@ index 02885e0..571bbf9 100644
    return SQLITE_OK;
  }
  
-@@ -255933,11 +256012,15 @@ void* sqlite3Codec(void *ctx, void *data, Pgno pgno, int mode){
+@@ -255934,11 +256013,15 @@ void* sqlite3Codec(void *ctx, void *data, Pgno pgno, int mode){
    if(pgno == 1){
      offset = FILE_HEADER_SIZE;
    }
@@ -549,7 +549,7 @@ index 02885e0..571bbf9 100644
        if(pgno == 1){
          memcpyRc = memcpy_s(pCtx->buffer, cipherPageSize, SQLITE_FILE_HEADER, FILE_HEADER_SIZE);
          if(memcpyRc != EOK){
-@@ -255954,6 +256037,10 @@ void* sqlite3Codec(void *ctx, void *data, Pgno pgno, int mode){
+@@ -255955,6 +256038,10 @@ void* sqlite3Codec(void *ctx, void *data, Pgno pgno, int mode){
        return pData;
        break;
      case 6:
@@ -560,7 +560,7 @@ index 02885e0..571bbf9 100644
        if(pgno == 1){
          memcpyRc = memcpy_s(pCtx->buffer, cipherPageSize, pCtx->salt, FILE_HEADER_SIZE);
          if(memcpyRc != EOK){
-@@ -255969,6 +256056,10 @@ void* sqlite3Codec(void *ctx, void *data, Pgno pgno, int mode){
+@@ -255970,6 +256057,10 @@ void* sqlite3Codec(void *ctx, void *data, Pgno pgno, int mode){
        return pCtx->buffer;
        break;
      case 7:
@@ -571,7 +571,7 @@ index 02885e0..571bbf9 100644
        if(pgno == 1){
          memcpyRc = memcpy_s(pCtx->buffer, cipherPageSize, pCtx->salt, FILE_HEADER_SIZE);
          if(memcpyRc != EOK){
-@@ -255999,62 +256090,87 @@ void sqlite3CodecDetach(void *ctx){
+@@ -256000,16 +256091,69 @@ void sqlite3CodecDetach(void *ctx){
  }
  
  #if SQLITE_OS_UNIX
@@ -629,42 +629,30 @@ index 02885e0..571bbf9 100644
      return SQLITE_IOERR_RDLOCK;
    }
    sqlite3_mutex_enter(pInode->pLockMutex);
--  // last conntection release the lock
--  if (lockType == F_UNLCK && pInode->nRef > 1) {
--    sqlite3_mutex_leave(pInode->pLockMutex);
--    return SQLITE_OK;
--  }
--  if (lockType == F_WRLCK && pInode->nRef > 1) {
--    sqlite3_mutex_leave(pInode->pLockMutex);
--    sqlite3_log(SQLITE_BUSY, "Codec file lock wrlock busy ref %d", pInode->nRef);
--    return SQLITE_BUSY;
--  }
--  if (lockType == F_RDLCK && pInode->codecPager != 0 && pInode->codecPager != pPager) {
--    sqlite3_mutex_leave(pInode->pLockMutex);
--    sqlite3_log(SQLITE_BUSY, "Codec exists file lock wrlock");
--    return SQLITE_BUSY;
--  }
--  struct flock lock;
--  lock.l_whence = SEEK_SET;
--  lock.l_start = SHARED_CODEC_BYTE;
--  lock.l_len = 1;
--  // F_RDLCK, F_WRLCK, F_UNLCK
--  lock.l_type = lockType;
--  int rc = osSetPosixAdvisoryLock(pFile->h, &lock, pFile);
--  if (rc < 0) {
--    int tErrno = errno;
--    rc = sqliteErrorFromPosixError(tErrno, SQLITE_IOERR_RDLOCK);
--    if (IS_LOCK_ERROR(rc)) {
--      storeLastErrno(pFile, tErrno);
--    }
--    sqlite3_log(rc, "Codec file lock %d: errno = %d", lockType, tErrno);
++#if !SQLITE_ENABLE_LOCKING_STYLE
 +  int rc;
 +  if (lockType == F_UNLCK) {
 +    rc = CodecRekeyFileUnlock(pFile->h);
-   } else {
--    pInode->codecPager = (lockType == F_WRLCK ? pPager : 0);
++  } else {
 +    rc = CodecRekeyTryFileLock(pFile->h, lockType == F_WRLCK ? LOCK_EX : LOCK_SH);
++  }
++  if (rc < 0) {
++    sqlite3_log(rc, "Codec file flock %d: errno = %d", lockType, errno);
++  }
++#else
+   // last conntection release the lock
+   if (lockType == F_UNLCK && pInode->nRef > 1) {
+     sqlite3_mutex_leave(pInode->pLockMutex);
+@@ -256038,24 +256182,34 @@ static int CodecFileLock(Pager *pPager, short lockType)
+     if (IS_LOCK_ERROR(rc)) {
+       storeLastErrno(pFile, tErrno);
+     }
+-    sqlite3_log(rc, "Codec file lock %d: errno = %d", lockType, tErrno);
++    sqlite3_log(rc, "Codec file advlock %d: errno = %d", lockType, tErrno);
+   } else {
+     pInode->codecPager = (lockType == F_WRLCK ? pPager : 0);
    }
++#endif
    sqlite3_mutex_leave(pInode->pLockMutex);
    return rc;
  }
@@ -699,7 +687,7 @@ index 02885e0..571bbf9 100644
    CodecContext *ctx = (CodecContext *)sqlite3Malloc(sizeof(CodecContext));
    if(ctx == NULL){
      return SQLITE_NOMEM;
-@@ -256064,42 +256180,51 @@ int sqlite3CodecAttach(sqlite3* db, int nDb, const void *pKey, int nKey){
+@@ -256065,42 +256219,51 @@ int sqlite3CodecAttach(sqlite3* db, int nDb, const void *pKey, int nKey){
      sqlite3_free(ctx);
      return SQLITE_ERROR;
    }
@@ -779,7 +767,7 @@ index 02885e0..571bbf9 100644
  }
  
  void sqlite3CodecGetKey(sqlite3* db, int nDb, void **pKey, int *nKey)
-@@ -256140,6 +256265,451 @@ int sqlite3_rekey(sqlite3 *db, const void *pKey, int nKey){
+@@ -256141,6 +256304,451 @@ int sqlite3_rekey(sqlite3 *db, const void *pKey, int nKey){
    return sqlite3_rekey_v2(db, "main", pKey, nKey);
  }
  
@@ -1231,7 +1219,7 @@ index 02885e0..571bbf9 100644
  int sqlite3_rekey_v2(sqlite3 *db, const char *zDb, const void *pKey, int nKey){
    if(db == NULL || pKey == NULL || nKey == 0){
      return SQLITE_ERROR;
-@@ -256164,26 +256734,30 @@ int sqlite3_rekey_v2(sqlite3 *db, const char *zDb, const void *pKey, int nKey){
+@@ -256165,26 +256773,30 @@ int sqlite3_rekey_v2(sqlite3 *db, const char *zDb, const void *pKey, int nKey){
      return rc;
    }
    sqlite3_mutex_enter(db->mutex);
@@ -1272,7 +1260,7 @@ index 02885e0..571bbf9 100644
    }
  
    for(pgno = 1; pgno <= (unsigned int)pageCount; pgno++){
-@@ -256206,7 +256780,7 @@ int sqlite3_rekey_v2(sqlite3 *db, const char *zDb, const void *pKey, int nKey){
+@@ -256207,7 +256819,7 @@ int sqlite3_rekey_v2(sqlite3 *db, const char *zDb, const void *pKey, int nKey){
      sqlite3CodecFreeKeyContext(ctx->readCtx);
      (void)sqlite3CodecCopyKeyContext(ctx->writeCtx, ctx->readCtx);
    }else{
@@ -1281,14 +1269,14 @@ index 02885e0..571bbf9 100644
        sqlite3CodecSetHmacAlgorithm(ctx->writeCtx, oldHmacAlgo);
        sqlite3CodecSetKdfAlgorithm(ctx->writeCtx, oldHmacAlgo);
      }
-@@ -256216,9 +256790,159 @@ int sqlite3_rekey_v2(sqlite3 *db, const char *zDb, const void *pKey, int nKey){
+@@ -256217,9 +256829,159 @@ int sqlite3_rekey_v2(sqlite3 *db, const char *zDb, const void *pKey, int nKey){
    (void)CodecFileLock(pPager, F_RDLCK);
  #endif
    sqlite3_mutex_leave(db->mutex);
 +
-   return rc;
- }
- 
++  return rc;
++}
++
 +typedef struct {
 +  // aes-256-gcm, aes-256-cbc
 +  const char *pCipher;
@@ -1425,9 +1413,9 @@ index 02885e0..571bbf9 100644
 +  return rc;
 +cleanup:
 +  if (db) sqlite3_close(db);
-+  return rc;
-+}
-+
+   return rc;
+ }
+ 
 +int sqlite3_rekey_v3(CodecRekeyConfig *rekeyConfig)
 +{
 +  sqlite3 *db = NULL;
@@ -1441,7 +1429,7 @@ index 02885e0..571bbf9 100644
  void sqlite3_activate_see(const char* zPassPhrase){
    return;
  }
-@@ -256232,20 +256956,116 @@ CODEC_STATIC void sqlite3CodecReturnPragmaResult(Parse *parse, const char *label
+@@ -256233,20 +256995,116 @@ CODEC_STATIC void sqlite3CodecReturnPragmaResult(Parse *parse, const char *label
    return;
  }
  
@@ -1561,7 +1549,7 @@ index 02885e0..571bbf9 100644
      return 1;
    }else if( sqlite3StrICmp(zLeft, "cipher_default_attach_hmac_algo")==0 && zRight!=NULL ){
      /*
-@@ -256262,7 +257082,7 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
+@@ -256263,7 +257121,7 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
        sqlite3CodecSetDefaultAttachHmacAlgo(parm, CIPHER_HMAC_ALGORITHM_SHA512);
        sqlite3CodecSetDefaultAttachKdfAlgo(parm, CIPHER_KDF_ALGORITHM_SHA512);
      }else{
@@ -1570,7 +1558,7 @@ index 02885e0..571bbf9 100644
      }
      return 1;
    }else if( sqlite3StrICmp(zLeft, "cipher_default_attach_kdf_algo")==0 && zRight!=NULL ){
-@@ -256273,7 +257093,7 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
+@@ -256274,7 +257132,7 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
      }else if( sqlite3_stricmp(zRight, CIPHER_KDF_ALGORITHM_NAME_SHA512)==0 ){
        sqlite3CodecSetDefaultAttachKdfAlgo(parm, CIPHER_KDF_ALGORITHM_SHA512);
      }else{
@@ -1579,7 +1567,7 @@ index 02885e0..571bbf9 100644
      }
      return 1;
    }else if( sqlite3StrICmp(zLeft, "cipher_default_attach_page_size")==0 && zRight!=NULL ){
-@@ -256281,11 +257101,17 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
+@@ -256282,11 +257140,17 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
      return 1;
    }
  #endif /* SQLITE_CODEC_ATTACH_CHANGED */
@@ -1597,7 +1585,7 @@ index 02885e0..571bbf9 100644
        sqlite3_mutex_enter(db->mutex);
        (void)sqlite3CodecSetCodecConstant(ctx->readCtx, zRight);
        (void)sqlite3CodecSetHmacAlgorithm(ctx->readCtx, ctx->readCtx->codecConst.hmacAlgo);
-@@ -256332,7 +257158,7 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
+@@ -256333,7 +257197,7 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
          (void)sqlite3CodecSetKdfAlgorithm(ctx->writeCtx, CIPHER_KDF_ALGORITHM_SHA512);
        }else{
          sqlite3_mutex_leave(db->mutex);
@@ -1606,7 +1594,7 @@ index 02885e0..571bbf9 100644
        }
        sqlite3BtreeSetPageSize(p, ctx->readCtx->codecConst.cipherPageSize, ctx->readCtx->codecConst.reserveSize, 0);
        sqlite3_mutex_leave(db->mutex);
-@@ -256359,7 +257185,7 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
+@@ -256360,7 +257224,7 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
          (void)sqlite3CodecSetKdfAlgorithm(ctx->writeCtx, CIPHER_KDF_ALGORITHM_SHA512);
        }else{
          sqlite3_mutex_leave(db->mutex);
@@ -1615,7 +1603,7 @@ index 02885e0..571bbf9 100644
        }
        sqlite3BtreeSetPageSize(p, ctx->readCtx->codecConst.cipherPageSize, ctx->readCtx->codecConst.reserveSize, 0);
        sqlite3_mutex_leave(db->mutex);
-@@ -256375,10 +257201,10 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
+@@ -256376,10 +257240,10 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
    }else if( sqlite3StrICmp(zLeft, "codec_page_size")==0 ){
      if(zRight){
        sqlite3_mutex_enter(db->mutex);
@@ -1628,7 +1616,7 @@ index 02885e0..571bbf9 100644
        }
        sqlite3BtreeSetPageSize(p, ctx->readCtx->codecConst.cipherPageSize, ctx->readCtx->codecConst.reserveSize, 0);
        sqlite3_mutex_leave(db->mutex);
-@@ -256389,33 +257215,12 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
+@@ -256390,33 +257254,12 @@ int sqlite3CodecPragma(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, co
          sqlite3_free(pageSize);
        }
      }
@@ -1665,7 +1653,7 @@ index 02885e0..571bbf9 100644
  }
  
  CODEC_STATIC int sqlite3CodecExportMetadata(sqlite3 *db, const char *dbName, const char *metaName){
-@@ -257606,24 +258411,6 @@ CHK_RESTORE_OUT:
+@@ -257607,24 +258450,6 @@ CHK_RESTORE_OUT:
    return rc;
  }
  
@@ -1690,7 +1678,7 @@ index 02885e0..571bbf9 100644
  static int MetaDwrOpenAndCheck(Btree *pBt)
  {
    Pager *pPager = pBt->pBt->pPager;
-@@ -257711,6 +258498,32 @@ static inline int OsGetTid(void)
+@@ -257712,6 +258537,32 @@ static inline int OsGetTid(void)
  #endif
  }
  
@@ -1723,7 +1711,7 @@ index 02885e0..571bbf9 100644
  static void ResetLockStatus(void)
  {
    (void)memset(&g_lockStatus, 0, sizeof(g_lockStatus));
-@@ -259118,6 +259931,11 @@ struct sqlite3_api_routines_extra {
+@@ -259119,6 +259970,11 @@ struct sqlite3_api_routines_extra {
    int (*key_v2)(sqlite3*,const char*,const void*,int);
    int (*rekey)(sqlite3*,const void*,int);
    int (*rekey_v2)(sqlite3*,const char*,const void*,int);
@@ -1735,7 +1723,7 @@ index 02885e0..571bbf9 100644
    int (*is_support_binlog)(void);
    int (*replay_binlog)(sqlite3*, sqlite3*);
    int (*clean_binlog)(sqlite3*, BinlogFileCleanModeE);
-@@ -259137,11 +259955,13 @@ static const sqlite3_api_routines_extra sqlite3ExtraApis = {
+@@ -259138,11 +259994,13 @@ static const sqlite3_api_routines_extra sqlite3ExtraApis = {
    sqlite3_key_v2,
    sqlite3_rekey,
    sqlite3_rekey_v2,
