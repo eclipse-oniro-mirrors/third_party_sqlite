@@ -1,13 +1,13 @@
-From 3ce9f3846a7963a3c9d1d218acec026595fde7ed Mon Sep 17 00:00:00 2001
+From 0598b63edf054a1423025a9335a07dee098cf8bc Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
-Date: Mon, 13 Oct 2025 18:40:10 +0800
+Date: Wed, 29 Oct 2025 16:08:41 +0800
 Subject: [PATCH] Bugfix on current version
 
 ---
  ext/misc/cksumvfs.c |  11 +-
- src/compressvfs.c   | 352 +++++++++++++++++++++++++++++++-------------
- src/sqlite3.c       | 334 ++++++++++++++++++++++++++++++++++-------
- 3 files changed, 529 insertions(+), 168 deletions(-)
+ src/compressvfs.c   | 405 ++++++++++++++++++++++++++++++--------------
+ src/sqlite3.c       | 334 ++++++++++++++++++++++++++++++------
+ 3 files changed, 564 insertions(+), 186 deletions(-)
 
 diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
 index 27b1028..e89edcd 100644
@@ -53,7 +53,7 @@ index 27b1028..e89edcd 100644
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE]=CKSUMVFS_MAGIC_NUM;
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE+1]=p->verifyCksm ? CKSUMVFS_CALC_CHECKSUM : CKSUMVFS_WITHOUT_CHECKSUM;
 diff --git a/src/compressvfs.c b/src/compressvfs.c
-index f2fe169..a29bdc3 100644
+index f2fe169..d4678ba 100644
 --- a/src/compressvfs.c
 +++ b/src/compressvfs.c
 @@ -151,6 +151,7 @@ typedef INT8_TYPE i8;              /* 1-byte signed integer */
@@ -119,7 +119,7 @@ index f2fe169..a29bdc3 100644
        (size_t)src_len,
        (const u8 *)src,
        &dst_len,
-@@ -434,19 +457,22 @@ EXPORT_SYMBOLS int decompressBuf(
+@@ -434,19 +457,29 @@ EXPORT_SYMBOLS int decompressBuf(
  }
  
  /* Check whether the table exists in the OutterDB. */
@@ -138,20 +138,82 @@ index f2fe169..a29bdc3 100644
 +  int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
 +  if( rc!=SQLITE_OK ){
 +    return rc;
-+  }
+   }
+-  return exists;
 +  sqlite3_bind_text(stmt, 1, table_name, -1, SQLITE_STATIC);
 +  rc = sqlite3_step(stmt);
 +  sqlite3_finalize(stmt);
 +  if( rc!=SQLITE_ROW && rc!=SQLITE_DONE ){
 +    return rc;
-   }
--  return exists;
++  }
 +  *isExist = (rc==SQLITE_ROW) ? 1 : 0;
 +  return SQLITE_OK;
++}
++
++static int compressConvertErrCode(int errCode){
++  if( errCode==SQLITE_CORRUPT || errCode==SQLITE_BUSY ){
++    return errCode;
++  }
++  return SQLITE_IOERR;
  }
  
  /* Get page size before compressed from OutterDB. */
-@@ -504,15 +530,15 @@ static void getCompression(sqlite3 *db, CompressFile *pCompress){
+@@ -457,15 +490,20 @@ static int getCompressPgsize(sqlite3 *db, int *pagesize){
+   }
+   sqlite3_stmt *stmt = NULL;
+   const char *sql = "SELECT pagesize FROM vfs_compression;";
+-  if( sqlite3_prepare_v2(db, sql, -1, &stmt, NULL)==SQLITE_OK ){
+-    if( sqlite3_step(stmt)==SQLITE_ROW ){
+-      *pagesize = sqlite3_column_int(stmt, 0);
+-    }else{
+-      rc = SQLITE_ERROR;
+-    }
++  rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
++  if( rc!=SQLITE_OK ){
++    sqlite3_log(rc, "Compress db prepare to get pgsz wrong");
++    return compressConvertErrCode(rc);
++  }
++  rc = sqlite3_step(stmt);
++  if( rc!=SQLITE_ROW ){
++    sqlite3_log(rc, "Compress db get pgsz wrong, expect at least one row");
+     sqlite3_finalize(stmt);
++    return compressConvertErrCode(rc);
+   }
+-  return rc;
++  *pagesize = sqlite3_column_int(stmt, 0);
++  sqlite3_finalize(stmt);
++  return SQLITE_OK;
+ }
+ 
+ /* Set page size before compressed to OutterDB. */
+@@ -474,14 +512,19 @@ static int setCompressPgsize(sqlite3 *db, int pagesize){
+   sqlite3_stmt *stmt = NULL;
+   const char *sql = "UPDATE vfs_compression SET pagesize=?;";
+ 
+-  if( sqlite3_prepare_v2(db, sql, -1, &stmt, NULL)==SQLITE_OK ){
+-    sqlite3_bind_int(stmt, 1, pagesize);
+-    if( sqlite3_step(stmt)!=SQLITE_DONE ){
+-      rc = SQLITE_ERROR;
+-    }
+-    sqlite3_finalize(stmt);
++  rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
++  if( rc!=SQLITE_OK ){
++    sqlite3_log(rc, "Compress db prepare update pgsz wrong, size:%d", pagesize);
++    return compressConvertErrCode(rc);
+   }
+-  return rc;
++  sqlite3_bind_int(stmt, 1, pagesize);
++  rc = sqlite3_step(stmt);
++  sqlite3_finalize(stmt);
++  if( rc!=SQLITE_DONE ){
++    sqlite3_log(rc, "Compress db update pgsz wrong, size:%d", pagesize);
++    return compressConvertErrCode(rc);
++  }
++  return SQLITE_OK;
+ }
+ 
+ /* Get max page number from OutterDB. */
+@@ -504,15 +547,15 @@ static void getCompression(sqlite3 *db, CompressFile *pCompress){
    sqlite3_stmt *stmt = NULL;
    const char *sql = "SELECT count(*), compression, pagesize FROM vfs_compression;";
    int count = 0;
@@ -170,7 +232,7 @@ index f2fe169..a29bdc3 100644
        }
      }
      sqlite3_finalize(stmt);
-@@ -590,7 +616,9 @@ static int compressDeviceCharacteristics(sqlite3_file *pFile){
+@@ -590,7 +633,9 @@ static int compressDeviceCharacteristics(sqlite3_file *pFile){
  */
  static int compressLock(sqlite3_file *pFile, int eFileLock){
    assert( pFile );
@@ -181,7 +243,7 @@ index f2fe169..a29bdc3 100644
  }
  
  /*
-@@ -598,7 +626,9 @@ static int compressLock(sqlite3_file *pFile, int eFileLock){
+@@ -598,7 +643,9 @@ static int compressLock(sqlite3_file *pFile, int eFileLock){
  */
  static int compressUnlock(sqlite3_file *pFile, int eFileLock){
    assert( pFile );
@@ -192,7 +254,7 @@ index f2fe169..a29bdc3 100644
  }
  
  /*
-@@ -608,11 +638,11 @@ static int compressFileSize(sqlite3_file *pFile, i64 *pSize){
+@@ -608,11 +655,11 @@ static int compressFileSize(sqlite3_file *pFile, i64 *pSize){
    assert( pFile );
    CompressFile *pCompress = (CompressFile *)pFile;
    sqlite3 *db = pCompress->pDb;
@@ -206,7 +268,7 @@ index f2fe169..a29bdc3 100644
    int maxpgno = getMaxCompressPgno(db);
    *pSize = (i64)maxpgno * pgsize;
    return SQLITE_OK;
-@@ -625,11 +655,11 @@ static int compressTruncate(sqlite3_file *pFile, sqlite_int64 size){
+@@ -625,11 +672,11 @@ static int compressTruncate(sqlite3_file *pFile, sqlite_int64 size){
    assert( pFile );
    CompressFile *pCompress = (CompressFile *)pFile;
    sqlite3 *db = pCompress->pDb;
@@ -221,16 +283,17 @@ index f2fe169..a29bdc3 100644
    int pgno = size / pgsize;
    if( size % pgsize!=0 || getMaxCompressPgno(db) < pgno ){
      return SQLITE_IOERR_TRUNCATE;
-@@ -661,58 +691,72 @@ static int compressWrite(sqlite3_file *pFile, const void *pBuf, int iAmt, sqlite
+@@ -661,58 +708,70 @@ static int compressWrite(sqlite3_file *pFile, const void *pBuf, int iAmt, sqlite
    assert( iAmt>0 );
    CompressFile *pCompress = (CompressFile *)pFile;
    sqlite3 *db = pCompress->pDb;
 -  int rc = getCompressPgsize(db, &pCompress->page_size);
 +  int rc = getCompressPgsize(db, &pCompress->pageSize);
    if( rc!=SQLITE_OK ){
-+    sqlite3_log(SQLITE_WARNING_DUMP, "Missing pgsz(%d), write ofst:%lld, iAmt:%d, flags:%d", pCompress->pageSize,
+-    return SQLITE_IOERR_WRITE;
++    sqlite3_log(rc, "Missing pgsz(%d), write ofst:%lld, iAmt:%d, flags:%d", pCompress->pageSize,
 +      iOfst, iAmt, pCompress->openFlags);
-     return SQLITE_IOERR_WRITE;
++    return rc;
    }
  
 -  if( pCompress->page_size<=0 && iAmt >= 512 && iAmt <= 64*1024 && !(iAmt & (iAmt - 1)) ){
@@ -238,8 +301,9 @@ index f2fe169..a29bdc3 100644
      // new compress db need set orignal db's pagesize
      rc = setCompressPgsize(db, iAmt);
      if( rc!=SQLITE_OK ){
+-      return SQLITE_IOERR_WRITE;
 +      sqlite3_log(rc, "Save page size(%d) wrong, ofst:%lld, flags:%d", iAmt, iOfst, pCompress->openFlags);
-       return SQLITE_IOERR_WRITE;
++      return rc;
      }
 -    pCompress->page_size = iAmt;
 +    pCompress->pageSize = iAmt;
@@ -278,10 +342,11 @@ index f2fe169..a29bdc3 100644
    if( pCompress->bBegin!=1 ){
 -    if( sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL)!=SQLITE_OK ){
 -      sqlite3_free(compressed_data);
+-      return SQLITE_IOERR_WRITE;
 +    if( (rc = sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL))!=SQLITE_OK ){
 +      sqlite3_free(tmpData);
 +      sqlite3_log(rc, "Begin transaction to insert compressed page wrong, pgno(%d), ofst(%lld)", pgno, iOfst);
-       return SQLITE_IOERR_WRITE;
++      return compressConvertErrCode(rc);
      }
      pCompress->bBegin = 1;
    }
@@ -294,11 +359,13 @@ index f2fe169..a29bdc3 100644
 -      sqlite3_free(compressed_data);
 -      sqlite3_finalize(stmt);
 -      return SQLITE_IOERR_WRITE;
+-    }
+-    sqlite3_finalize(stmt);
 +  rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
 +  if( rc!=SQLITE_OK ){
 +    sqlite3_free(tmpData);
 +    sqlite3_log(rc, "Prepare stat to insert page wrong, pgno(%d), ofst(%lld)", pgno, iOfst);
-+    return SQLITE_IOERR_WRITE;
++    return compressConvertErrCode(rc);
 +  }
 +  sqlite3_bind_blob(stmt, 1, tmpData, len, SQLITE_STATIC);
 +  sqlite3_bind_int(stmt, 2, pgno);
@@ -306,17 +373,14 @@ index f2fe169..a29bdc3 100644
 +  sqlite3_finalize(stmt);
 +  sqlite3_free(tmpData);
 +  if( rc!=SQLITE_DONE ){
-+    if( rc!=SQLITE_BUSY ){
-+      sqlite3_log(rc, "Compress db insert page wrong, pgno(%d), ofst(%lld)", pgno, iOfst);
-     }
--    sqlite3_finalize(stmt);
-+    return SQLITE_IOERR_WRITE;
++    sqlite3_log(rc, "Compress db insert page wrong, pgno(%d), ofst(%lld)", pgno, iOfst);
++    return compressConvertErrCode(rc);
    }
 -  sqlite3_free(compressed_data);
    return SQLITE_OK;
  }
  
-@@ -731,71 +775,83 @@ static int compressRead(sqlite3_file *pFile, void *pBuf, int iAmt, sqlite_int64
+@@ -731,71 +790,85 @@ static int compressRead(sqlite3_file *pFile, void *pBuf, int iAmt, sqlite_int64
    }
    (void)memset_s(pBuf, iAmt, 0, iAmt);
    sqlite3 *db = pCompress->pDb;
@@ -412,6 +476,8 @@ index f2fe169..a29bdc3 100644
 -    rc = SQLITE_IOERR_SHORT_READ;
 +    rc = SQLITE_BUSY;
 +    sqlite3_log(SQLITE_WARNING_DUMP, "Missing page(%d) while try read, may busy now", pgno);
++  }else if( rc!=SQLITE_OK ){
++    sqlite3_log(rc, "Got page(%d) from compress db wrong", pgno);
    }
  
 - failed:
@@ -423,7 +489,7 @@ index f2fe169..a29bdc3 100644
    }
  
    return rc;
-@@ -808,6 +864,7 @@ static int compressClose(sqlite3_file *pFile){
+@@ -808,6 +881,7 @@ static int compressClose(sqlite3_file *pFile){
    assert( pFile );
    CompressFile *pCompress = (CompressFile *)pFile;
    sqlite3 *db = pCompress->pDb;
@@ -431,7 +497,7 @@ index f2fe169..a29bdc3 100644
    int rc = compressSync(pFile, 0);
    if( rc!=SQLITE_OK ){
      return rc;
-@@ -821,9 +878,13 @@ static int compressClose(sqlite3_file *pFile){
+@@ -821,9 +895,13 @@ static int compressClose(sqlite3_file *pFile){
        pCompress->pDb = NULL;
      }
    }
@@ -447,7 +513,7 @@ index f2fe169..a29bdc3 100644
    }
    return rc;
  }
-@@ -888,6 +949,69 @@ static int compressUnfetch(sqlite3_file *pFile, sqlite3_int64 iOfst, void *pPage
+@@ -888,6 +966,69 @@ static int compressUnfetch(sqlite3_file *pFile, sqlite3_int64 iOfst, void *pPage
    return SQLITE_OK;
  }
  
@@ -517,7 +583,7 @@ index f2fe169..a29bdc3 100644
  /*
  ** Open a compress file.If this file is not a journal or wal file,
  ** it will open a OutterDB and create vfs_pages and vfs_compression table
-@@ -902,87 +1026,103 @@ static int compressOpen(
+@@ -902,87 +1043,103 @@ static int compressOpen(
  ){
    sqlite3_file *pSubFile = ORIGFILE(pFile);
    CompressFile *pCompress = (CompressFile *)pFile;
@@ -607,15 +673,15 @@ index f2fe169..a29bdc3 100644
      if( rc!=SQLITE_OK ){
 -      rc = SQLITE_CANTOPEN;
 -      goto open_end;
-+      sqlite3_log(rc, "Init compression info wrong, name:%s", zName);
-+      goto END_OUT;
-     }
+-    }
 -    char set_compression_sql[COMPRESSION_SQL_MAX_LENGTH] = {0};
 -    if( sprintf_s(set_compression_sql, COMPRESSION_SQL_MAX_LENGTH,
 -      "INSERT INTO vfs_compression(compression, pagesize) VALUES (%u, 0);", g_compress_algo_load)<=0 ){
 -      rc = SQLITE_CANTOPEN;
 -      goto open_end;
--    }
++      sqlite3_log(rc, "Init compression info wrong, name:%s", zName);
++      goto END_OUT;
+     }
 -    rc = sqlite3_exec(db, set_compression_sql, NULL, NULL, NULL);
 -    if( rc!=SQLITE_OK ){
 -      rc = SQLITE_CANTOPEN;
@@ -660,7 +726,7 @@ index f2fe169..a29bdc3 100644
  }
  
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 74366de..367eef9 100644
+index bdef937..9bd7e06 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -5363,7 +5363,7 @@ SQLITE_API int sqlite3_set_droptable_handle(sqlite3*, void (*xFunc)(sqlite3*,con
@@ -898,7 +964,7 @@ index 74366de..367eef9 100644
    return SQLITE_ERROR;
  }
  
-@@ -116893,7 +116963,9 @@ static void findOrCreateAggInfoColumn(
+@@ -116894,7 +116964,9 @@ static void findOrCreateAggInfoColumn(
  ){
    struct AggInfo_col *pCol;
    int k;
@@ -908,7 +974,7 @@ index 74366de..367eef9 100644
    assert( pAggInfo->iFirstReg==0 );
    pCol = pAggInfo->aCol;
    for(k=0; k<pAggInfo->nColumn; k++, pCol++){
-@@ -116911,6 +116983,10 @@ static void findOrCreateAggInfoColumn(
+@@ -116912,6 +116984,10 @@ static void findOrCreateAggInfoColumn(
      assert( pParse->db->mallocFailed );
      return;
    }
@@ -919,7 +985,7 @@ index 74366de..367eef9 100644
    pCol = &pAggInfo->aCol[k];
    assert( ExprUseYTab(pExpr) );
    pCol->pTab = pExpr->y.pTab;
-@@ -116944,6 +117020,7 @@ fix_up_expr:
+@@ -116945,6 +117021,7 @@ fix_up_expr:
    if( pExpr->op==TK_COLUMN ){
      pExpr->op = TK_AGG_COLUMN;
    }
@@ -927,7 +993,7 @@ index 74366de..367eef9 100644
    pExpr->iAgg = (i16)k;
  }
  
-@@ -117027,13 +117104,19 @@ static int analyzeAggregate(Walker *pWalker, Expr *pExpr){
+@@ -117028,13 +117105,19 @@ static int analyzeAggregate(Walker *pWalker, Expr *pExpr){
          ** function that is already in the pAggInfo structure
          */
          struct AggInfo_func *pItem = pAggInfo->aFunc;
@@ -948,7 +1014,7 @@ index 74366de..367eef9 100644
            /* pExpr is original.  Make a new entry in pAggInfo->aFunc[]
            */
            u8 enc = ENC(pParse->db);
-@@ -117085,6 +117168,7 @@ static int analyzeAggregate(Walker *pWalker, Expr *pExpr){
+@@ -117086,6 +117169,7 @@ static int analyzeAggregate(Walker *pWalker, Expr *pExpr){
          */
          assert( !ExprHasProperty(pExpr, EP_TokenOnly|EP_Reduced) );
          ExprSetVVAProperty(pExpr, EP_NoReduce);
@@ -956,7 +1022,7 @@ index 74366de..367eef9 100644
          pExpr->iAgg = (i16)i;
          pExpr->pAggInfo = pAggInfo;
          return WRC_Prune;
-@@ -121797,8 +121881,8 @@ static void attachFunc(
+@@ -121798,8 +121882,8 @@ static void attachFunc(
    if( rc==SQLITE_OK ){
      extern int sqlite3CodecAttach(sqlite3*, int, const void*, int);
      extern void sqlite3CodecGetKey(sqlite3*, int, void**, int*);
@@ -967,7 +1033,7 @@ index 74366de..367eef9 100644
      int t = sqlite3_value_type(argv[2]);
      switch( t ){
        case SQLITE_INTEGER:
-@@ -121815,14 +121899,7 @@ static void attachFunc(
+@@ -121816,14 +121900,7 @@ static void attachFunc(
          break;
  
        case SQLITE_NULL:
@@ -983,7 +1049,7 @@ index 74366de..367eef9 100644
          break;
      }
    }
-@@ -184194,10 +184271,12 @@ opendb_out:
+@@ -184195,10 +184272,12 @@ opendb_out:
      db->eOpenState = SQLITE_STATE_SICK;
    }
  #ifdef SQLITE_ENABLE_DROPTABLE_CALLBACK
@@ -1000,7 +1066,7 @@ index 74366de..367eef9 100644
  #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
  #ifdef SQLITE_ENABLE_BINLOG
    sqlite3BinlogReset(db);
-@@ -204642,6 +204721,39 @@ static int fts3ExprTermOffsetInit(Fts3Expr *pExpr, int iPhrase, void *ctx){
+@@ -204643,6 +204722,39 @@ static int fts3ExprTermOffsetInit(Fts3Expr *pExpr, int iPhrase, void *ctx){
    return rc;
  }
  
@@ -1040,7 +1106,7 @@ index 74366de..367eef9 100644
  /*
  ** Implementation of offsets() function.
  */
-@@ -204678,6 +204790,12 @@ SQLITE_PRIVATE void sqlite3Fts3Offsets(
+@@ -204679,6 +204791,12 @@ SQLITE_PRIVATE void sqlite3Fts3Offsets(
    sCtx.iDocid = pCsr->iPrevId;
    sCtx.pCsr = pCsr;
  
@@ -1053,7 +1119,7 @@ index 74366de..367eef9 100644
    /* Loop through the table columns, appending offset information to
    ** string-buffer res for each column.
    */
-@@ -254865,6 +254983,21 @@ SQLITE_API int sqlite3_stmt_init(
+@@ -254866,6 +254984,21 @@ SQLITE_API int sqlite3_stmt_init(
  SQLITE_API const char *sqlite3_sourceid(void){ return SQLITE_SOURCE_ID; }
  /************************** End of sqlite3.c ******************************/
  
@@ -1075,7 +1141,7 @@ index 74366de..367eef9 100644
  #ifdef SQLITE_CKSUMVFS_STATIC
  extern sqlite3_file *cksmvfsGetOrigFile(sqlite3_file *file);
  #else
-@@ -255928,6 +256061,8 @@ CODEC_STATIC int sqlite3CodecEncryptData(CodecContext *ctx, OperateContext which
+@@ -255945,6 +256078,8 @@ CODEC_STATIC int sqlite3CodecEncryptData(CodecContext *ctx, OperateContext which
    }
    rc = sqlite3CodecHmac(keyCtx, pgno, inputBuffer.bufferSize + keyCtx->codecConst.initVectorSize, output, output + inputBuffer.bufferSize + keyCtx->codecConst.initVectorSize);
    if(rc != SQLITE_OK){
@@ -1084,7 +1150,7 @@ index 74366de..367eef9 100644
      return rc;
    }
    return SQLITE_OK;
-@@ -255966,9 +256101,9 @@ CODEC_STATIC int sqlite3CodecDecryptData(CodecContext *ctx, OperateContext which
+@@ -255983,9 +256118,9 @@ CODEC_STATIC int sqlite3CodecDecryptData(CodecContext *ctx, OperateContext which
      inputBuffer.buffer = input;
      inputBuffer.bufferSize = bufferSize - keyCtx->codecConst.reserveSize;
      if(sqlite3CodecCheckHmac(keyCtx, pgno, inputBuffer.bufferSize + keyCtx->codecConst.initVectorSize, input, input + inputBuffer.bufferSize + keyCtx->codecConst.initVectorSize)){
@@ -1096,7 +1162,7 @@ index 74366de..367eef9 100644
      }
      unsigned char *initVector = input + inputBuffer.bufferSize;
      void *cipherCtx = opensslGetCtx(keyCtx->codecConst.cipher, CODEC_OPERATION_DECRYPT, keyCtx->key, initVector);
-@@ -257371,7 +257506,12 @@ typedef struct MetaDwrHdr {
+@@ -257497,7 +257632,12 @@ typedef struct MetaDwrHdr {
    u32 pageSz;
    u32 pageCnt;
    u64 dbFileInode;
@@ -1110,7 +1176,7 @@ index 74366de..367eef9 100644
    u32 checkSum;
    u8 *zones;
    Pgno *pages;
-@@ -257726,6 +257866,88 @@ static inline u64 CaculateMetaDwrWriteOffset(int pageSz, u32 idx, u8 zone) {
+@@ -257852,6 +257992,88 @@ static inline u64 CaculateMetaDwrWriteOffset(int pageSz, u32 idx, u8 zone) {
    return META_DWR_HEADER_PAGE_SIZE + pageSz * (idx * 2 + zone);
  }
  
@@ -1199,7 +1265,7 @@ index 74366de..367eef9 100644
  static void MetaDwrUpdateHeaderDbInfo(BtShared *pBt) {
    MetaDwrHdr *hdr = pBt->pPager->metaHdr;
    // 28 offset: dbSize, freelist pageNo, freelist pages count, schema cookie
-@@ -257881,7 +258103,10 @@ static int MetaDwrRestoreAllPages(Btree *pBt, const ScanPages *metaPages, MetaDw
+@@ -258007,7 +258229,10 @@ static int MetaDwrRestoreAllPages(Btree *pBt, const ScanPages *metaPages, MetaDw
        return rc;
      }
    }
@@ -1211,7 +1277,7 @@ index 74366de..367eef9 100644
    MetaDwrUpdateHeaderDbInfo(pBt->pBt);
    return rc;
  }
-@@ -257946,11 +258171,12 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
+@@ -258072,11 +258297,12 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
    if (pPager->metaMapPage == NULL) {
      sqlite3_int64 sz = META_DWR_HEADER_PAGE_SIZE;
      sqlite3OsFileControlHint(metaFd, SQLITE_FCNTL_CHUNK_SIZE, &sz);
@@ -1229,7 +1295,7 @@ index 74366de..367eef9 100644
      }
    }
  #endif /* SQLITE_OS_UNIX */
-@@ -258327,7 +258553,7 @@ CHK_RESTORE_OUT:
+@@ -258453,7 +258679,7 @@ CHK_RESTORE_OUT:
  static int MetaDwrOpenAndCheck(Btree *pBt)
  {
    Pager *pPager = pBt->pBt->pPager;
@@ -1238,7 +1304,7 @@ index 74366de..367eef9 100644
      return SQLITE_OK;
    }
  #ifdef SQLITE_HAS_CODEC
-@@ -258372,7 +258598,7 @@ DWR_OPEN_OUT:
+@@ -258498,7 +258724,7 @@ DWR_OPEN_OUT:
  static void MetaDwrDisable(Btree *pBt)
  {
    Pager *pPager = pBt->pBt->pPager;
@@ -1247,7 +1313,7 @@ index 74366de..367eef9 100644
      return;
    }
  #ifdef SQLITE_HAS_CODEC
-@@ -258398,19 +258624,6 @@ static void MetaDwrDisable(Btree *pBt)
+@@ -258524,19 +258750,6 @@ static void MetaDwrDisable(Btree *pBt)
  #endif /* SQLITE_META_DWR */
  
  #if SQLITE_OS_UNIX
@@ -1267,7 +1333,7 @@ index 74366de..367eef9 100644
  static u8 IsOnlyOneConnection(Pager *pPager)
  {
  #if SQLITE_OS_UNIX
-@@ -258540,8 +258753,13 @@ static inline const char *FlockToName(int l_type)
+@@ -258666,8 +258879,13 @@ static inline const char *FlockToName(int l_type)
  
  static int DumpProcessLocks(int fd, struct flock *lock, const char *lockName, char *dumpBuf, int bufLen)
  {
@@ -1282,7 +1348,7 @@ index 74366de..367eef9 100644
      sqlite3_log(SQLITE_ERROR, "[SQLite]Get wal file lock ofs %u failed, errno: %d", lock->l_start, errno);
      return 0;
    }
-@@ -259845,9 +260063,13 @@ struct sqlite3_api_routines_extra {
+@@ -259975,9 +260193,13 @@ struct sqlite3_api_routines_extra {
  #else
    void *dymmyRekeyV3Func;
  #endif
