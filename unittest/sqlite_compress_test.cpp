@@ -736,16 +736,23 @@ HWTEST_F(SQLiteCompressTest, CompressTest014, TestSize.Level0)
         SQLITE_OK);
     EXPECT_EQ(sqlite3_exec(slaveDb, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr), SQLITE_OK);
     EXPECT_EQ(sqlite3_exec(slaveDb, UT_DDL_CREATE_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(slaveDb, UT_DML_INSERT_DEMO.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    for (int i = 0; i < 1000; i++) {  // 1000 means the total number of insert data
+        std::string insert = "INSERT INTO demo(id, name) VALUES(";
+        insert += std::to_string(1000 + i);  // 1000 means the start id of insert data
+        insert += ", '";
+        insert += std::string(100, 'a' + (i % ('z' - 'a'))) + "Call";  // 100 means the length of field's value
+        insert += "');";
+        EXPECT_EQ(sqlite3_exec(slaveDb, insert.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    }
     sqlite3_close_v2(slaveDb);
     slaveDb = nullptr;
     /**
      * @tc.steps: step2. Corrupted db file
      * @tc.expected: step1. Execute successfully
      */
-    Common::DestroyDbFile(slavePath, 2 * 4096, "testcase013");  // 2 * 4096 means the 2rd page's offset
+    Common::DestroyDbFile(slavePath, 5 * 4096, "testcase013");  // 5 * 4096 means the 6th page, belongs to vfs_pages
     EXPECT_EQ(sqlite3_open_v2(slavePath.c_str(), &slaveDb, SQLITE_OPEN_READWRITE, "compressvfs"), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(slaveDb, "SELECT COUNT(name) FROM demo;", nullptr, nullptr, nullptr), SQLITE_IOERR);
+    EXPECT_EQ(sqlite3_exec(slaveDb, "SELECT COUNT(name) FROM demo;", nullptr, nullptr, nullptr), SQLITE_CORRUPT);
     sqlite3_close_v2(slaveDb);
 }
 
