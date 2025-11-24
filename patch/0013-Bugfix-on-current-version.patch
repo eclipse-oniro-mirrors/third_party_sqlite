@@ -1,13 +1,13 @@
-From 336334bbb3a44bd159a3657f8f34250827de1d14 Mon Sep 17 00:00:00 2001
+From a23251aef306d6d8a929d5fdf2bf98e0fd41aef1 Mon Sep 17 00:00:00 2001
 From: MartinChoo <214582617@qq.com>
-Date: Wed, 5 Nov 2025 20:01:45 +0800
+Date: Tue, 18 Nov 2025 21:55:34 +0800
 Subject: [PATCH] Bugfix on current version
 
 ---
  ext/misc/cksumvfs.c |  11 +-
- src/compressvfs.c   | 521 ++++++++++++++++++++++++++++++--------------
- src/sqlite3.c       | 334 +++++++++++++++++++++++-----
- 3 files changed, 646 insertions(+), 220 deletions(-)
+ src/compressvfs.c   | 510 ++++++++++++++++++++++++++++++--------------
+ src/sqlite3.c       | 334 ++++++++++++++++++++++++-----
+ 3 files changed, 637 insertions(+), 218 deletions(-)
 
 diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
 index 27b1028..e89edcd 100644
@@ -53,7 +53,7 @@ index 27b1028..e89edcd 100644
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE]=CKSUMVFS_MAGIC_NUM;
      ((u8*)zBuf)[iAmt-CKSUMVFS_RESERVED_SIZE+1]=p->verifyCksm ? CKSUMVFS_CALC_CHECKSUM : CKSUMVFS_WITHOUT_CHECKSUM;
 diff --git a/src/compressvfs.c b/src/compressvfs.c
-index f2fe169..2b4ee1f 100644
+index f2fe169..18f448f 100644
 --- a/src/compressvfs.c
 +++ b/src/compressvfs.c
 @@ -151,6 +151,7 @@ typedef INT8_TYPE i8;              /* 1-byte signed integer */
@@ -189,7 +189,7 @@ index f2fe169..2b4ee1f 100644
  }
  
  /* Set page size before compressed to OutterDB. */
-@@ -474,50 +514,78 @@ static int setCompressPgsize(sqlite3 *db, int pagesize){
+@@ -474,50 +514,77 @@ static int setCompressPgsize(sqlite3 *db, int pagesize){
    sqlite3_stmt *stmt = NULL;
    const char *sql = "UPDATE vfs_compression SET pagesize=?;";
  
@@ -216,8 +216,7 @@ index f2fe169..2b4ee1f 100644
  }
  
  /* Get max page number from OutterDB. */
--static int getMaxCompressPgno(sqlite3 *db){
-+static int getMaxCompressPgno(sqlite3 *db, int *maxPgno){
+ static int getMaxCompressPgno(sqlite3 *db){
    sqlite3_stmt *stmt = NULL;
    const char *sql = "SELECT MAX(pageno) FROM vfs_pages;";
 -  int max_pgno = 0;
@@ -229,22 +228,21 @@ index f2fe169..2b4ee1f 100644
 -    }
 +  int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
 +  if( rc!=SQLITE_OK ){
-+    sqlite3_log(rc, "try get max pgno wrong while prepare stat");
-+    return compressConvertErrCode(rc);
++    sqlite3_log(SQLITE_WARNING_DUMP, "try get max pgno wrong while prepare stat, rc:%d", rc);
++    return mxValue;
 +  }
 +  rc = sqlite3_step(stmt);
 +  if( rc!=SQLITE_ROW && rc!=SQLITE_DONE ){
-+    sqlite3_log(rc, "try get max pgno wrong while step stat");
++    sqlite3_log(SQLITE_WARNING_DUMP, "try get max pgno wrong while step stat, rc:%d", rc);
      sqlite3_finalize(stmt);
-+    return compressConvertErrCode(rc);
++    return mxValue;
    }
 -  return max_pgno;
 +  if( rc==SQLITE_ROW ){  // May not exist any pages, if so, return 0, else fetch the value
 +    mxValue = sqlite3_column_int(stmt, 0);
 +  }
 +  sqlite3_finalize(stmt);
-+  *maxPgno = mxValue;
-+  return SQLITE_OK;
++  return mxValue;
  }
  
  /* Get Compression option from OutterDB. */
@@ -295,7 +293,7 @@ index f2fe169..2b4ee1f 100644
  }
  
  /*
-@@ -531,7 +599,7 @@ static int compressSync(sqlite3_file *pFile, int flags){
+@@ -531,7 +598,7 @@ static int compressSync(sqlite3_file *pFile, int flags){
    if( pCompress->bBegin==1 ){
      int rc = sqlite3_exec(db, "COMMIT;", NULL, NULL, NULL);
      if( rc!=SQLITE_OK ){
@@ -304,7 +302,7 @@ index f2fe169..2b4ee1f 100644
      }
      pCompress->bBegin = 0;
    }
-@@ -590,7 +658,9 @@ static int compressDeviceCharacteristics(sqlite3_file *pFile){
+@@ -590,7 +657,9 @@ static int compressDeviceCharacteristics(sqlite3_file *pFile){
  */
  static int compressLock(sqlite3_file *pFile, int eFileLock){
    assert( pFile );
@@ -315,7 +313,7 @@ index f2fe169..2b4ee1f 100644
  }
  
  /*
-@@ -598,7 +668,9 @@ static int compressLock(sqlite3_file *pFile, int eFileLock){
+@@ -598,7 +667,9 @@ static int compressLock(sqlite3_file *pFile, int eFileLock){
  */
  static int compressUnlock(sqlite3_file *pFile, int eFileLock){
    assert( pFile );
@@ -326,7 +324,7 @@ index f2fe169..2b4ee1f 100644
  }
  
  /*
-@@ -608,12 +680,18 @@ static int compressFileSize(sqlite3_file *pFile, i64 *pSize){
+@@ -608,11 +679,12 @@ static int compressFileSize(sqlite3_file *pFile, i64 *pSize){
    assert( pFile );
    CompressFile *pCompress = (CompressFile *)pFile;
    sqlite3 *db = pCompress->pDb;
@@ -336,20 +334,13 @@ index f2fe169..2b4ee1f 100644
 -    return SQLITE_IOERR_FSTAT;
 +    sqlite3_log(rc, "compress db get pgsz wrong");
 +    return rc;
-+  }
-+  int pgsize = pCompress->pageSize;
-+  int maxpgno = 0;
-+  rc = getMaxCompressPgno(db, &maxpgno);
-+  if( rc!=SQLITE_OK ){
-+    sqlite3_log(rc, "compress db get file size wrong, pgsz:%d", pgsize);
-+    return rc;
    }
 -  int pgsize = pCompress->page_size;
--  int maxpgno = getMaxCompressPgno(db);
++  int pgsize = pCompress->pageSize;
+   int maxpgno = getMaxCompressPgno(db);
    *pSize = (i64)maxpgno * pgsize;
    return SQLITE_OK;
- }
-@@ -625,31 +703,44 @@ static int compressTruncate(sqlite3_file *pFile, sqlite_int64 size){
+@@ -625,31 +697,43 @@ static int compressTruncate(sqlite3_file *pFile, sqlite_int64 size){
    assert( pFile );
    CompressFile *pCompress = (CompressFile *)pFile;
    sqlite3 *db = pCompress->pDb;
@@ -368,11 +359,10 @@ index f2fe169..2b4ee1f 100644
    int pgno = size / pgsize;
 -  if( size % pgsize!=0 || getMaxCompressPgno(db) < pgno ){
 -    return SQLITE_IOERR_TRUNCATE;
-+  int maxPgno = 0;
-+  rc = getMaxCompressPgno(db, &maxPgno);
-+  if( rc!=SQLITE_OK || maxPgno<pgno ){
-+    sqlite3_log(rc, "Get max(%d) wrong before truncate pages(%d)", maxPgno, pgno);
-+    return compressConvertErrCode(rc);
++  int maxPgno = getMaxCompressPgno(db);
++  if( maxPgno<pgno ){
++    sqlite3_log(SQLITE_CORRUPT, "Get max(%d) wrong before truncate pages(%d)", maxPgno, pgno);
++    return SQLITE_CORRUPT;
    }
    if( pCompress->bBegin!=1 ){
 -    if( sqlite3_exec(db, "BEGIN;", NULL, NULL, NULL)!=SQLITE_OK ){
@@ -408,7 +398,7 @@ index f2fe169..2b4ee1f 100644
  }
  
  /*
-@@ -661,58 +752,70 @@ static int compressWrite(sqlite3_file *pFile, const void *pBuf, int iAmt, sqlite
+@@ -661,58 +745,70 @@ static int compressWrite(sqlite3_file *pFile, const void *pBuf, int iAmt, sqlite
    assert( iAmt>0 );
    CompressFile *pCompress = (CompressFile *)pFile;
    sqlite3 *db = pCompress->pDb;
@@ -505,7 +495,7 @@ index f2fe169..2b4ee1f 100644
    return SQLITE_OK;
  }
  
-@@ -731,71 +834,85 @@ static int compressRead(sqlite3_file *pFile, void *pBuf, int iAmt, sqlite_int64
+@@ -731,71 +827,85 @@ static int compressRead(sqlite3_file *pFile, void *pBuf, int iAmt, sqlite_int64
    }
    (void)memset_s(pBuf, iAmt, 0, iAmt);
    sqlite3 *db = pCompress->pDb;
@@ -614,7 +604,7 @@ index f2fe169..2b4ee1f 100644
    }
  
    return rc;
-@@ -808,22 +925,28 @@ static int compressClose(sqlite3_file *pFile){
+@@ -808,22 +918,28 @@ static int compressClose(sqlite3_file *pFile){
    assert( pFile );
    CompressFile *pCompress = (CompressFile *)pFile;
    sqlite3 *db = pCompress->pDb;
@@ -647,7 +637,7 @@ index f2fe169..2b4ee1f 100644
    }
    return rc;
  }
-@@ -888,6 +1011,69 @@ static int compressUnfetch(sqlite3_file *pFile, sqlite3_int64 iOfst, void *pPage
+@@ -888,6 +1004,69 @@ static int compressUnfetch(sqlite3_file *pFile, sqlite3_int64 iOfst, void *pPage
    return SQLITE_OK;
  }
  
@@ -717,7 +707,7 @@ index f2fe169..2b4ee1f 100644
  /*
  ** Open a compress file.If this file is not a journal or wal file,
  ** it will open a OutterDB and create vfs_pages and vfs_compression table
-@@ -902,87 +1088,106 @@ static int compressOpen(
+@@ -902,87 +1081,106 @@ static int compressOpen(
  ){
    sqlite3_file *pSubFile = ORIGFILE(pFile);
    CompressFile *pCompress = (CompressFile *)pFile;
@@ -769,14 +759,14 @@ index f2fe169..2b4ee1f 100644
 -    goto open_end;
 +    sqlite3_log(rc, "Config compress db journal mode wrong, name:%s", zName);
 +    goto END_OUT;
-   }
--  if( tableExists(db, "vfs_compression") ){
--    getCompression(db, pCompress);
++  }
 +  pCompress->bOutterDbOpen = 1;
 +  rc = tableExists(db, "vfs_compression", &isExist);
 +  if( rc!=SQLITE_OK ) {
 +    goto END_OUT;
-+  }
+   }
+-  if( tableExists(db, "vfs_compression") ){
+-    getCompression(db, pCompress);
 +  if( isExist ){
 +    rc = getCompression(db, pCompress);
 +    if( rc!=SQLITE_OK ){

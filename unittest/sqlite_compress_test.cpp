@@ -756,4 +756,32 @@ HWTEST_F(SQLiteCompressTest, CompressTest014, TestSize.Level0)
     sqlite3_close_v2(slaveDb);
 }
 
+/**
+ * @tc.name: CompressTest015
+ * @tc.desc: Test to operate empty compress database
+ * @tc.type: FUNC
+ */
+HWTEST_F(SQLiteCompressTest, CompressTest015, TestSize.Level0)
+{
+    if (!IsSupportPageCompress()) {
+        GTEST_SKIP() << "Current testcase is not compatible";
+    }
+    std::string slavePath = TEST_DIR "/test015_slave.db";
+    sqlite3 *slaveDb = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(slavePath.c_str(), &slaveDb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, "compressvfs"),
+        SQLITE_OK);
+    sqlite3_close_v2(slaveDb);
+    EXPECT_EQ(sqlite3_open_v2(slavePath.c_str(), &slaveDb, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, "compressvfs"),
+        SQLITE_OK);
+    // Drop vfs_pages to simulate empty database
+    sqlite3 *emptySlaveDb = nullptr;
+    EXPECT_EQ(sqlite3_open_v2(slavePath.c_str(), &emptySlaveDb, SQLITE_OPEN_READWRITE, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(emptySlaveDb, "DROP TABLE vfs_pages;", nullptr, nullptr, nullptr), SQLITE_OK);
+    sqlite3_close_v2(emptySlaveDb);
+
+    EXPECT_EQ(sqlite3_exec(slaveDb, "SELECT COUNT(*) FROM sqlite_master WHERE type='table';", nullptr, nullptr, nullptr),
+        SQLITE_OK);
+    sqlite3_close_v2(slaveDb);
+}
+
 }  // namespace Test
