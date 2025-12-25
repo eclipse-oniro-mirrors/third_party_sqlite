@@ -329,7 +329,7 @@ index 0000000..90a3f44
 +}
 +
 +static int loadZstdExtension(){
-+  g_compress_algo_library = dlopen("libzstd_shared.z.so", RTLD_LAZY);
++  g_compress_algo_library = dlopen("libzstd.z.so", RTLD_LAZY);
 +  if( g_compress_algo_library==NULL ){
 +    sqlite3_log(SQLITE_NOTICE, "load zstd so failed :%s", dlerror());
 +    return SQLITE_ERROR;
