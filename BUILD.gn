@@ -32,8 +32,10 @@ config("sqlite3_private_config") {
 group("libsqlite") {
   public_deps = [
     ":sqlite",
-    ":sqliteicu",
-    ":sqlitecompressvfs",
+    ":sqliteicu"
+  ]
+  deps = [
+    ":sqlitecompressvfs"
   ]
 }
 
@@ -181,7 +183,7 @@ ohos_shared_library("sqlite") {
   }
   deps = [ "//third_party/sqlite/patch:apply_patch" ]
   public_configs = [ ":sqlite_config" ]
-  public_external_deps = [ "c_utils:utils" ]
+  public_external_deps = [ "c_utils:utilsbase" ]
   configs = [ ":sqlite3_private_config" ]
   innerapi_tags = [ "platformsdk_indirect" ]
   part_name = "sqlite"
