@@ -8,7 +8,7 @@ Subject: [PATCH 01/12] History features of sqlite
  1 file changed, 2438 insertions(+), 13 deletions(-)
 
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 730b247..b132937 100644
+index 7fb290f..ad78006 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -2915,6 +2915,11 @@ SQLITE_API int sqlite3_extended_result_codes(sqlite3*, int onoff);
@@ -3032,5 +3032,5 @@ index 730b247..b132937 100644
 +/************** End export the symbols *****************************************/
 +#endif /* SQLITE_EXPORT_SYMBOLS */
 -- 
-2.47.0.windows.2
+2.34.1
 

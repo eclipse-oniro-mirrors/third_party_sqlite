@@ -52,7 +52,7 @@ public:
     static bool IsSupportPageCompress(void);
     static void UtPresetDb(const std::string &dbFile, const std::string &vfsOption);
     static int UtQueryPresetDbResult(void *data, int argc, char **argv, char **azColName);
-    static void UtCheckPresetDb(const std::string &dbPath, const std::string &vfsOption);
+    static void UtCheckPresetDb(const std::string &dbFile, const std::string &vfsOption);
 
     static sqlite3 *db_;
     static int resCnt_;
@@ -779,8 +779,8 @@ HWTEST_F(SQLiteCompressTest, CompressTest015, TestSize.Level0)
     EXPECT_EQ(sqlite3_exec(emptySlaveDb, "DROP TABLE vfs_pages;", nullptr, nullptr, nullptr), SQLITE_OK);
     sqlite3_close_v2(emptySlaveDb);
 
-    EXPECT_EQ(sqlite3_exec(slaveDb, "SELECT COUNT(*) FROM sqlite_master WHERE type='table';", nullptr, nullptr, nullptr),
-        SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(slaveDb, "SELECT COUNT(*) FROM sqlite_master WHERE type='table';", nullptr, nullptr,
+        nullptr), SQLITE_OK);
     sqlite3_close_v2(slaveDb);
 }
 
