@@ -1,0 +1,1142 @@
+From 6c2dadc333863b92b7425e48e520babbb124f0ab Mon Sep 17 00:00:00 2001
+From: wddhw <wangxiangdong13@huawei.com>
+Date: Thu, 7 May 2026 10:59:12 +0800
+Subject: [PATCH] Support-Binlog-Search
+
+---
+ src/sqlite3.c        | 900 +++++++++++++++++++++++++++++++++++++++++--
+ 1 files changed, 876 insertions(+), 24 deletions(-)
+
+diff --git a/src/sqlite3.c b/src/sqlite3.c
+index 9b029d8..e2709cb 100644
+--- a/src/sqlite3.c
++++ b/src/sqlite3.c
+@@ -5367,6 +5367,60 @@ SQLITE_API int sqlite3_is_support_binlog(void);
+ 
+ SQLITE_API int sqlite3_replay_binlog(sqlite3 *srcDb, sqlite3 *destDb);
+ 
++typedef struct BinlogSearchResult {
++  int op;                // one of the SQLITE_INSERT, SQLITE_UPDATE, SQLITE_DELETE
++  sqlite3_int64 rowid;   // rowid of changed data, -1 for without rowid table
++  sqlite3_uint64 nCol;  // size of pData
++  const char *tableName;
++  int fileIndex;
++  sqlite3_uint64 readPos;
++  char **nameAndValues; // pointer to the row data in record format
++} BinlogSearchResult;
++
++typedef struct BinlogSearchResultSet{
++    int capacity;
++    int row_count;
++    BinlogSearchResult *results;
++} BinlogSearchResultSet;
++
++typedef struct BinlogSearchHwm {
++    int readFileIndex;
++    sqlite3_uint64 readPos;
++} BinlogSearchHwmT;
++
++typedef enum BinlogHwmSetMode {
++    BINLOG_PERSIST_MODE = 0,
++    BINLOG_CACHE_MODE = 1,
++    BINLOG_MODE_MAX,
++} BinlogHwmSetModeE;
++
++typedef struct MonitorTableCol {
++  const char *tableName;    // tableName
++  const char **cols;        // colsArray
++  int colCount;       // colsCount
++} MonitorTableCol;
++
++typedef struct MonitorTablesConfig {
++  MonitorTableCol *tables;  // tableCols
++  int tableCount;           // tableCount
++} MonitorTablesConfig;
++
++SQLITE_API int sqlite3_set_monitor_config_binlog(sqlite3 *srcDb, MonitorTablesConfig *monitorConfig);
++
++SQLITE_API int sqlite3_set_xChange_callback_binlog(sqlite3 *srcDb, void (*xChangeCallback)(const char *dbPath, 
++  char *tableName));
++
++SQLITE_API int sqlite3_set_json_parse_callback_binlog(sqlite3 *srcDb, 
++  MonitorTablesConfig*(*jsonParseCallback)(const char *dbPath));
++// get data from binlog file
++SQLITE_API int sqlite3_get_search_data_binlog(sqlite3 *srcDb, sqlite3 *destDb, BinlogSearchResultSet **rs);
++// free result data
++SQLITE_API int sqlite3_free_search_data_binlog(sqlite3 *srcDb, BinlogSearchResultSet **rs);
++// set search hwm of binlog by different mode
++SQLITE_API int sqlite3_set_search_hwm_binlog(sqlite3 *srcDb, BinlogSearchHwmT *hwm, BinlogHwmSetModeE setMode);
++// reset search hwm of binlog to writehwm
++SQLITE_API int sqlite3_reset_search_hwm_binlog(sqlite3 *srcDb);
++
+ typedef enum BinlogFileCleanMode {
+   BINLOG_FILE_CLEAN_ALL_MODE = 0,
+   BINLOG_FILE_CLEAN_READ_MODE = 1,
+@@ -17649,6 +17703,7 @@ typedef struct CodecParameter {
+  
+ typedef enum {
+   ROW = 0,
++  ROW_FOR_SEARCH = 2
+ } Sqlite3BinlogMode;
+  
+ typedef enum {
+@@ -17716,14 +17771,23 @@ typedef struct BinlogEvent {
+ typedef struct BinlogReadResult {
+   u32 eventNum;
+   BinlogEventT **sqlEvent;
++  BinlogSearchHwmT waterMark;
+ } BinlogReadResultT;
+- 
++
++typedef enum BinlogReadMode {
++    BINLOG_REPLAY_MODE = 0,
++    BINLOG_SEARCH_MODE = 1,
++    BINLOG_READ_MODE_MAX,
++} BinlogReadModeE;
++
+ typedef struct BinlogInstanceT BinlogInstanceT;
+ typedef void (*BinlogFreeReadResult)(BinlogInstanceT *instance, BinlogReadResultT *readRes);
+ typedef BinlogErrno (*BinlogOpen)(const BinlogConfigT *, BinlogInstanceT **);
+ typedef BinlogErrno (*BinlogClose)(BinlogInstanceT *instance);
+ typedef BinlogErrno (*BinlogWrite)(BinlogInstanceT *instance, const BinlogWriteDataT *data);
+-typedef BinlogErrno (*BinlogRead)(BinlogInstanceT *instance, BinlogReadResultT **readRes);
++typedef BinlogErrno (*BinlogRead)(BinlogInstanceT *instance, BinlogReadModeE readType, BinlogReadResultT **readRes);
++typedef BinlogErrno (*BinlogSetSearchWaterMark)(BinlogInstanceT *binlogIns, BinlogSearchHwmT *waterMark, BinlogHwmSetModeE setMode);
++typedef BinlogErrno (*BinlogResetSearchHwm)(BinlogInstanceT *binlogIns);
+ typedef BinlogErrno (*BinlogFileClean)(BinlogInstanceT *instance, BinlogFileCleanModeE cleanMode);
+ typedef BinlogErrno (*BinlogLockRead)(BinlogInstanceT *instance);
+ typedef BinlogErrno (*BinlogUnlockRead)(BinlogInstanceT *instance);
+@@ -17742,6 +17806,9 @@ typedef struct Sqlite3BinlogConfig {
+   void *callbackCtx;
+ } Sqlite3BinlogConfig;
+ 
++void (*xChangeCallback)(const char *dbPath, char *tableName);
++MonitorTablesConfig*(*jsonParseCallback)(const char *dbPath);
++
+ typedef struct BinlogRow {
+   int op;                // one of the SQLITE_INSERT, SQLITE_UPDATE, SQLITE_DELETE
+   sqlite3_int64 rowid;   // rowid of changed data, -1 for without rowid table
+@@ -17766,6 +17833,8 @@ typedef struct BinlogApi {
+   BinlogWrite binlogWriteApi;
+   BinlogRead binlogReadApi;
+   BinlogFreeReadResult binlogFreeReadResultApi;
++  BinlogSetSearchWaterMark binlogSetSearchWaterMark;
++  BinlogResetSearchHwm binlogResetSearchHwmApi;
+   BinlogFileClean binlogFileCleanApi;
+   BinlogLockRead binlogLockReadApi;
+   BinlogUnlockRead binlogUnlockReadApi;
+@@ -17776,8 +17845,11 @@ typedef struct Sqlite3BinlogHandle {
+   void *callbackCtx;
+   u64 flags;
+   u8 xTid[SQLITE_UUID_BLOB_LENGTH];
++  MonitorTablesConfig *monitorConfig;
+   void (*xErrorCallback)(void *pCtx, int errNo, char *errMsg, const char *dbPath);
+   void (*xLogFullCallback)(void *pCtx, u16 currentCount, const char *dbPath);
++  void (*xChangeCallback)(const char *dbPath, char *tabelName);
++  MonitorTablesConfig* (*jsonParseCallback)(const char *dbPath);
+   BinlogInstanceT *binlogConn;
+   BinlogApi binlogApi;
+   u8 isSkipTrigger;
+@@ -17815,7 +17887,7 @@ typedef struct Sqlite3BinlogApiInfo {
+   const char *funcN;
+ } Sqlite3BinlogApiInfo;
+  
+-SQLITE_PRIVATE int sqlite3BinlogStmtPrepare(sqlite3 *db, Sqlite3BinlogStmt *bStmt);
++SQLITE_PRIVATE int sqlite3BinlogStmtPrepare(sqlite3 *db, BinlogReadModeE readMode, Sqlite3BinlogStmt *bStmt);
+ SQLITE_PRIVATE int sqlite3BinlogStmtStep(sqlite3 *db, Sqlite3BinlogStmt *bStmt, char **sql, Table **pOutTable);
+ SQLITE_PRIVATE void sqlite3BinlogStmtFinalize(sqlite3 *db, Sqlite3BinlogStmt *bStmt);
+  
+@@ -17823,11 +17895,17 @@ SQLITE_PRIVATE int sqlite3BinlogInitApi(sqlite3 *db);
+ SQLITE_PRIVATE int sqlite3SetBinLogConfig(sqlite3 *db, Sqlite3BinlogConfig *bConfig);
+ SQLITE_PRIVATE int sqlite3TransferBinlogErrno(BinlogErrno err);
+  
++SQLITE_PRIVATE int sqlite3SetMonitorConfig(sqlite3 *db, MonitorTablesConfig *src);
+ SQLITE_PRIVATE void sqlite3BinlogWrite(Vdbe *p);
+ SQLITE_PRIVATE int sqlite3BinlogClose(sqlite3 *db);
+ SQLITE_PRIVATE void sqlite3BinlogReset(sqlite3 *db);
+ SQLITE_PRIVATE int sqlite3BinlogReplay(sqlite3 *srcDb, sqlite3 *destDb);
+ SQLITE_PRIVATE int sqlite3BinlogClean(sqlite3 *db, BinlogFileCleanModeE mode);
++SQLITE_PRIVATE int sqlite3BinlogSearchDataGet(sqlite3 *srcDb, sqlite3 *destDb, BinlogSearchResultSet **rs);
++SQLITE_PRIVATE void BinlogSearchResultSetDestroy(sqlite3 *srcDb, BinlogSearchResultSet **rs);
++SQLITE_PRIVATE int BinlogSearchResultExpand(sqlite3 *srcDb, BinlogSearchResultSet **rs);
++SQLITE_PRIVATE int sqlite3BinlogResetHwm(sqlite3 *db);
++SQLITE_PRIVATE int sqlite3BinlogSetHwm(sqlite3 *db, BinlogSearchHwmT *waterMark, BinlogHwmSetModeE setMode);
+ SQLITE_PRIVATE void sqlite3BinlogErrorCallback(sqlite3 *db, int errNo, char *errMsg);
+ SQLITE_PRIVATE BinlogEventTypeE sqlite3TransferLogEventType(StmtType stmtType);
+ SQLITE_PRIVATE int sqlite3IsSkipWriteBinlog(Vdbe *p);
+@@ -17836,6 +17914,7 @@ SQLITE_PRIVATE Table *sqlite3BinlogFindTable(BtCursor *pC);
+ SQLITE_PRIVATE void sqlite3StoreBinlogRowData(Vdbe *p, BtCursor *pCursor, const BinlogRow *pRow);
+ SQLITE_PRIVATE void sqlite3FreeBinlogRowData(Vdbe *p);
+ SQLITE_PRIVATE char *sqlite3BinlogGetNthCol(sqlite3 *db, const Table *pTab, const BinlogRow *pRow, int iCol);
++SQLITE_PRIVATE char *sqlite3BinlogGetNthColForSearch(sqlite3 *db, const Table *pTab, const BinlogRow *pRow, int iCol);
+ /************** Binlog typedef in sqlite3 END ************************************/
+ #endif
+ 
+@@ -92389,6 +92468,137 @@ SQLITE_API int sqlite3_is_support_binlog(void)
+   return SQLITE_ERROR;
+ }
+ 
++SQLITE_API int sqlite3_set_search_hwm_binlog(sqlite3 *srcDb, BinlogSearchHwmT *hwm, BinlogHwmSetModeE setMode)
++{
++  if (srcDb == NULL || hwm == NULL) {
++    sqlite3_log(SQLITE_ERROR, "set binlog search hwm is null");
++    return SQLITE_ERROR;
++  }
++  if (!sqlite3SafetyCheckOk(srcDb)) {
++    sqlite3_log(SQLITE_WARNING, "get search parameter is not valid db");
++    return SQLITE_MISUSE_BKPT;
++  }
++  int rc = sqlite3BinlogSetHwm(srcDb, hwm, setMode);
++  if (rc != SQLITE_OK && rc != SQLITE_CORRUPT) {
++    sqlite3_log(rc, "get binlog err:%d", rc);
++  }
++  return rc;
++}
++
++SQLITE_API int sqlite3_reset_search_hwm_binlog(sqlite3 *srcDb)
++{
++  if (srcDb == NULL) {
++    sqlite3_log(SQLITE_ERROR, "free binlog reset search hwm is null");
++    return SQLITE_ERROR;
++  }
++  if (!sqlite3SafetyCheckOk(srcDb)) {
++    sqlite3_log(SQLITE_WARNING, "get search parameter is not valid db");
++    return SQLITE_MISUSE_BKPT;
++  }
++  int rc = sqlite3BinlogResetHwm(srcDb);
++  if (rc != SQLITE_OK && rc != SQLITE_CORRUPT) {
++    sqlite3_log(rc, "get binlog err:%d", rc);
++  }
++  return rc;
++}
++
++SQLITE_API int sqlite3_set_monitor_config_binlog(sqlite3 *srcDb, MonitorTablesConfig *monitorConfig)
++{
++  if (srcDb == NULL) {
++    sqlite3_log(SQLITE_ERROR, "set monitor config binlog parameter is null");
++    return SQLITE_ERROR;
++  }
++  if (!sqlite3SafetyCheckOk(srcDb)) {
++    sqlite3_log(SQLITE_WARNING, "set monitor config binlog parameter is not valid db");
++    return SQLITE_MISUSE_BKPT;
++  }
++  if (((srcDb->xBinlogHandle.flags & BINLOG_FLAG_ENABLE) == 0)||
++      (srcDb->xBinlogHandle.mode!=ROW_FOR_SEARCH)) {
++    sqlite3_log(SQLITE_ERROR, "set monitor config srcDb not enable binlog");
++    return SQLITE_ERROR;
++  }
++  int rc = sqlite3SetMonitorConfig(srcDb, monitorConfig);
++  if (rc != SQLITE_OK) {
++    sqlite3_log(rc, "get monitor config with not expect way");
++  }
++  return rc;
++}
++
++SQLITE_API int sqlite3_set_xChange_callback_binlog(sqlite3 *srcDb, 
++  void (*xChangeCallback)(const char *dbPath, char *tableName))
++{
++  if (srcDb == NULL || xChangeCallback == NULL) {
++    sqlite3_log(SQLITE_ERROR, "set change callback binlog parameter is null");
++    return SQLITE_ERROR;
++  }
++  if (!sqlite3SafetyCheckOk(srcDb)) {
++    sqlite3_log(SQLITE_WARNING, "set change callback binlog parameter is not valid db");
++    return SQLITE_MISUSE_BKPT;
++  }
++  if (srcDb->xBinlogHandle.xChangeCallback != NULL) {
++    sqlite3_log(SQLITE_WARNING, "set change callback binlog xBinlogHandle is not valid");
++    return SQLITE_ERROR;
++  }
++  srcDb->xBinlogHandle.xChangeCallback = xChangeCallback;
++  return SQLITE_OK;
++}
++
++SQLITE_API int sqlite3_set_json_parse_callback_binlog(sqlite3 *srcDb,
++  MonitorTablesConfig*(*jsonParseCallback)(const char *dbPath))
++{
++  if (srcDb == NULL) {
++    sqlite3_log(SQLITE_ERROR, "set json parse binlog parameter is null");
++    return SQLITE_ERROR;
++  }
++  if (!sqlite3SafetyCheckOk(srcDb)) {
++    sqlite3_log(SQLITE_WARNING, "set json parse binlog parameter is not valid db");
++    return SQLITE_MISUSE_BKPT;
++  }
++  if (srcDb->xBinlogHandle.jsonParseCallback != NULL) {
++      sqlite3_log(SQLITE_WARNING, "set json parse  callback binlog jsonParseCallback is alreadySet");
++      return SQLITE_ERROR;
++  }
++  srcDb->xBinlogHandle.jsonParseCallback = jsonParseCallback;
++  return SQLITE_OK;
++}
++
++SQLITE_API int sqlite3_free_search_data_binlog(sqlite3 *srcDb, BinlogSearchResultSet **rs)
++{
++  if (srcDb == NULL || rs == NULL || *rs == NULL) {
++    sqlite3_log(SQLITE_ERROR, "free binlog search data is null");
++    return SQLITE_ERROR;
++  }
++  if (!sqlite3SafetyCheckOk(srcDb)) {
++    sqlite3_log(SQLITE_WARNING, "get search parameter is not valid db");
++    return SQLITE_MISUSE_BKPT;
++  }
++  BinlogSearchResultSetDestroy(srcDb, rs);
++  return SQLITE_OK;
++}
++
++SQLITE_API int sqlite3_get_search_data_binlog(sqlite3 *srcDb, sqlite3 *destDb, BinlogSearchResultSet **rs)
++{
++  if (srcDb == NULL || destDb == NULL) {
++    sqlite3_log(SQLITE_ERROR, "get binlog parameter is null");
++    return SQLITE_ERROR;
++  }
++  if (!sqlite3SafetyCheckOk(srcDb) ||  !sqlite3SafetyCheckOk(destDb)) {
++    sqlite3_log(SQLITE_WARNING, "get binlog parameter is not valid db");
++    return SQLITE_MISUSE_BKPT;
++  }
++  sqlite3_mutex_enter(srcDb->mutex);
++  int rc = sqlite3BinlogSearchDataGet(srcDb, destDb, rs);
++  if (rc != SQLITE_OK && rc != SQLITE_CORRUPT && rc != SQLITE_DONE) {
++    sqlite3_log(rc, "get binlog err:%d", rc);
++  }
++  if (rc == SQLITE_CORRUPT) {
++    rc = SQLITE_ERROR;
++    sqlite3_log(SQLITE_ERROR, "get binlog err with not expect way");
++  }
++  sqlite3_mutex_leave(srcDb->mutex);
++  return rc;
++}
++
+ SQLITE_API int sqlite3_replay_binlog(sqlite3 *srcDb, sqlite3 *destDb)
+ {
+   if (srcDb == NULL || destDb == NULL) {
+@@ -100264,23 +100474,38 @@ case OP_Delete: {
+     && sqlite3IsRowBasedBinlog(p)
+     && sqlite3TransferLogEventType(p->stmtType) == BINLOG_EVENT_TYPE_DML ){
+     if (pC->isTable) {
+-      BinlogRow rowData = {SQLITE_DELETE, sqlite3BtreeIntegerKey(pC->uc.pCursor), 0, 0, NULL};
+-      sqlite3StoreBinlogRowData(p, pC->uc.pCursor, &rowData);
+-    } else {
++      BtCursor *pBtCur = pC->uc.pCursor;
++      if (sqlite3BtreeCursorIsValidNN(pBtCur)) {
++        u32 nPayload = sqlite3BtreePayloadSize(pBtCur);
++          if (nPayload > 0) {
++              char *pBuf = sqlite3DbMallocRaw(db, nPayload);
++              if (pBuf) {
++                // get data to be deleted
++                sqlite3BtreePayload(pBtCur, 0, nPayload, pBuf);
++                BinlogRow rowData = {SQLITE_DELETE, sqlite3BtreeIntegerKey(pC->uc.pCursor), nPayload, 0, pBuf};
++                sqlite3StoreBinlogRowData(p, pC->uc.pCursor, &rowData);
++                sqlite3DbFree(db, pBuf);
++              }
++          }
++      }else {
++          BinlogRow rowData = {SQLITE_DELETE, sqlite3BtreeIntegerKey(pC->uc.pCursor), 0, 0, NULL};
++          sqlite3StoreBinlogRowData(p, pC->uc.pCursor, &rowData);
++      }
++    }else{
+       Table *pBinlogTab = sqlite3BinlogFindTable(pC->uc.pCursor);
+       if (pBinlogTab != NULL && !HasRowid(pBinlogTab)) {
+-        /* If pC is not a table, then this is a delete operation in a without rowid table
+-        ** pC may have no row data or invalid row data when deletion has a subquery
+-        ** so we need to get row data from op_notfound, which is stored in p->pDataTmp
+-        */
+-        int isUseTmpData = pOp->p4type == P4_TABLE && p->nDataTmp != 0 && p->pDataTmp != NULL;
+-        sqlite3_uint64 nData = isUseTmpData ? p->nDataTmp : pC->szRow;
+-        const char *pData = isUseTmpData ? p->pDataTmp : (const char *)pC->aRow;
+-        BinlogRow rowData = {SQLITE_DELETE, -1, nData, 0, pData};
+-        sqlite3StoreBinlogRowData(p, pC->uc.pCursor, &rowData);
+-      }
++      /* If pC is not a table, then this is a delete operation in a without rowid table
++      ** pC may have no row data or invalid row data when deletion has a subquery
++      ** so we need to get row data from op_notfound, which is stored in p->pDataTmp
++      */
++      int isUseTmpData = pOp->p4type == P4_TABLE && p->nDataTmp != 0 && p->pDataTmp != NULL;
++      sqlite3_uint64 nData = isUseTmpData ? p->nDataTmp : pC->szRow;
++      const char *pData = isUseTmpData ? p->pDataTmp : (const char *)pC->aRow;
++      BinlogRow rowData = {SQLITE_DELETE, -1, nData, 0, pData};
++      sqlite3StoreBinlogRowData(p, pC->uc.pCursor, &rowData);
+     }
+   }
++}
+ #endif
+ 
+   /* If the update-hook or pre-update-hook will be invoked, set zDb to
+@@ -138126,6 +138351,20 @@ typedef int (*sqlite3_loadext_entry)(
+ #define sqlite3_is_support_binlog      sqlite3_api->is_support_binlog
+ /* replay binlog from src db to the dest db */
+ #define sqlite3_replay_binlog          sqlite3_api->replay_binlog
++/* set binlog monitor tables and columns */
++#define sqlite3_set_monitor_config_binlog         sqlite3_api->set_monitor_config
++/* set binlog change callback when monitos table change */
++#define sqlite3_set_xChange_callback_binlog       sqlite3_api->set_xChange_callback
++/* set binlog json parse callback at client*/
++#define sqlite3_set_json_parse_callback_binlog    sqlite3_api->set_json_parse_callback
++/* get search data from binlog */
++#define sqlite3_get_search_data_binlog       sqlite3_api->get_search_data
++/* free search data from binlog */
++#define sqlite3_free_search_data_binlog       sqlite3_api->free_search_data
++/* set search hwm of binlog */
++#define sqlite3_set_search_hwm_binlog       sqlite3_api->set_search_hwm
++/* reset search hwm of binlog to write hwm*/
++#define sqlite3_reset_search_hwm_binlog       sqlite3_api->reset_search_hwm
+ /* clean the binlog of the db */
+ #define sqlite3_clean_binlog           sqlite3_api->clean_binlog
+ #endif /* SQLITE_ENABLE_BINLOG */
+@@ -258831,6 +259070,8 @@ SQLITE_PRIVATE int sqlite3BinlogInitApi(sqlite3 *db)
+     {(void **)&db->xBinlogHandle.binlogApi.binlogWriteApi, "BinlogWrite"},
+     {(void **)&db->xBinlogHandle.binlogApi.binlogReadApi, "BinlogRead"},
+     {(void **)&db->xBinlogHandle.binlogApi.binlogFreeReadResultApi, "BinlogFreeReadResult"},
++    {(void **)&db->xBinlogHandle.binlogApi.binlogSetSearchWaterMark, "BinlogSetSearchWaterMark"},
++    {(void **)&db->xBinlogHandle.binlogApi.binlogResetSearchHwmApi, "BinlogResetSearchHwm"},
+     {(void **)&db->xBinlogHandle.binlogApi.binlogFileCleanApi, "BinlogFileClean"},
+     {(void **)&db->xBinlogHandle.binlogApi.binlogLockReadApi, "BinlogLockRead"},
+     {(void **)&db->xBinlogHandle.binlogApi.binlogUnlockReadApi, "BinlogUnlockRead"},
+@@ -258845,7 +259086,85 @@ SQLITE_PRIVATE int sqlite3BinlogInitApi(sqlite3 *db)
+   }
+   return SQLITE_OK;
+ }
+- 
++
++SQLITE_PRIVATE int sqlite3SetMonitorConfig(sqlite3 *db, MonitorTablesConfig *src)
++{
++  if (src == NULL) {
++    return SQLITE_ERROR;
++  }
++  MonitorTablesConfig *dst = (MonitorTablesConfig *)sqlite3DbMallocZero(db, sizeof(MonitorTablesConfig));
++  if (src->tableCount > 0) {
++    dst->tables = sqlite3DbMallocZero(db, src->tableCount * sizeof(MonitorTableCol));
++    if (dst->tables == NULL) {
++      sqlite3DbFree(db, dst);
++      return SQLITE_ERROR;
++    }
++
++    for (int i = 0; i < src->tableCount; i++) {
++      MonitorTableCol *srcTable = &src->tables[i];
++      MonitorTableCol *dstTable = &dst->tables[i];
++
++      if (srcTable->tableName != NULL) {
++        int len = strlen(srcTable->tableName);
++        dstTable->tableName = sqlite3DbMallocZero(db, len + 1);
++        if (dstTable->tableName) {
++          memcpy((void *)dstTable->tableName, (void *)srcTable->tableName, len);
++        }
++      }
++
++      if (srcTable->colCount > 0 && srcTable->cols != NULL) {
++        dstTable->cols = sqlite3DbMallocZero(db, srcTable->colCount * sizeof(char*));
++        if (dstTable->cols == NULL) {
++          if (dstTable->tableName) {
++            sqlite3DbFree(db, (void *)dstTable->tableName);
++          }
++          sqlite3DbFree(db, dst->tables);
++          sqlite3DbFree(db, dst);
++          return SQLITE_ERROR;
++        }
++
++        for (int j = 0; j < srcTable->colCount; j++) {
++          if (srcTable->cols[j] != NULL) {
++            int len = strlen(srcTable->cols[j]);
++            dstTable->cols[j] = sqlite3DbMallocZero(db, len + 1);
++            if (dstTable->cols[j]) {
++              memcpy((void *)dstTable->cols[j], (void *)srcTable->cols[j], len);
++            }
++          }
++          dstTable->colCount++;
++        }
++      }
++      dst->tableCount++;
++    }
++  }
++  db->xBinlogHandle.monitorConfig = dst;
++  return SQLITE_OK;
++}
++
++static void sqlite3FreeMonitorTablesConfig(sqlite3 *db, MonitorTablesConfig *config)
++{
++  if (config == NULL) return;
++
++  if (config->tables != NULL) {
++    for (int i = 0; i < config->tableCount; i++) {
++      MonitorTableCol *tc = &config->tables[i];
++      if (tc->tableName != NULL) {
++        sqlite3DbFree(db, (void *)tc->tableName);
++      }
++      if (tc->cols != NULL) {
++        for (int j = 0; j < tc->colCount; j++) {
++          if (tc->cols[j] != NULL) {
++            sqlite3DbFree(db, (void *)tc->cols[j]);
++          }
++        }
++        sqlite3DbFree(db, tc->cols);
++      }
++    }
++    sqlite3DbFree(db, config->tables);
++  }
++  sqlite3DbFree(db, config);
++}
++
+ SQLITE_PRIVATE int sqlite3SetBinLogConfig(sqlite3 *db, Sqlite3BinlogConfig *bConfig)
+ {
+   if (db == NULL) {
+@@ -258902,7 +259221,144 @@ SQLITE_PRIVATE int sqlite3SetBinLogConfig(sqlite3 *db, Sqlite3BinlogConfig *bCon
+   db->xBinlogHandle.isSkipTrigger = 0;
+   return SQLITE_OK;
+ }
+- 
++
++SQLITE_PRIVATE void sqlite3BinlogFreeOldColumns(sqlite3 *db, BinlogSearchResult *res, int oldCounts)
++{
++  if (oldCounts<=0) {
++    sqlite3DbFree(db, res->nameAndValues);
++  }
++  for (int i=0; i<oldCounts*2; i++) {
++    if (res->nameAndValues != NULL && res->nameAndValues[i] != NULL) {
++      sqlite3DbFree(db, res->nameAndValues[i]);
++    }
++    sqlite3DbFree(db, res->nameAndValues);
++  }
++}
++
++/* Get field name and values for rowid tables in search mode - uses raw values without SQL quotes */
++SQLITE_PRIVATE int sqlite3BinlogGetSearchFieldDataForSearch(sqlite3 *db, Table *pTab, const BinlogRow *pRow, BinlogSearchResult *res){
++  res->nameAndValues = (char **)sqlite3DbMallocZero(db, 2 * pTab->nCol * sizeof(const char *));
++  if (res->nameAndValues == NULL) {
++      return SQLITE_ERROR;
++  }
++  for (int i=0; i<pTab->nCol; i++) {
++    char *fieldName = sqlite3_mprintf("%s", pTab->aCol[i].zCnName);
++    if (fieldName == NULL) {
++      sqlite3BinlogFreeOldColumns(db, res, i-1);
++      return SQLITE_NOMEM;
++    }
++    char *fieldValue = sqlite3BinlogGetNthColForSearch(db, pTab, pRow, i);
++    if (fieldValue == NULL) {
++      sqlite3DbFree(db, fieldName);
++      sqlite3BinlogFreeOldColumns(db, res, i-1);
++      return SQLITE_NOMEM;
++    }
++    res->nameAndValues[i * 2] = fieldName;
++    res->nameAndValues[i * 2 + 1] = fieldValue;
++  }
++  res->nCol = pTab->nCol;
++  res->tableName = pTab->zName;
++  return SQLITE_OK;
++}
++
++/* Get the field name and field values for a without rowid table, fixed version for search */
++SQLITE_PRIVATE int sqlite3BinlogGetSearchFieldDataNoRowidForSearch(
++  sqlite3 *db,                  /* dB handle */
++  Table *pTab,                  /* Table to which the row belongs */
++  const BinlogRow *pRow,        /* Row data to be written into binlog */
++  BinlogSearchResult *res              /* field values to be returned */
++){
++  Index *pIdx = sqlite3PrimaryKeyIndex(pTab);
++  res->nameAndValues = (char **)sqlite3DbMallocZero(db, 2 * (pIdx->nKeyCol + pTab->nCol ) * sizeof(const char *));
++  if (res->nameAndValues == NULL) {
++      return SQLITE_ERROR;
++  }
++  /* Without rowid table fields are rearranged with primary keys at front */
++  for (int i=0; i<pIdx->nKeyCol; i++) {
++      i16 iCol = pIdx->aiColumn[i];
++      res->nameAndValues[i*2] = sqlite3_mprintf("%s", pTab->aCol[iCol].zCnName);
++      res->nameAndValues[i*2 + 1] = sqlite3BinlogGetNthColForSearch(db, pTab, pRow, iCol);
++  }
++
++  int idx = pIdx->nKeyCol;
++  for (int k=0; k<pTab->nCol; k++) {
++    if ( (pTab->aCol[k].colFlags & COLFLAG_PRIMKEY) == 0 ) {
++        res->nameAndValues[idx*2] = sqlite3_mprintf("%s", pTab->aCol[k].zCnName);
++        res->nameAndValues[idx*2 + 1] = sqlite3BinlogGetNthColForSearch(db, pTab, pRow, k);
++        idx++;
++    }
++  }
++  res->nCol = pTab->nCol;
++  return SQLITE_OK;
++}
++
++/* Return an insert sql based on the binlog row data, the returned value needs free by caller */
++SQLITE_PRIVATE int sqlite3BinlogRowInsertGet(sqlite3 *db, Table *pTab, const BinlogRow *pRow, BinlogSearchResult *res){
++
++  int rc = SQLITE_OK;
++  if (HasRowid(pTab)) {
++    rc = sqlite3BinlogGetSearchFieldDataForSearch(db, pTab, pRow, res);
++  } else {
++    rc = sqlite3BinlogGetSearchFieldDataNoRowidForSearch(db, pTab, pRow, res);
++  }
++
++  if (rc != SQLITE_OK) {
++    sqlite3_log(rc, "binlog get field data err:%d", rc);
++    return rc;
++  }
++  res->op = SQLITE_INSERT;
++  res->tableName = pTab->zName;
++  return SQLITE_OK;
++}
++
++/* Return search result for UPDATE operation - fills BinlogSearchResult */
++SQLITE_PRIVATE int sqlite3BinlogRowUpdateGet(sqlite3 *db, Table *pTab, const BinlogRow *pRow, BinlogSearchResult *res)
++{
++    int rc = SQLITE_OK;
++    if (HasRowid(pTab)) {
++        rc = sqlite3BinlogGetSearchFieldDataForSearch(db, pTab, pRow, res);
++    } else {
++        rc = sqlite3BinlogGetSearchFieldDataNoRowidForSearch(db, pTab, pRow, res);
++    }
++
++    if (rc != SQLITE_OK) {
++        sqlite3_log(rc, "binlog update get field data err:%d", rc);
++        return rc;
++    }
++    res->rowid = pRow->rowid;
++    res->op = SQLITE_UPDATE;
++    res->tableName = pTab->zName;
++    return SQLITE_OK;
++}
++
++/* Return search result for DELETE operation (rowid table) - fills BinlogSearchResult */
++SQLITE_PRIVATE int sqlite3BinlogRowDeleteGet(sqlite3 *db, Table *pTab, const BinlogRow *pRow, BinlogSearchResult *res)
++{
++    int rc = sqlite3BinlogGetSearchFieldDataForSearch(db, pTab, pRow, res);
++    if (rc != SQLITE_OK) {
++        sqlite3_log(rc, "binlog delete get field data err:%d", rc);
++        return rc;
++    }
++    res->rowid = pRow->rowid;
++    res->op = SQLITE_DELETE;
++    res->tableName = pTab->zName;
++    return SQLITE_OK;
++}
++
++/* Return search result for DELETE operation (no rowid table) - fills BinlogSearchResult */
++SQLITE_PRIVATE int sqlite3BinlogRowDeleteNoRowidGet(sqlite3 *db, Table *pTab, const BinlogRow *pRow, BinlogSearchResult *res)
++{
++    int rc = sqlite3BinlogGetSearchFieldDataNoRowidForSearch(db, pTab, pRow, res);
++    if (rc != SQLITE_OK) {
++        sqlite3_log(rc, "binlog delete no rowid get field data err:%d", rc);
++        return rc;
++    }
++    res->rowid = pRow->rowid;
++    res->op = SQLITE_DELETE;
++    res->tableName = pTab->zName;
++    return SQLITE_OK;
++}
++
+ SQLITE_PRIVATE int sqlite3GenerateUuid(u8 *aBlobOut)
+  {
+   if (aBlobOut == NULL) {
+@@ -259215,6 +259671,25 @@ SQLITE_PRIVATE char *sqlite3GetBinlogRowStmt(sqlite3 *db, const BinlogRow *pRow,
+   }
+ }
+ 
++/* Return the search result fills BinlogSearchResult for SEARCH mode - returns int status */
++SQLITE_PRIVATE int sqlite3GetBinlogRowColsSearch(sqlite3 *db, const BinlogRow *pRow, Table *pTab, BinlogSearchResult *res)
++{
++  assert( db!=NULL );
++  assert( pRow!=NULL );
++  assert( pTab!=NULL );
++
++  switch (pRow->op) {
++    case SQLITE_DELETE:
++      return HasRowid(pTab) ? sqlite3BinlogRowDeleteGet(db, pTab, pRow, res) : sqlite3BinlogRowDeleteNoRowidGet(db, pTab, pRow, res);
++    case SQLITE_INSERT:
++      return sqlite3BinlogRowInsertGet(db, pTab, pRow, res);
++    case SQLITE_UPDATE:
++      return sqlite3BinlogRowUpdateGet(db, pTab, pRow, res);
++    default:
++      return SQLITE_ERROR;
++  }
++}
++
+ /* Find the table that is pointed by pC, NULL is returned if a valid table can not be found */
+ SQLITE_PRIVATE Table *sqlite3BinlogFindTable(BtCursor *pC){
+   if (pC==NULL || pC->pBtree == NULL || pC->pBtree->pBt == NULL || pC->pBtree->pBt->pSchema == NULL) {
+@@ -259236,6 +259711,51 @@ SQLITE_PRIVATE Table *sqlite3BinlogFindTable(BtCursor *pC){
+   return pTab;
+ }
+ 
++SQLITE_PRIVATE void CheckAndNotify(sqlite3 *db, char *tableName){
++  if (tableName == NULL) {
++      return;
++  }
++  if (db->xBinlogHandle.mode != ROW_FOR_SEARCH) {
++    return;
++  }
++  if (db->xBinlogHandle.monitorConfig==NULL) {
++      if (db->xBinlogHandle.jsonParseCallback != NULL) {
++        const char *zFile = sqlite3_db_filename(db, 0);
++        if (zFile == NULL || (db->xBinlogHandle.flags & BINLOG_FLAG_ENABLE) == 0) {
++          sqlite3_log(SQLITE_ERROR, "binlog db has no file path");
++          return;
++        }
++        MonitorTablesConfig *monitorConfig = db->xBinlogHandle.jsonParseCallback(zFile);
++        if (monitorConfig == NULL) {
++          sqlite3_log(SQLITE_ERROR, "jsonPaarseMonitorConfig get null");
++          return;
++        }
++        int rc = sqlite3SetMonitorConfig(db, monitorConfig);
++        if (rc != SQLITE_OK) {
++          sqlite3_log(SQLITE_ERROR, "setmonitorConfig fail in jsonPaarseMonitorConfig");
++          return;
++        }
++      }
++  }
++  if (db->xBinlogHandle.monitorConfig == NULL) {
++      return;
++  }
++  MonitorTablesConfig *config = db->xBinlogHandle.monitorConfig;
++  for (int i = 0; i < config->tableCount; i++) {
++    if (strcmp(tableName, config->tables[i].tableName) == 0) {
++        if (db->xBinlogHandle.xChangeCallback == NULL) {
++            return;
++        }
++        const char *zFile = sqlite3_db_filename(db, 0);
++        if (zFile == NULL || (db->xBinlogHandle.flags & BINLOG_FLAG_ENABLE) == 0) {
++          sqlite3_log(SQLITE_ERROR, "binlog db has no file path");
++          return;
++        }
++        db->xBinlogHandle.xChangeCallback(zFile, tableName);
++    }
++  }
++}
++
+ SQLITE_PRIVATE int sqlite3BinlogWriteTable(Vdbe *p, Table *pTable){
+   assert( p!=NULL );
+   assert( pTable!=NULL );
+@@ -259424,6 +259944,7 @@ SQLITE_PRIVATE void sqlite3StoreBinlogRowData(Vdbe *p, BtCursor *pCursor, const
+   }
+ 
+   if (sqlite3BinlogWriteRowData(p, pRow) == SQLITE_OK) {
++    CheckAndNotify(db, pTab->zName);
+     return;
+   }
+ 
+@@ -259440,7 +259961,7 @@ SQLITE_PRIVATE int sqlite3IsRowBasedBinlog(Vdbe *p) {
+   return p 
+     && p->db
+     && (p->db->xBinlogHandle.flags & BINLOG_FLAG_ENABLE)
+-    && (p->db->xBinlogHandle.mode == ROW);
++    && ((p->db->xBinlogHandle.mode == ROW) || (p->db->xBinlogHandle.mode == ROW_FOR_SEARCH));
+ }
+ 
+ /* Get i-th column value from a row formated data. i starts from 0 */
+@@ -259562,6 +260083,51 @@ SQLITE_PRIVATE char *sqlite3BinlogGetNthCol(sqlite3 *db, const Table *pTab, cons
+   return res;
+ }
+ 
++/* Get the Nth column value for search - returns raw value without SQL quotes */
++SQLITE_PRIVATE char *sqlite3BinlogGetNthColForSearch(sqlite3 *db, const Table *pTab, const BinlogRow *pRow, int iCol) {
++  assert( db != NULL && pTab != NULL && pRow != NULL );
++  assert( iCol >= 0 );
++  if (HasRowid(pTab) && pTab->iPKey == iCol) {
++      return sqlite3_mprintf("%lld", pRow->rowid);
++  }
++
++  sqlite3_value *tempVal = NULL;
++  sqlite3_uint64 nData = pRow->nData + (sqlite3_uint64)pRow->nZero;
++  char *pData = sqlite3MallocZero(nData);
++  if (pData == NULL) {
++    sqlite3_log(SQLITE_ERROR, "binlog failed to allocate memory");
++    return NULL;
++  }
++  errno_t errNo = memcpy_s(pData, nData, pRow->pData, pRow->nData);
++  if (errNo != EOK) {
++    sqlite3_log(SQLITE_ERROR, "binlog failed to copy data, rc:%d, errno:%d", errNo, errno);
++    sqlite3_free(pData);
++    return NULL;
++  }
++  sqlite3BinlogStat4Column(db, pData, nData, iCol, &tempVal);
++  if (tempVal == NULL) {
++    sqlite3_log(SQLITE_ERROR, "decode data failed");
++    sqlite3_free(pData);
++    return NULL;
++  }
++  int type = sqlite3_value_type(tempVal);
++  const unsigned char *temp = sqlite3_value_text(tempVal);
++
++  char *res = NULL;
++  if (type == SQLITE_BLOB) {
++    res = sqlite3BinlogGetHexFromBlobOrStr(db, tempVal);
++  } else if (type == SQLITE_TEXT) {
++    res = sqlite3_mprintf("%s", temp);
++  } else if (type == SQLITE_NULL) {
++    res = sqlite3_mprintf("NULL");
++  } else {
++    res = sqlite3_mprintf("%s", temp);
++  }
++  sqlite3ValueFree(tempVal);
++  sqlite3_free(pData);
++  return res;
++}
++
+ /* Check if binlog is enabled and the stmtType needs being logged */
+ SQLITE_PRIVATE int sqlite3IsSkipWriteBinlog(Vdbe *p) {
+   int isBinlogEnabled = (p != NULL) && (p->db != NULL) && 
+@@ -259669,6 +260235,7 @@ SQLITE_PRIVATE int sqlite3BinlogClose(sqlite3 *db)
+       return rc;
+     }
+   }
++  sqlite3FreeMonitorTablesConfig(db, db->xBinlogHandle.monitorConfig);
+   sqlite3BinlogReset(db);
+   return SQLITE_OK;
+ }
+@@ -259688,6 +260255,8 @@ SQLITE_PRIVATE void sqlite3BinlogReset(sqlite3 *db)
+   db->xBinlogHandle.binlogApi.binlogReadApi = NULL;
+   db->xBinlogHandle.binlogApi.binlogFileCleanApi = NULL;
+   db->xBinlogHandle.binlogApi.binlogFreeReadResultApi = NULL;
++  db->xBinlogHandle.binlogApi.binlogSetSearchWaterMark = NULL;
++  db->xBinlogHandle.binlogApi.binlogResetSearchHwmApi = NULL;
+   db->xBinlogHandle.binlogApi.binlogLockReadApi = NULL;
+   db->xBinlogHandle.binlogApi.binlogUnlockReadApi = NULL;
+   db->xBinlogHandle.callbackCtx = NULL;
+@@ -259698,8 +260267,41 @@ SQLITE_PRIVATE void sqlite3BinlogReset(sqlite3 *db)
+   }
+   db->xBinlogHandle.isSkipTrigger = 0;
+ }
+- 
+-SQLITE_PRIVATE int sqlite3BinlogStmtPrepare(sqlite3 *db, Sqlite3BinlogStmt *bStmt)
++
++SQLITE_PRIVATE int sqlite3BinlogResetHwm(sqlite3 *db)
++{
++  if (db == NULL || db->xBinlogHandle.binlogApi.binlogResetSearchHwmApi == NULL) {
++    sqlite3_log(SQLITE_ERROR, "binlog reset hwm is null");
++    return SQLITE_ERROR;
++  }
++  int rc = sqlite3TransferBinlogErrno(db->xBinlogHandle.binlogApi.binlogResetSearchHwmApi(db->xBinlogHandle.binlogConn));
++  if (rc != SQLITE_OK) {
++    if (rc != SQLITE_DONE) {
++      sqlite3_log(rc, "binlog reset hwm err:%d", rc);
++    }
++    return rc;
++  }
++  return SQLITE_OK;
++}
++
++SQLITE_PRIVATE int sqlite3BinlogSetHwm(sqlite3 *db, BinlogSearchHwmT *waterMark, BinlogHwmSetModeE setMode)
++{
++  if (db == NULL || db->xBinlogHandle.binlogApi.binlogSetSearchWaterMark == NULL) {
++    sqlite3_log(SQLITE_ERROR, "binlog set hwm parameter is null");
++    return SQLITE_ERROR;
++  }
++  int rc = sqlite3TransferBinlogErrno(db->xBinlogHandle.binlogApi.binlogSetSearchWaterMark(db->xBinlogHandle.binlogConn,
++    waterMark, setMode));
++  if (rc != SQLITE_OK) {
++    if (rc != SQLITE_DONE) {
++      sqlite3_log(rc, "binlog set hwm err:%d", rc);
++    }
++    return rc;
++  }
++  return SQLITE_OK;
++}
++
++SQLITE_PRIVATE int sqlite3BinlogStmtPrepare(sqlite3 *db, BinlogReadModeE readMode, Sqlite3BinlogStmt *bStmt)
+ {
+   if (db == NULL || db->xBinlogHandle.binlogApi.binlogReadApi == NULL || bStmt == NULL) {
+     sqlite3_log(SQLITE_ERROR, "binlog stmt prepare parameter is null");
+@@ -259707,7 +260309,7 @@ SQLITE_PRIVATE int sqlite3BinlogStmtPrepare(sqlite3 *db, Sqlite3BinlogStmt *bStm
+   }
+   BinlogReadResultT *result = NULL;
+   int rc = sqlite3TransferBinlogErrno(db->xBinlogHandle.binlogApi.binlogReadApi(db->xBinlogHandle.binlogConn,
+-    &result));
++    readMode, &result));
+   if (rc != SQLITE_OK) {
+     if (rc != SQLITE_DONE) {
+       sqlite3_log(rc, "binlog stmt prepare err:%d", rc);
+@@ -259822,6 +260424,101 @@ SQLITE_PRIVATE int sqlite3BinlogStmtStep(sqlite3 *db, Sqlite3BinlogStmt *bStmt,
+   return SQLITE_ROW;
+ }
+  
++SQLITE_PRIVATE int checkIfMonitorTable(sqlite3 *db, char *tableName)
++{
++  MonitorTablesConfig *config = db->xBinlogHandle.monitorConfig;
++  if (config == NULL) {
++      return 1;
++  }
++  for (int i = 0; i < config->tableCount; i++) {
++    if (strcmp(tableName, config->tables[i].tableName) == 0) {
++      return 1;
++    }
++  }
++  return 0;
++}
++
++SQLITE_PRIVATE int sqlite3BinlogGetSearchData(sqlite3 *db, Sqlite3BinlogStmt *bStmt, BinlogSearchResultSet **rs, Table **pOutTable)
++{
++  if (bStmt == NULL || bStmt->cursor == NULL) {
++    sqlite3_log(SQLITE_ERROR, "binlog stmt step parameter is null");
++    return SQLITE_ERROR;
++  }
++  if (bStmt->curIdx >= bStmt->cursor->eventNum) {
++    return SQLITE_DONE;
++  }
++  BinlogEventT *event = bStmt->cursor->sqlEvent[bStmt->curIdx];
++  if (event == NULL) {
++    sqlite3_log(SQLITE_ERROR, "binlog stmt step event is null");
++    return SQLITE_ERROR;
++  }
++
++  int rc = SQLITE_OK;
++  switch (event->head.eventType) {
++    case BINLOG_EVENT_TYPE_ROW_TABLE: {
++      char *pTableName = (char *)event->body;
++      *pOutTable = sqliteBinlogGetTable(db, pTableName, &rc);
++      if (*pOutTable == NULL) {
++        rc = SQLITE_ERROR;
++        sqlite3_log(SQLITE_WARNING, "search binlog find no table, rc=%d", rc);
++      } else {
++        rc = SQLITE_ROW;
++      }
++      return rc;
++    }
++    case BINLOG_EVENT_TYPE_ROW_FULL_DATA: {
++      if (pOutTable == NULL || *pOutTable == NULL) {
++        rc = SQLITE_ERROR;
++        sqlite3_log(SQLITE_ERROR, "binlog row has no table");
++        return rc;
++      }
++      if (!checkIfMonitorTable(db, (*pOutTable)->zName)) {
++          return SQLITE_ROW;
++      }
++      // Use the new search function that fills BinlogSearchResult
++      char *buffer = (char *)event->body;
++      u32 nBuffer = event->head.eventLength;
++
++      u8 op = 0;
++      sqlite3_int64 rowid = 0;
++      sqlite3_uint64 nData = 0;
++      int nZero = 0;
++      char *pData = NULL;
++      rc = sqlite3BinlogDecodeRowBuffer(buffer, nBuffer, &op, &rowid, &nData, &nZero, &pData);
++      if (rc != SQLITE_OK) {
++        return rc;
++      }
++
++      BinlogRow pRow;
++      pRow.op = op;
++      pRow.nData = nData;
++      pRow.nZero = nZero;
++      pRow.pData = pData;
++      pRow.rowid = rowid;
++      int row_count = (*rs)->row_count;
++      if (row_count >= (*rs)->capacity) {
++        rc = BinlogSearchResultExpand(db, rs);
++        if (rc != SQLITE_OK) {
++          sqlite3_log(rc, "binlog expand resSet for from capicity err:%d", (*rs)->capacity, rc);
++          return rc;
++        }
++      }
++      rc = sqlite3GetBinlogRowColsSearch(db, &pRow, *pOutTable, &(*rs)->results[row_count]);
++      if (rc != SQLITE_OK) {
++        sqlite3_log(rc, "binlog get row cols for search err:%d", rc);
++        return rc;
++      }
++      
++      (*rs)->results[row_count].fileIndex = bStmt->cursor->waterMark.readFileIndex;
++      (*rs)->results[row_count].readPos = bStmt->cursor->waterMark.readPos;
++      (*rs)->row_count++;
++      return SQLITE_ROW;
++    }
++    default:
++      return SQLITE_ROW;
++  }
++}
++
+ SQLITE_PRIVATE void sqlite3BinlogStmtFinalize(sqlite3 *db, Sqlite3BinlogStmt *bStmt)
+ {
+   if (db == NULL || bStmt == NULL || bStmt->cursor == NULL ||
+@@ -259877,7 +260574,7 @@ SQLITE_PRIVATE int sqlite3BinlogReplay(sqlite3 *srcDb, sqlite3 *destDb)
+     Sqlite3BinlogStmt bStmt;
+     bStmt.curIdx = 0;
+     bStmt.cursor = NULL;
+-    res = sqlite3BinlogStmtPrepare(srcDb, &bStmt);
++    res = sqlite3BinlogStmtPrepare(srcDb, BINLOG_REPLAY_MODE, &bStmt);
+     if (res != SQLITE_OK) {
+       if (res == SQLITE_DONE) {
+         res = SQLITE_OK;
+@@ -259918,7 +260615,131 @@ SQLITE_PRIVATE int sqlite3BinlogReplay(sqlite3 *srcDb, sqlite3 *destDb)
+   }
+   return res;
+ }
+- 
++
++SQLITE_PRIVATE int BinlogSearchResultSetCreate(sqlite3 *srcDb, int capacity, BinlogSearchResultSet **rs)
++{
++    if (capacity <= 0) {
++        capacity = 100;  // default capacity
++    }
++
++    BinlogSearchResultSet *rsInner = (BinlogSearchResultSet *)sqlite3DbMallocZero(srcDb, sizeof(BinlogSearchResultSet));
++    if (rsInner == NULL) {
++        return SQLITE_ERROR;
++    }
++    rsInner->capacity = capacity;
++    rsInner->row_count = 0;
++    rsInner->results = (BinlogSearchResult *)sqlite3DbMallocZero(srcDb, capacity * sizeof(BinlogSearchResult));
++    if (rsInner->results == NULL) {
++        sqlite3DbFree(srcDb, rsInner);
++        return SQLITE_ERROR;
++    }
++    *rs = rsInner;
++    return SQLITE_OK;
++}
++
++SQLITE_PRIVATE int BinlogSearchResultExpand(sqlite3 *srcDb, BinlogSearchResultSet **rs)
++{
++    if (rs == NULL || *rs == NULL) {
++        return SQLITE_ERROR;
++    }
++    int newCapacity = (*rs)->capacity * 2;
++    BinlogSearchResult *newResults = (BinlogSearchResult *)sqlite3DbMallocZero(srcDb, newCapacity * sizeof(BinlogSearchResult));
++    if (newResults == NULL) {
++        sqlite3_log(SQLITE_ERROR, " binlog resSet expand failed");
++        return SQLITE_ERROR;
++    }
++    for (int i = 0; i < (*rs)->row_count; i++) {
++      newResults[i] = (*rs)->results[i];
++    }
++    sqlite3DbFree(srcDb, (*rs)->results);
++    (*rs)->results = newResults;
++    (*rs)->capacity = newCapacity;
++    return SQLITE_OK;
++}
++
++SQLITE_PRIVATE void BinlogSearchResultFree(sqlite3 *srcDb, BinlogSearchResult *row)
++{
++    if (row == NULL) return;
++
++    if (row->nameAndValues != NULL) {
++        // release array
++        for (sqlite3_uint64 i = 0; i < 2 * row->nCol; i++) {
++            sqlite3DbFree(srcDb, row->nameAndValues[i]); // release row content
++        }
++        sqlite3DbFree(srcDb, row->nameAndValues);
++        row->nameAndValues = NULL;
++    }
++}
++
++/**
++ * @brief destroy all results set
++ */
++SQLITE_PRIVATE void BinlogSearchResultSetDestroy(sqlite3 *srcDb, BinlogSearchResultSet **rs)
++{
++    if (rs == NULL || *rs == NULL) return;
++
++    for (int i = 0; i < (*rs)->row_count; i++) {
++        BinlogSearchResultFree(srcDb, &(*rs)->results[i]);
++    }
++    sqlite3DbFree(srcDb, (*rs)->results);
++    sqlite3DbFree(srcDb, (*rs));
++    *rs = NULL;
++}
++
++SQLITE_PRIVATE int sqlite3BinlogSearchDataGet(sqlite3 *srcDb, sqlite3 *destDb, BinlogSearchResultSet **rs)
++{
++  if ((srcDb->xBinlogHandle.flags & BINLOG_FLAG_ENABLE) == 0) {
++    sqlite3_log(SQLITE_ERROR, "binlog replay srcDb not enable binlog");
++    return SQLITE_ERROR;
++  }
++  const char *srcFile = sqlite3_db_filename(srcDb, 0);
++  if (srcFile == NULL) {
++    return SQLITE_ERROR;
++  }
++  uint16_t capacity = 100;
++  int res = BinlogSearchResultSetCreate(srcDb, capacity, rs);
++  if (res != SQLITE_OK) {
++    return res;
++  }
++  destDb->xBinlogHandle.isSkipTrigger = 1;
++  int replayTrxCount = 0;
++  do {
++    Sqlite3BinlogStmt bStmt;
++    bStmt.curIdx = 0;
++    bStmt.cursor = NULL;
++    res = sqlite3BinlogStmtPrepare(srcDb, BINLOG_SEARCH_MODE, &bStmt);
++    if (res != SQLITE_OK) {
++      if (res != SQLITE_DONE) {
++        sqlite3_log(res, "read binlog failed");
++      }
++      break;
++    }
++    Table *pTab = NULL;
++    while ((res = sqlite3BinlogGetSearchData(srcDb, &bStmt, rs, &pTab)) == SQLITE_ROW) {
++      bStmt.curIdx++;
++    }
++    sqlite3BinlogStmtFinalize(srcDb, &bStmt);
++    if (res != SQLITE_DONE && res != SQLITE_OK) {
++      sqlite3BinlogErrorCallback(srcDb, res, "exec replay sql failed");
++      break;
++    }
++    if (res == SQLITE_DONE && (*rs)->row_count >= 100) {
++      res = SQLITE_OK;
++      break;
++    }
++    replayTrxCount++;
++    // more than 100 then return
++    if ((*rs)->row_count < 100 && res == SQLITE_DONE) {
++      res = SQLITE_OK;
++      continue;
++    }
++  } while (1);
++  if ((*rs)->row_count == 0) {
++    BinlogSearchResultSetDestroy(srcDb, rs);
++  }
++  return res;
++}
++
+ SQLITE_PRIVATE int sqlite3BinlogClean(sqlite3 *db, BinlogFileCleanModeE mode)
+ {
+   if (db == NULL || mode < BINLOG_FILE_CLEAN_ALL_MODE ||
+@@ -259984,7 +260805,24 @@ struct sqlite3_api_routines_extra {
+ #endif
+   int (*is_support_binlog)(void);
+   int (*replay_binlog)(sqlite3*, sqlite3*);
++#ifdef SQLITE_ENABLE_BINLOG
++  int (*set_monitor_config)(sqlite3*, MonitorTablesConfig*);
++  int (*set_xChange_callback)(sqlite3*, void (*xChangeCallback)(const char *dbPath, char *tableName));
++  int (*set_json_parse_callback)(sqlite3*, MonitorTablesConfig*(*jsonParseCallback)(const char *dbPath));
++  int (*get_search_data_binlog)(sqlite3*, sqlite3*, BinlogSearchResultSet**);
++  int (*free_search_data_binlog)(sqlite3*, BinlogSearchResultSet**);
++  int (*set_search_hwm_binlog)(sqlite3*, BinlogSearchHwmT*, BinlogHwmSetModeE);
++  int (*reset_search_hwm_binlog)(sqlite3*);
+   int (*clean_binlog)(sqlite3*, BinlogFileCleanModeE);
++#else
++  void *dymmyFunc;
++  void *dymmyFunc2;
++  void *dymmyFunc3;
++  void *dymmyFunc4;
++  void *dymmyFunc5;
++  void *dymmyFunc6;
++  void *dymmyFunc7;
++#endif 
+ #ifdef SQLITE_ENABLE_PAGE_COMPRESS
+   int (*compressdb_backup)(sqlite3*, const char*);
+ #else
+@@ -260012,11 +260850,25 @@ static const sqlite3_api_routines_extra sqlite3ExtraApis = {
+ #ifdef SQLITE_ENABLE_BINLOG
+   sqlite3_is_support_binlog,
+   sqlite3_replay_binlog,
++  sqlite3_set_monitor_config_binlog,
++  sqlite3_set_xChange_callback_binlog,
++  sqlite3_set_json_parse_callback_binlog,
++  sqlite3_get_search_data_binlog,
++  sqlite3_free_search_data_binlog,
++  sqlite3_set_search_hwm_binlog,
++  sqlite3_reset_search_hwm_binlog,
+   sqlite3_clean_binlog,
+ #else
+   0,
+   0,
+   0,
++  0,
++  0,
++  0,
++  0,
++  0,
++  0,
++  0,
+ #endif/* SQLITE_ENABLE_BINLOG */
+ #ifdef SQLITE_ENABLE_PAGE_COMPRESS
+   sqlite3_compressdb_backup,
+-- 
+2.34.1
+
