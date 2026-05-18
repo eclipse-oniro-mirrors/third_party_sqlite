@@ -76,7 +76,7 @@ typedef struct BinlogSearchHwm {
 
 typedef struct MonitorTableCol {
   const char *tableName;    // tableName
-  const char **cols;        // colsArray
+  char **cols;        // colsArray
   int colCount;       // colsCount
 } MonitorTableCol;
 

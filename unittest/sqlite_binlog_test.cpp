@@ -116,7 +116,7 @@ static MonitorTablesConfig *InitMonitorConfig(const char *tableName)
     monitorConfig->tableCount++;
     int defaultColCount = 1;
     monitorConfig->tables[0].colCount = defaultColCount;
-    monitorConfig->tables[0].cols = static_cast<const char**>(malloc(sizeof(char*) * defaultSize)); // default 10 cols
+    monitorConfig->tables[0].cols = static_cast<char**>(malloc(sizeof(char*) * defaultSize)); // default 10 cols
     std::string defaultColName = "id";
     monitorConfig->tables[0].cols[0] = strdup(defaultColName.c_str());
     return monitorConfig;

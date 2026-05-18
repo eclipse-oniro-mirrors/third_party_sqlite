@@ -44,7 +44,7 @@ index 9b029d8..e2709cb 100644
 +
 +typedef struct MonitorTableCol {
 +  const char *tableName;    // tableName
-+  const char **cols;        // colsArray
++  char **cols;        // colsArray
 +  int colCount;       // colsCount
 +} MonitorTableCol;
 +
