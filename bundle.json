@@ -17,7 +17,8 @@
         "features": [
             "sqlite_support_check_pages",
             "sqlite_feature_enable_pgo",
-            "sqlite_feature_pgo_path"
+            "sqlite_feature_pgo_path",
+            "sqlite_enable_fdsan"
         ],
         "adapted_system_type": [ "standard" ],
         "rom": "2200KB",
