@@ -1,13 +1,13 @@
-From e2b0e19005cb50664b6fd35fce23eb5f7b7b93ee Mon Sep 17 00:00:00 2001
-From: guodongfeng2 <guodongfeng2@noreply.gitcode.com>
-Date: Fri, 22 May 2026 15:25:44 +0800
+From 3389a347e4b3a5d58381ed03dfe79ea4edb0c47c Mon Sep 17 00:00:00 2001
+From: wddhw <wangxiangdong13@huawei.com>
+Date: Thu, 4 Jun 2026 22:28:23 +0800
 Subject: [PATCH] Bugfix on current version
 
 ---
  ext/misc/cksumvfs.c |  11 +-
  src/compressvfs.c   | 514 ++++++++++++++++++++++++++++++--------------
- src/sqlite3.c       | 346 ++++++++++++++++++++++++-----
- 3 files changed, 653 insertions(+), 218 deletions(-)
+ src/sqlite3.c       | 424 ++++++++++++++++++++++++++++--------
+ 3 files changed, 701 insertions(+), 248 deletions(-)
 
 diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
 index 27b1028..e89edcd 100644
@@ -858,7 +858,7 @@ index 8f2e908..53b9967 100644
  }
  
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 0b0dcd1..341a86f 100644
+index 0b0dcd1..b676ab1 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -5363,7 +5363,7 @@ SQLITE_API int sqlite3_set_droptable_handle(sqlite3*, void (*xFunc)(sqlite3*,con
@@ -1506,7 +1506,142 @@ index 0b0dcd1..341a86f 100644
      sqlite3_log(SQLITE_ERROR, "[SQLite]Get wal file lock ofs %u failed, errno: %d", lock->l_start, errno);
      return 0;
    }
-@@ -260803,7 +261037,7 @@ struct sqlite3_api_routines_extra {
+@@ -259087,6 +259321,35 @@ SQLITE_PRIVATE int sqlite3BinlogInitApi(sqlite3 *db)
+   return SQLITE_OK;
+ }
+ 
++static void sqlite3FreeMonitorTablesConfig(sqlite3 *db, MonitorTablesConfig *config)
++{
++  if (config == NULL) return;
++
++  if (config->tables != NULL) {
++    for (int i = 0; i < config->tableCount; i++) {
++      MonitorTableCol *tc = &config->tables[i];
++      if (tc->tableName != NULL) {
++        sqlite3DbFree(db, (void *)tc->tableName);
++        tc->tableName = NULL;
++      }
++      if (tc->cols != NULL) {
++        for (int j = 0; j < tc->colCount; j++) {
++          if (tc->cols[j] != NULL) {
++            sqlite3DbFree(db, (void *)tc->cols[j]);
++            tc->cols[j] = NULL;
++          }
++        }
++        sqlite3DbFree(db, tc->cols);
++        tc->cols = NULL;
++      }
++    }
++    sqlite3DbFree(db, config->tables);
++    config->tables = NULL;
++  }
++  sqlite3DbFree(db, config);
++  config = NULL;
++}
++
+ SQLITE_PRIVATE int sqlite3SetMonitorConfig(sqlite3 *db, MonitorTablesConfig *src)
+ {
+   if (src == NULL) {
+@@ -259108,7 +259371,10 @@ SQLITE_PRIVATE int sqlite3SetMonitorConfig(sqlite3 *db, MonitorTablesConfig *src
+         int len = strlen(srcTable->tableName);
+         dstTable->tableName = sqlite3DbMallocZero(db, len + 1);
+         if (dstTable->tableName) {
+-          memcpy((void *)dstTable->tableName, (void *)srcTable->tableName, len);
++          memcpy((void *)dstTable->tableName, (void *)srcTable->tableName, len + 1);
++        } else {
++          sqlite3FreeMonitorTablesConfig(db, dst);
++          return SQLITE_ERROR;
+         }
+       }
+ 
+@@ -259118,17 +259384,19 @@ SQLITE_PRIVATE int sqlite3SetMonitorConfig(sqlite3 *db, MonitorTablesConfig *src
+           if (dstTable->tableName) {
+             sqlite3DbFree(db, (void *)dstTable->tableName);
+           }
+-          sqlite3DbFree(db, dst->tables);
+-          sqlite3DbFree(db, dst);
++          sqlite3FreeMonitorTablesConfig(db, dst);
+           return SQLITE_ERROR;
+         }
+ 
+         for (int j = 0; j < srcTable->colCount; j++) {
+-          if (srcTable->cols[j] != NULL) {
++          if (srcTable->cols != NULL && srcTable->cols[j] != NULL) {
+             int len = strlen(srcTable->cols[j]);
+             dstTable->cols[j] = sqlite3DbMallocZero(db, len + 1);
+             if (dstTable->cols[j]) {
+-              memcpy((void *)dstTable->cols[j], (void *)srcTable->cols[j], len);
++              memcpy((void *)dstTable->cols[j], (void *)srcTable->cols[j], len + 1);
++            } else {
++              sqlite3FreeMonitorTablesConfig(db, dst);
++              return SQLITE_ERROR;
+             }
+           }
+           dstTable->colCount++;
+@@ -259141,30 +259409,6 @@ SQLITE_PRIVATE int sqlite3SetMonitorConfig(sqlite3 *db, MonitorTablesConfig *src
+   return SQLITE_OK;
+ }
+ 
+-static void sqlite3FreeMonitorTablesConfig(sqlite3 *db, MonitorTablesConfig *config)
+-{
+-  if (config == NULL) return;
+-
+-  if (config->tables != NULL) {
+-    for (int i = 0; i < config->tableCount; i++) {
+-      MonitorTableCol *tc = &config->tables[i];
+-      if (tc->tableName != NULL) {
+-        sqlite3DbFree(db, (void *)tc->tableName);
+-      }
+-      if (tc->cols != NULL) {
+-        for (int j = 0; j < tc->colCount; j++) {
+-          if (tc->cols[j] != NULL) {
+-            sqlite3DbFree(db, (void *)tc->cols[j]);
+-          }
+-        }
+-        sqlite3DbFree(db, tc->cols);
+-      }
+-    }
+-    sqlite3DbFree(db, config->tables);
+-  }
+-  sqlite3DbFree(db, config);
+-}
+-
+ SQLITE_PRIVATE int sqlite3SetBinLogConfig(sqlite3 *db, Sqlite3BinlogConfig *bConfig)
+ {
+   if (db == NULL) {
+@@ -259727,7 +259971,6 @@ SQLITE_PRIVATE void CheckAndNotify(sqlite3 *db, char *tableName){
+         }
+         MonitorTablesConfig *monitorConfig = db->xBinlogHandle.jsonParseCallback(zFile);
+         if (monitorConfig == NULL) {
+-          sqlite3_log(SQLITE_ERROR, "jsonPaarseMonitorConfig get null");
+           return;
+         }
+         int rc = sqlite3SetMonitorConfig(db, monitorConfig);
+@@ -259742,6 +259985,9 @@ SQLITE_PRIVATE void CheckAndNotify(sqlite3 *db, char *tableName){
+   }
+   MonitorTablesConfig *config = db->xBinlogHandle.monitorConfig;
+   for (int i = 0; i < config->tableCount; i++) {
++    if (config->tables == NULL || config->tables[i].tableName == NULL) {
++      continue;
++    }
+     if (strcmp(tableName, config->tables[i].tableName) == 0) {
+         if (db->xBinlogHandle.xChangeCallback == NULL) {
+             return;
+@@ -260430,7 +260676,13 @@ SQLITE_PRIVATE int checkIfMonitorTable(sqlite3 *db, char *tableName)
+   if (config == NULL) {
+       return 1;
+   }
++  if (tableName == NULL) {
++    return 0;
++  }
+   for (int i = 0; i < config->tableCount; i++) {
++    if (config->tables == NULL || config->tables[i].tableName == NULL) {
++      continue;
++    }
+     if (strcmp(tableName, config->tables[i].tableName) == 0) {
+       return 1;
+     }
+@@ -260803,7 +261055,7 @@ struct sqlite3_api_routines_extra {
  #else
    void *dymmyRekeyV3Func;
  #endif
@@ -1516,5 +1651,5 @@ index 0b0dcd1..341a86f 100644
  #ifdef SQLITE_ENABLE_BINLOG
    int (*set_monitor_config)(sqlite3*, MonitorTablesConfig*);
 -- 
-2.50.1.windows.1
+2.34.1
 
