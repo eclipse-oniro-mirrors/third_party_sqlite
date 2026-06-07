@@ -163,7 +163,6 @@ ohos_shared_library("sqlite") {
     "SQLITE_ENABLE_DROPTABLE_CALLBACK",
     "OPENSSL_SUPPRESS_DEPRECATED",
     "LOG_DUMP",
-    "FDSAN_ENABLE",
     "OS_FEATURE",
     "SQLITE_HDR_CHECK",
     "SQLITE_ENABLE_ICU",
@@ -172,6 +171,9 @@ ohos_shared_library("sqlite") {
     "SQLITE_CKSUMVFS_STATIC",
     "SQLITE_ENABLE_PAGE_COMPRESS",
   ]
+  if (sqlite_enable_fdsan) {
+    defines += [ "FDSAN_ENABLE" ]
+  }
   if (sqlite_support_check_pages) {
   }
   cflags_c = [
@@ -248,9 +250,11 @@ ohos_executable("sqlite3") {
     "SQLITE_SHARED_BLOCK_OPTIMIZATION",
     "OPENSSL_SUPPRESS_DEPRECATED",
     "LOG_DUMP",
-    "FDSAN_ENABLE",
     "OS_FEATURE",
   ]
+  if (sqlite_enable_fdsan) {
+    defines += [ "FDSAN_ENABLE" ]
+  }
 
   cflags = [
     "-Wno-error=implicit-function-declaration",
