@@ -14,7 +14,7 @@ import("//build/test.gni")
 import("//build/ohos.gni")
 import("//third_party/sqlite/sqlite.gni")
 
-module_output_path = "third_party_sqlite/third_party_sqlite"
+module_output_path = "sqlite/sqlite"
 
 ###############################################################################
 config("module_private_config") {

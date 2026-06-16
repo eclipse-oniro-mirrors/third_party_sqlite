@@ -767,7 +767,7 @@ index 9802a46..bdef937 100644
  }
  
  void sqlite3CodecGetKey(sqlite3* db, int nDb, void **pKey, int *nKey)
-@@ -256141,6 +256304,451 @@ int sqlite3_rekey(sqlite3 *db, const void *pKey, int nKey){
+@@ -256141,6 +256304,454 @@ int sqlite3_rekey(sqlite3 *db, const void *pKey, int nKey){
    return sqlite3_rekey_v2(db, "main", pKey, nKey);
  }
  
@@ -818,11 +818,14 @@ index 9802a46..bdef937 100644
 +  }
 +  if (SQLite3UnixFileExists(renamePath)) {
 +    rc = rename(renamePath, dbPath);
++    sqlite3_free(renamePath);
 +    // unlink failed, report error
 +    if (rc != 0) {
 +      sqlite3_log(SQLITE_IOERR, "Rekey rename db failed sysno %d", errno);
 +      return SQLITE_IOERR;
 +    }
++  } else {
++    sqlite3_free(renamePath);
 +  }
 +  return SQLITE_OK;
 +}
