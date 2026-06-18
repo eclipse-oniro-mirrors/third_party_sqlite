@@ -1,4 +1,4 @@
-From 3389a347e4b3a5d58381ed03dfe79ea4edb0c47c Mon Sep 17 00:00:00 2001
+From 33c8542e477073870fe5a1d432db2dc00e4929f6 Mon Sep 17 00:00:00 2001
 From: wddhw <wangxiangdong13@huawei.com>
 Date: Thu, 4 Jun 2026 22:28:23 +0800
 Subject: [PATCH] Bugfix on current version
@@ -6,8 +6,8 @@ Subject: [PATCH] Bugfix on current version
 ---
  ext/misc/cksumvfs.c |  11 +-
  src/compressvfs.c   | 514 ++++++++++++++++++++++++++++++--------------
- src/sqlite3.c       | 424 ++++++++++++++++++++++++++++--------
- 3 files changed, 701 insertions(+), 248 deletions(-)
+ src/sqlite3.c       | 426 ++++++++++++++++++++++++++++--------
+ 3 files changed, 702 insertions(+), 249 deletions(-)
 
 diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
 index 27b1028..e89edcd 100644
@@ -858,7 +858,7 @@ index 8f2e908..53b9967 100644
  }
  
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 0b0dcd1..b676ab1 100644
+index 0b0dcd1..0df4feb 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -5363,7 +5363,7 @@ SQLITE_API int sqlite3_set_droptable_handle(sqlite3*, void (*xFunc)(sqlite3*,con
@@ -1298,6 +1298,15 @@ index 0b0dcd1..b676ab1 100644
    /* Loop through the table columns, appending offset information to
    ** string-buffer res for each column.
    */
+@@ -239628,7 +239764,7 @@ static void fts5DataRelease(Fts5Data *pData){
+ static Fts5Data *fts5LeafRead(Fts5Index *p, i64 iRowid){
+   Fts5Data *pRet = fts5DataRead(p, iRowid);
+   if( pRet ){
+-    if( pRet->nn<4 || pRet->szLeaf>pRet->nn ){
++    if( pRet->szLeaf<4 || pRet->szLeaf>pRet->nn ){
+       p->rc = FTS5_CORRUPT;
+       fts5DataRelease(pRet);
+       pRet = 0;
 @@ -255112,6 +255248,21 @@ SQLITE_API int sqlite3_stmt_init(
  SQLITE_API const char *sqlite3_sourceid(void){ return SQLITE_SOURCE_ID; }
  /************************** End of sqlite3.c ******************************/
@@ -1651,5 +1660,5 @@ index 0b0dcd1..b676ab1 100644
  #ifdef SQLITE_ENABLE_BINLOG
    int (*set_monitor_config)(sqlite3*, MonitorTablesConfig*);
 -- 
-2.34.1
+2.38.0.windows.1
 
