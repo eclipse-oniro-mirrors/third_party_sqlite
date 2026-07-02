@@ -43,13 +43,11 @@ action("apply_patch") {
     "$sqlite_dst_dir/src/compressvfs.c",
     "$sqlite_dst_dir/src/sqlite3.c",
     "$sqlite_dst_dir/src/sqlite3icu.c",
-    "$sqlite_dst_dir/src/querycache.c",
     "$sqlite_dst_dir/include/sqlite3ext.h",
     "$sqlite_dst_dir/include/sqlite3.h",
     "$sqlite_dst_dir/include/sqlite3sym.h",
     "$sqlite_dst_dir/include/sqlite3icu.h",
     "$sqlite_dst_dir/include/sqlite3tokenizer.h",
-    "$sqlite_dst_dir/include/querycache.h",
   ]
 
   args = [
