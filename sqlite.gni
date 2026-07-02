@@ -16,4 +16,5 @@ declare_args() {
   sqlite_feature_enable_pgo = false
   sqlite_feature_pgo_path = ""
   sqlite_enable_fdsan = true
+  sqlite_feature_query_cache = true
 }

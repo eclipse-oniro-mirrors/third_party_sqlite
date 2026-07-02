@@ -176,6 +176,14 @@ ohos_shared_library("sqlite") {
   }
   if (sqlite_support_check_pages) {
   }
+  if (sqlite_feature_query_cache) {
+    sources += [ 
+      "$sqlite_patched_dir/src/querycache.c",
+      ]
+    defines += [ 
+      "SQLITE_QUERY_CACHE",
+      ]
+  }
   cflags_c = [
     "-fvisibility=hidden",
     "-Wno-implicit-fallthrough",
