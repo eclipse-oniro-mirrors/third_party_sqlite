@@ -1,0 +1,4524 @@
+From 946be38e5eeff12f4a73b8447802c08475c23c02 Mon Sep 17 00:00:00 2001
+From: chenwei_1994 <1606056289@qq.com>
+Date: Thu, 2 Jul 2026 14:45:37 +0800
+Subject: [PATCH] Support-hotsql-cache
+
+---
+ include/querycache.h |  339 ++++
+ src/querycache.c     |    3 +
+ src/sqlite3.c        | 4016 ++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 4358 insertions(+)
+ create mode 100644 include/querycache.h
+ create mode 100644 src/querycache.c
+
+diff --git a/include/querycache.h b/include/querycache.h
+new file mode 100644
+index 0000000..1f96423
+--- /dev/null
++++ b/include/querycache.h
+@@ -0,0 +1,339 @@
++#ifndef SQLITE_QUERY_CACHE_H
++#define SQLITE_QUERY_CACHE_H
++
++#include <pthread.h>
++#include <sys/stat.h>
++#include <sys/file.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <errno.h>
++#include <sys/mman.h>
++#include <sys/prctl.h>
++#include <string.h>
++#include <fcntl.h>
++#include <limits.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++typedef struct sqlite3_mutex sqlite3_mutex;
++/*
++** Useful datatype
++*/
++#ifndef UINT32_TYPE
++# ifdef HAVE_UINT32_T
++#  define UINT32_TYPE uint32_t
++# else
++#  define UINT32_TYPE unsigned int
++# endif
++#endif
++#ifndef UINT16_TYPE
++# ifdef HAVE_UINT16_T
++#  define UINT16_TYPE uint16_t
++# else
++#  define UINT16_TYPE unsigned short int
++# endif
++#endif
++#ifndef INT16_TYPE
++# ifdef HAVE_INT16_T
++#  define INT16_TYPE int16_t
++# else
++#  define INT16_TYPE short int
++# endif
++#endif
++#ifndef UINT8_TYPE
++# ifdef HAVE_UINT8_T
++#  define UINT8_TYPE uint8_t
++# else
++#  define UINT8_TYPE unsigned char
++# endif
++#endif
++#ifndef INT8_TYPE
++# ifdef HAVE_INT8_T
++#  define INT8_TYPE int8_t
++# else
++#  define INT8_TYPE signed char
++# endif
++#endif
++#ifndef LONGDOUBLE_TYPE
++# define LONGDOUBLE_TYPE long double
++#endif
++#ifdef SQLITE_INT64_TYPE
++  typedef SQLITE_INT64_TYPE sqlite_int64;
++# ifdef SQLITE_UINT64_TYPE
++    typedef SQLITE_UINT64_TYPE sqlite_uint64;
++# else
++    typedef unsigned SQLITE_INT64_TYPE sqlite_uint64;
++# endif
++#elif defined(_MSC_VER) || defined(__BORLANDC__)
++  typedef __int64 sqlite_int64;
++  typedef unsigned __int64 sqlite_uint64;
++#else
++  typedef long long int sqlite_int64;
++  typedef unsigned long long int sqlite_uint64;
++#endif
++typedef sqlite_int64 sqlite3_int64;
++typedef sqlite_uint64 sqlite3_uint64;
++typedef sqlite_int64 i64;          /* 8-byte signed integer */
++typedef sqlite_uint64 u64;         /* 8-byte unsigned integer */
++typedef UINT32_TYPE u32;           /* 4-byte unsigned integer */
++typedef UINT16_TYPE u16;           /* 2-byte unsigned integer */
++typedef INT16_TYPE i16;            /* 2-byte signed integer */
++typedef UINT8_TYPE u8;             /* 1-byte unsigned integer */
++typedef INT8_TYPE i8;              /* 1-byte signed integer */
++
++/* Default cache file size: 1MB */
++#define DEFAULT_CACHE_FILE_SIZE (1 * 1024 * 1024u)
++#define HOT_CACHE_BUFFER_SIZE (DEFAULT_CACHE_FILE_SIZE / 2)
++
++/* Add 'u' suffix to ensure unsigned constants */
++#define SHARED_BLOCK_PAGE_MAGIC 0x8B8B8B8B8B8B8B8BULL
++#define SHARED_BLOCK_PAGE_VERSION 0x100u
++#define SHARED_BLOCK_PAGE_INVALID_SLOTID 0xFFFFu
++#define SHARED_BLOCK_PAGE_STEP_SIZE (128 * 1024u)
++
++#define QCACHE_HOTSQL_REGISTER "hot_sql_register"
++#define QCACHE_HOTSQL_UNREGISTER "hot_sql_unregister"
++#define QCACHE_HOTSQL_INVALID_TIME "hot_sql_invalid_time"
++#define QCACHE_HOTSQL_CACHE_SIZE "hot_sql_cache_size"
++#define QCACHE_HOTSQL_ENABLE "hot_sql_enable"
++#define QCACHE_HOTSQL_DEBUG "hot_sql_debug"
++#define QCACHE_HOTSQL_INFO "hot_sql_info"
++#define QCACHE_HOTSQL_PREFIX "hot_sql_"
++#define QCACHE_PRAGMA_HOTSQL "pragma hot_sql_"
++#define HOTSQL_DELE_ALL_CODE 0x9
++
++#define QCACHE_FLAGS_IS_CHECKED     0x00000001
++#define QCACHE_FLAGS_IS_HOTSQL      0x00000002
++#define QCACHE_FLAGS_IS_TOOBIG      0x00000004
++
++typedef struct QCacheEntry QCacheEntry;
++typedef struct SBlkPage SBlkPage;
++typedef struct SBlkPgHead SBlkPgHead;
++typedef struct SBlkRowHead SBlkRowHead;
++typedef enum SBlkRowType SBlkRowType;
++typedef enum SBlkRowState SBlkRowState;
++typedef u16 SBlkSlotID;
++typedef u32 SBlkRowAddr;
++
++/*
++** Types of SharedBlockRow
++*/
++enum SBlkRowType {
++    SBLKR_TYPE_SQL = 0, /* Hot SQL statement row */
++    SBLKR_TYPE_DATA,    /* Hot SQL result set data row */
++    SBLKR_TYPE_MAX
++};
++
++/*
++** States of SharedBlockRow
++*/
++enum SBlkRowState {
++    SBLKR_STATE_UNINIT = 0, /* Row not initialized */
++    SBLKR_STATE_USED,       /* Row is in use */
++    SBLKR_STATE_DELETE,     /* Row is deleted */
++    SBLKR_STATE_MAX
++};
++
++
++struct QCacheVersion {
++    u32 schemaCookie;  /* Schema version number of main database */
++    u32 changeCounter; /* Change counter in non-WAL mode */
++    u32 walSalt1;      /* WAL mode salt value for data changes */
++    u32 walSalt2;
++};
++typedef struct QCacheVersion QCacheVersion;
++
++/*
++** SharedBlockRowHead structure definition
++*/
++struct SBlkRowHead {
++    SBlkRowState state; /* Row state: used, free, deleted, invalid */
++    SBlkRowType type;   /* Row type: SQL or DATA */
++    u32 len;            /* Total length of this row */
++    QCacheVersion ver;
++};
++
++/*
++** +---------------------------------------------+
++** |  cksum    |  SBlkPgHead |  row1  |   row2   |
++** +-------------------                          +
++** |beginPos                                     |
++** |                    Data area                |
++** |                                             |
++** +                            -----------------+
++** |         endPos|slot2|slot1|    SBlkPgTail   |
++** +---------------------------------------------+
++*/
++struct SBlkPgHead {
++    u64 magic;          /* Magic number to verify page initialization */
++    u32 version;        /* Version number for cache file compatibility */
++    u32 startOffset;    /* Offset to row data start, sizeof(SBlkPgHead) */
++    u32 tailOffset;     /* Offset to page tail (SBlkPgTail) in page */
++    u32 beginPos;       /* Start offset of free space */
++    u32 endPos;         /* End offset of free space */
++    u32 totalSize;      /* Total size including page overhead */
++    u32 freeSize;       /* Available free space */
++    u32 maxRowSize;     /* Maximum row size, rows exceeding this are not stored */
++    SBlkSlotID slotCnt; /* Number of allocated slots */
++    u16 reserve;
++};
++
++/*
++** SharedBlockPage tail structure definition
++*/
++typedef struct SBlkPgTail {
++    u64 magic; /* Magic number to verify page validity */
++} SBlkPgTail;
++
++/*
++** SharedBlockPage structure definition
++*/
++struct SBlkPage {
++    u32 checksum;   /* Checksum for data tampering/damage detection */
++    u32 restoreMode; /* the cache page restore mode, 0-new created, 1-restore from file */
++    SBlkPgHead head;
++};
++
++typedef struct QHashTable QHashTable;
++typedef struct QHashNode QHashNode;
++#define QHASH_BUCKET_SIZE 32u
++#define QHASH_CALC_MAGIC 5381u
++#define QHASH_HIT_LFU_CYCLE (6 * 60 * 60u)
++
++/*
++** QHashNode member definitions
++*/
++struct QHashNode {
++    SBlkSlotID sqlSlotId;
++    SBlkSlotID dataSlotId;
++    u32 hitSqlCnt;
++    u32 hitDataCnt;
++    QHashNode *next;
++};
++
++/*
++** QHashTable structure definition
++*/
++struct QHashTable {
++    int lockFd; /* File lock handle */
++    u32 bucketCnt;
++    u32 maskCode;
++    u32 calcMagic;
++    u32 curMemSize; /* Current accessible page memory size, can dynamically
++                    ** grow until maxMemSize or other shared process's maxMemSize */
++    u32 maxMemSize; /* User-specified (or default) maximum accessible page memory size */
++    QHashNode *bucket[QHASH_BUCKET_SIZE];
++    SBlkPage *page;
++    void *(*malloc)(int);
++    void (*free)(void *);
++    int (*lockPage)(int, u8);
++    void (*unLockPage)(int);
++    SBlkPage *(*expandPage4Free)(void *, u32);
++    int (*compareRow4Free)(SBlkPage *, SBlkSlotID, const char *, u8 *);
++    int (*insertRow4Free)(SBlkPage *, SBlkRowType, QCacheVersion *, u8 *, u32, SBlkSlotID *);
++    int (*deleteRow4Free)(SBlkPage *, SBlkRowType, SBlkSlotID);
++    int (*updateSqlRow4Free)(SBlkPage *, SBlkSlotID, SBlkSlotID);
++    int (*copyRowData4Free)(SBlkPage *, SBlkSlotID, QCacheVersion *, u8 **, u32 *);
++    int (*compressPage4Free)(SBlkPage *, int *);
++};
++
++typedef enum qCacheInitMode {
++    QCACHE_DATA_INIT = 0, /* Fully initialize cache */
++    QCACHE_DATA_RECOVERY, /* Recover cache from historical data */
++    QCACHE_DATA_MAX
++} qCacheInitMode;
++
++/*
++** QCacheEntry structure definition for hot SQL query cache layer
++*/
++struct QCacheEntry {
++    struct timespec ts;      /* Instance startup time */
++    struct stat dbFstat;     /* Database file permissions */
++    QHashTable sql2Data;     /* key: complete SQL query, value: query result set.
++                              ** Set by background thread */
++    u32 ttlCycle;            /* Refresh period for cache hit count (seconds) */
++    u32 qCacheMemSize;       /* Shared memory address space size */
++    u32 cacheFileSize;       /* Cache file size (user-specified or default 1MB) */
++    int inAccessible;
++    int fd;                  /* Cache file handle, opened/closed by background thread */
++    int multiInstFd;
++    u8 isMultiInst;          /* Multiple instances detected on startup */
++    char *QCacheMapFPath; /* Cache file path, created and deleted by main worker */
++    char *QCacheInsFlock; /* Cache instance file path, created and deleted by main worker */
++};
++
++// ==============================================================================================================
++// ------------------------------
++// Row header (fixed length)
++// ------------------------------
++typedef struct __attribute__((packed)) RowHeader {
++    int nCol; /* Number of columns */
++} RowHeader;
++
++// ------------------------------
++// Column header (fixed length)
++// ------------------------------
++typedef struct __attribute__((packed)) ColHeader {
++    int type;  /* SQLITE_INTEGER/TEXT/FLOAT/BLOB/NULL */
++    int bytes; /* Data length */
++} ColHeader;
++
++// ------------------------------
++// Entire contiguous memory block = result set
++// ------------------------------
++typedef struct CacheBuffer {
++    int countRows;
++    int totalRows; /* Total number of rows */
++    int totalSize; /* Total size of buffer */
++    char data[];   /* Flexible array: all rows stored contiguously */
++} CacheBuffer;
++
++/*
++** [CacheBuffer]
++** [Row1][Row2][Row3]...
++** Each row format:
++** RowHeader + [ColHeader + data][ColHeader + data]...
++*/
++// ==============================================================================================================
++// ==============================================================================================================
++typedef struct QCacheMemBlock QCacheMemBlock;
++typedef struct QCacheMemBlockPool QCacheMemBlockPool;
++struct QCacheMemBlock {
++    int isFromPool;         // 1: from pool, 0: from heap. If heap: free when done; if pool: return to pool list
++    int dataLen;            // Data length, fixed value 512
++    QCacheMemBlock *next;   // Next pointer for pool free list (used when isFromPool=1)
++    char data[0];           // Flexible array member for actual data
++};
++
++struct QCacheMemBlockPool {
++    pthread_mutex_t mutex;  // Mutex for thread-safe pool operations
++    int maxCount;           // Maximum number of blocks the pool can manage (e.g., 10)
++    int totalCount;         // Total number of blocks currently allocated from this pool
++    int freeCount;          // Number of free blocks currently available in the pool list
++    QCacheMemBlock *pool;   // Free list of pool-managed memory blocks
++};
++
++// ==============================================================================================================
++
++typedef enum QCacheMsgType QCacheMsgType;
++
++/* Async message types */
++enum QCacheMsgType {
++    QCACHE_MSG_INIT,        /* Start: enable persistent cache */
++    QCACHE_MSG_EXIT,        /* Exit: disable persistent cache */
++    QCACHE_MSG_REG_SQL,     /* Register hot SQL */
++    QCACHE_MSG_UNREG_SQL,   /* Unregister hot SQL */
++    QCACHE_MSG_UPDATE_DATA, /* Update SQL result data */
++    QCACHE_MSG_INVALID_ALL, /* Global change: invalidate all SQL caches */
++    QCACHE_MSG_DELETE_ALL,
++    QCACHE_MSG_DEBUG,
++    QCACHE_MSG_INFO,
++    QCACHE_MSG_INFO_ALL,
++    QCACHE_MSG_BUTTON
++};
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/src/querycache.c b/src/querycache.c
+new file mode 100644
+index 0000000..c68aa55
+--- /dev/null
++++ b/src/querycache.c
+@@ -0,0 +1,3 @@
++#include "querycache.h"
++
++
+diff --git a/src/sqlite3.c b/src/sqlite3.c
+index 08385fc..394e6bd 100644
+--- a/src/sqlite3.c
++++ b/src/sqlite3.c
+@@ -16070,6 +16070,12 @@ SQLITE_PRIVATE   void sqlite3PagerRefdump(Pager*);
+ SQLITE_PRIVATE int sqlite3PagerWalSystemErrno(Pager*);
+ #endif
+ 
++#ifdef SQLITE_QUERY_CACHE
++// #define SQLITE_QUERY_CACHE_DEBUG 1
++int sqlite3PagerGetWalSalt(Pager *pPager, u32 *salt1, u32 *salt2);
++int sqlite3PagerGetChangeCounter(Pager *pPager, u32 *changeCounter);
++#endif /* SQLITE_QUERY_CACHE */
++
+ #endif /* SQLITE_PAGER_H */
+ 
+ /************** End of pager.h ***********************************************/
+@@ -17918,6 +17924,9 @@ SQLITE_PRIVATE char *sqlite3BinlogGetNthColForSearch(sqlite3 *db, const Table *p
+ /************** Binlog typedef in sqlite3 END ************************************/
+ #endif
+ 
++#ifdef SQLITE_QUERY_CACHE
++#include "querycache.h"
++#endif /* SQLITE_QUERY_CACHE */
+ /*
+ ** Each database connection is an instance of the following structure.
+ */
+@@ -18074,6 +18083,9 @@ struct sqlite3 {
+ #ifdef SQLITE_ENABLE_BINLOG
+   Sqlite3BinlogHandle xBinlogHandle;
+ #endif
++#ifdef SQLITE_QUERY_CACHE
++  struct timespec startTime;
++#endif /* SQLITE_QUERY_CACHE */
+ };
+ 
+ /*
+@@ -23977,6 +23989,12 @@ struct Vdbe {
+   sqlite3_uint64 nDataTmp;        /* Size of pDataTmp */
+ /* end of binlog related field */
+ #endif
++#ifdef SQLITE_QUERY_CACHE
++  u8 *pCacheWriteBuf;
++  u8 *pCacheReadBuf;
++  int cacheReadPos;
++  int cacheFlags;
++#endif /* SQLITE_QUERY_CACHE */
+ };
+ 
+ /*
+@@ -24033,6 +24051,3535 @@ struct ValueList {
+ SQLITE_PRIVATE const u8 sqlite3SmallTypeSizes[];
+ #endif
+ 
++/* fuction for hot sql cache begin */
++#ifdef SQLITE_QUERY_CACHE
++int sqlite3QCacheGetWALSalt(sqlite3 *db, u32 *salt1, u32 *salt2);
++int sqlite3QCacheGetSchemaCookie(sqlite3 *db, u32 *schemaCookie);
++int sqlite3QCacheGetChangeCounter(sqlite3 *db, u32 *chgCounter);
++/* Cache file path suffix */
++#define CACHE_FILE_SUFFIX ".qcache"
++#define QCACHE_HOTSQL_PREFIX_1 "select"
++#define QCACHE_HOTSQL_PREFIX_1_LEN 6u
++#define QCACHE_HOTSQL_PREFIX_2 "with"
++#define QCACHE_HOTSQL_PREFIX_2_LEN 4u
++#define QCACHE_PAGE_WLOCK 1u
++#define QCACHE_PAGE_RLOCK 0u
++#define QCACHE_ALIGN_UP_TO_4KB_BYTES(kb_value) ((((kb_value) + 3) & ~3) << 10)
++#define QCACHE_DEBUG_BUFFER_2MB (2 * 1024 * 1024)
++#define QCACHE_INSTANCE_LOCK_SUFFIX ".lock"
++#define QCACHE_DEBUG_PRINT_LEN (700)
++#define QCACHE_SQLSTR_POOL_MAX (10u)
++#define QCACHE_SQLSTR_MEM_SIZE (512u)
++#define QCACHE_CONTAINER_OF(ptr, type, member) ((type*)((unsigned char*)(ptr) - offsetof(type, member)))
++#define QCACHE_GET_MEMBLOCK_FROM_DATA(data_ptr) QCACHE_CONTAINER_OF(data_ptr, QCacheMemBlock, data)
++#define QCACHE_MEMBLOCK_2_DATA(block_ptr) (((block_ptr)->data))
++
++static QCacheMemBlockPool g_QCacheMemPool = {0};
++static QCacheMemBlockPool *qCacheGetMemBlockPool(void)
++{
++    return &g_QCacheMemPool;
++}
++
++static QCacheMemBlock *qCacheCreateMemBlock(size_t size)
++{
++    size_t headLen = sizeof(QCacheMemBlock);
++    size_t dataLen = (size <= QCACHE_SQLSTR_MEM_SIZE) ? QCACHE_SQLSTR_MEM_SIZE : size;
++    QCacheMemBlock *block = (QCacheMemBlock*)sqlite3_malloc(headLen + dataLen);
++    if (block == NULL) {
++        return NULL;
++    }
++
++    block->isFromPool = 0;
++    block->dataLen = dataLen;
++    block->next = NULL;
++    memset(block->data, 0, block->dataLen);
++
++    return block;
++}
++
++int qCacheInitMemBlockPool(int maxCount)
++{
++    QCacheMemBlockPool *pool = qCacheGetMemBlockPool();
++    if (pthread_mutex_init(&pool->mutex, NULL) != 0) {
++        sqlite3_log(SQLITE_IOERR, "qCacheInitMemBlockPool, pthread_mutex_init failed, errno %d.", errno);
++        return SQLITE_IOERR;
++    }
++
++    pool->maxCount = maxCount;
++    pool->totalCount = 0;
++    pool->freeCount = 0;
++    pool->pool = NULL;
++
++    return SQLITE_OK;
++}
++
++void qCacheDestroyMemBlockPool(void)
++{
++    QCacheMemBlockPool *pool = qCacheGetMemBlockPool();
++
++    pthread_mutex_lock(&pool->mutex);
++    QCacheMemBlock *curr = pool->pool;
++    while (curr != NULL) {
++        QCacheMemBlock *next = curr->next;
++        sqlite3_free(curr);
++        curr = next;
++    }
++
++    pool->pool = NULL;
++    pool->maxCount = 0;
++    pool->totalCount = 0;
++    pool->freeCount = 0;
++    pthread_mutex_unlock(&pool->mutex);
++    pthread_mutex_destroy(&pool->mutex);
++}
++
++void qCacheRegMemBlockPoolCleanUp(void)
++{
++    atexit(qCacheDestroyMemBlockPool);
++}
++
++QCacheMemBlock *qCacheMemBlockPoolAlloc(size_t size)
++{
++    if (size == 0) {
++        return NULL;
++    }
++
++    if (size > QCACHE_SQLSTR_MEM_SIZE) {
++        return qCacheCreateMemBlock(size);
++    }
++
++    QCacheMemBlock *block = NULL;
++    QCacheMemBlockPool *pool = qCacheGetMemBlockPool();
++    pthread_mutex_lock(&pool->mutex);
++    if (pool->pool) {
++        block = pool->pool;
++        pool->pool = block->next;
++        pool->freeCount--;
++    } else {
++        block = qCacheCreateMemBlock(size);
++        if (block) {
++            if (pool->totalCount < pool->maxCount) {
++                block->isFromPool = 1;
++                pool->totalCount++;
++            } else {
++                block->isFromPool = 0;
++            }
++        }
++    }
++    pthread_mutex_unlock(&pool->mutex);
++
++    if (block == NULL) {
++        sqlite3_log(SQLITE_NOMEM, "qCacheMemBlockPoolAlloc, create mem block, errno %d.", errno);
++        return NULL;
++    }
++
++    if (block->isFromPool) {
++        block->next = NULL;
++        memset(block->data, 0, block->dataLen);
++    }
++
++    return block;
++}
++
++char *qCacheMemBlockPoolAllocMem(size_t allocSize)
++{
++    QCacheMemBlock *memBlock = qCacheMemBlockPoolAlloc(allocSize);
++    if (!memBlock) {
++        sqlite3_log(SQLITE_NOMEM, "qCacheMemBlockPoolAllocMem(): qCacheMemBlockPoolAlloc.");
++        return NULL;
++    }
++
++    return QCACHE_MEMBLOCK_2_DATA(memBlock);
++}
++
++void qCacheMemBlockPoolFree(QCacheMemBlock *block)
++{
++    if (block == NULL) {
++        return;
++    }
++
++    if (!block->isFromPool) {
++        sqlite3_free(block);
++        return;
++    }
++
++    QCacheMemBlockPool *pool = qCacheGetMemBlockPool();
++    pthread_mutex_lock(&pool->mutex);
++    block->next = pool->pool;
++    pool->pool = block;
++    pool->freeCount++;
++    pthread_mutex_unlock(&pool->mutex);
++}
++
++void qCacheMemBlockPoolFreeMem(char *ptr)
++{
++    QCacheMemBlock *block = QCACHE_GET_MEMBLOCK_FROM_DATA(ptr);
++    qCacheMemBlockPoolFree(block);
++}
++
++static __thread char *g_QCacheDebugBuffer = NULL;
++
++void qCacheDebugAppend(const char *fmt, ...)
++{
++    if (!g_QCacheDebugBuffer) {
++        char *tmpBuf = sqlite3_malloc(QCACHE_DEBUG_BUFFER_2MB);
++        if (!tmpBuf) {
++            return;
++        }
++        tmpBuf[0] = '\0';
++        g_QCacheDebugBuffer = tmpBuf;
++    }
++
++    int usedLen = (int)strlen(g_QCacheDebugBuffer);
++    int freeLen = (int)QCACHE_DEBUG_BUFFER_2MB - usedLen - 1;
++    if (freeLen <= 0) {
++        return;
++    }
++
++    va_list ap;
++    va_start(ap, fmt);
++    vsnprintf(g_QCacheDebugBuffer + usedLen, freeLen + 1, fmt, ap);
++    va_end(ap);
++}
++
++void qCacheDebugPrint(void)
++{
++    if (!g_QCacheDebugBuffer || g_QCacheDebugBuffer[0] == '\0') {
++        return;
++    }
++
++    const int chunkSize = QCACHE_DEBUG_PRINT_LEN - 1;
++    char printBuf[QCACHE_DEBUG_PRINT_LEN] = {0};
++    char *p = g_QCacheDebugBuffer;
++
++    while (*p) {
++        int len = strlen(p);
++        int printLen = len < chunkSize ? len : chunkSize;
++        memset(printBuf, 0, sizeof(printBuf));
++        memmove(printBuf, p, printLen);
++        sqlite3_log(SQLITE_NOTICE, "%s", printBuf);
++        p += printLen;
++    }
++
++    sqlite3_free(g_QCacheDebugBuffer);
++    g_QCacheDebugBuffer = NULL;
++}
++
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++void qCachePrintFulllog(int errCode, const char *format, ...)
++{
++#define QCACHE_PFULL_MAX 200u
++    if (!format) return;
++
++    va_list args1, args2;
++    va_start(args1, format);
++    va_copy(args2, args1);
++    int len = vsnprintf(NULL, 0, format, args1);
++    va_end(args1);
++
++    if (len < 0) {
++        va_end(args2);
++        return;
++    }
++
++    int allLen = len + 2;
++    char *fullMsg = (char*)sqlite3_malloc(allLen);  // +2 for '\n' and '\0'
++    if (!fullMsg) {
++        va_end(args2);
++        return;
++    }
++    memset(fullMsg, 0, allLen);
++
++    vsnprintf(fullMsg, allLen - 1, format, args2);
++    va_end(args2);
++
++    const int chunkSize = QCACHE_PFULL_MAX - 1;
++    char printBuf[QCACHE_PFULL_MAX] = {0};
++    char *p = fullMsg;
++    while (*p) {
++        int len = strlen(p);
++        int printLen = len < chunkSize ? len : chunkSize;
++        memset(printBuf, 0, sizeof(printBuf));
++        memmove(printBuf, p, printLen);
++        if (printLen < chunkSize) {
++            sqlite3_log(SQLITE_ERROR, "%s\n", printBuf);
++        } else {
++            sqlite3_log(SQLITE_ERROR, "%s", printBuf);
++        }
++        p += printLen;
++    }
++
++    sqlite3_free(fullMsg);
++}
++#endif // SQLITE_QUERY_CACHE_DEBUG
++
++static int getCacheFileSize(const char *cacheFilePath, u32 *fileSize)
++{
++    if (!cacheFilePath) {
++        return SQLITE_MISUSE;
++    }
++
++    struct stat st;
++    int ret = stat(cacheFilePath, &st);
++    if (ret != 0) {
++        sqlite3_log(SQLITE_IOERR, "stat error(%s)", strerror(errno));
++        return SQLITE_IOERR;
++    }
++
++    *fileSize = (u32)st.st_size;
++    return SQLITE_OK;
++}
++
++static pthread_rwlock_t g_QCacheShmRWlock = PTHREAD_RWLOCK_INITIALIZER;
++int sharePageWRLock(int fd, u8 isWrite)
++{
++    int ret = SQLITE_OK;
++    if (isWrite) {
++        ret = pthread_rwlock_wrlock(&g_QCacheShmRWlock);
++    } else {
++        ret = pthread_rwlock_rdlock(&g_QCacheShmRWlock);
++    }
++    if (ret != 0) {
++        sqlite3_log(SQLITE_IOERR_LOCK, "rwlock %u, error(%s)", isWrite, strerror(errno));
++        return SQLITE_IOERR_LOCK;
++    }
++
++    if (isWrite) {
++        ret = flock(fd, LOCK_EX);
++    } else {
++        ret = flock(fd, LOCK_SH);
++    }
++    if (ret != 0) {
++        sqlite3_log(SQLITE_IOERR_LOCK, "flock lock error(%s)", strerror(errno));
++        pthread_rwlock_unlock(&g_QCacheShmRWlock);
++        return SQLITE_IOERR_LOCK;
++    }
++
++    return SQLITE_OK;
++}
++
++void sharePageUnLock(int fd)
++{
++    int ret = flock(fd, LOCK_UN);
++    if (ret != 0) {
++        sqlite3_log(SQLITE_IOERR_UNLOCK, "flock unlock error(%s)", strerror(errno));
++    }
++
++    ret = pthread_rwlock_unlock(&g_QCacheShmRWlock);
++    if (ret != 0) {
++        sqlite3_log(SQLITE_IOERR_UNLOCK, "rwlock unlock error(%s)", strerror(errno));
++    }
++}
++
++int sharePageCheckCrc32(SBlkPage *page)
++{
++    return SQLITE_OK;
++}
++
++void sharePageSetCrc32(SBlkPage *page)
++{}
++
++SBlkRowAddr sharePageGetRowAddrById(SBlkPage *page, SBlkSlotID slotId)
++{
++    return *((SBlkRowAddr *)((u8 *)page + page->head.tailOffset - (slotId + 1) * sizeof(SBlkRowAddr)));
++}
++
++u8 *sharePageRowGetPayload(SBlkRowHead *rowHead)
++{
++    return ((u8 *)rowHead + sizeof(SBlkRowHead));
++}
++
++u32 sharePageRowGetPayloadLen(SBlkRowHead *rowHead)
++{
++    return (rowHead->len - sizeof(SBlkRowHead));
++}
++
++u32 sharePageGetTotalSize(SBlkPage *page)
++{
++    return page->head.totalSize;
++}
++
++SBlkSlotID sharePageGetSqlDataSlotID(SBlkRowHead *sqlRowHead)
++{
++    if (sqlRowHead->type != SBLKR_TYPE_SQL) {
++        return SHARED_BLOCK_PAGE_INVALID_SLOTID;
++    }
++
++    u8 *start = (u8 *)sqlRowHead;
++    return *((SBlkSlotID *)(start + sqlRowHead->len - sizeof(SBlkSlotID)));
++}
++
++void sharePageSetSqlDataSlotID(SBlkRowHead *sqlRowHead, SBlkSlotID dataSlotId)
++{
++    if (sqlRowHead->type != SBLKR_TYPE_SQL) {
++        return;
++    }
++
++    u8 *start = (u8 *)sqlRowHead;
++    SBlkSlotID *targetSlotId = (SBlkSlotID *)(start + sqlRowHead->len - sizeof(SBlkSlotID));
++    *targetSlotId = dataSlotId;
++}
++
++/*
++** +---------------------------------------------+
++** |  cksum    |  SBlkPgHead |  row1  |   row2   |
++** +-------------------                          +
++** |beginPos                                     |
++** |                    Data Region              |
++** |                                             |
++** +                            -----------------+
++** |         endPos|slot2|slot1|    SBlkPgTail   |
++** +---------------------------------------------+
++*/
++int sharePageInit(u8 *shmMem, u32 totalSize, u32 maxRowSize, SBlkPage **newPage)
++{
++    if (shmMem == NULL || totalSize <= sizeof(SBlkPage) + sizeof(SBlkPgTail)) {
++        /* Invalid parameter: total size must be larger than page struct size */
++        sqlite3_log(SQLITE_MISUSE, "invalid totalSize %u.", totalSize);
++        return SQLITE_MISUSE;
++    }
++
++    memset(shmMem, 0, totalSize);
++    SBlkPage *page = (SBlkPage *)shmMem;
++    SBlkPgHead *pg_head = &page->head;
++    pg_head->magic = SHARED_BLOCK_PAGE_MAGIC; /* Magic number for valid page */
++    pg_head->version = SHARED_BLOCK_PAGE_VERSION;
++    pg_head->startOffset = sizeof(SBlkPage);              /* Start offset of row data */
++    pg_head->tailOffset = totalSize - sizeof(SBlkPgTail); /* Page tail offset */
++    pg_head->beginPos = sizeof(SBlkPage);
++    pg_head->endPos = pg_head->tailOffset;
++    pg_head->totalSize = totalSize; /* Total size from input */
++    pg_head->freeSize = totalSize - sizeof(SBlkPage) - sizeof(SBlkPgTail);
++    pg_head->maxRowSize = maxRowSize;
++    pg_head->slotCnt = 0u; /* No slots used */
++
++    SBlkPgTail *pg_tail = (SBlkPgTail *)((u8 *)page + pg_head->tailOffset);
++    pg_tail->magic = SHARED_BLOCK_PAGE_MAGIC;
++    sharePageSetCrc32(page);
++    *newPage = page;
++    return SQLITE_OK;
++}
++
++int sharePageMakeUpSlotMap(SBlkPage *page, SBlkSlotID *slot_remap, SBlkSlotID *valid_slot_count)
++{
++    SBlkPgHead *pg_head = &page->head;
++    SBlkSlotID scanned = 0;
++    SBlkSlotID new_slot_counter = 0;
++    u32 current_scan_off = pg_head->startOffset;
++
++    while (current_scan_off < pg_head->endPos && scanned < pg_head->slotCnt) {
++        SBlkRowHead *row = (SBlkRowHead *)((u8 *)page + current_scan_off);
++        if (row->len <= sizeof(SBlkRowHead) || row->len > pg_head->maxRowSize) {
++            sqlite3_log(SQLITE_CORRUPT, "sharePageCompress4Free(): invalid row len %u", row->len);
++            return SQLITE_CORRUPT;
++        }
++
++        if (row->state == SBLKR_STATE_USED) {
++            slot_remap[scanned] = new_slot_counter;
++            new_slot_counter++;
++        }
++
++        scanned++;
++        current_scan_off += row->len;
++    }
++
++    *valid_slot_count = new_slot_counter;
++    return SQLITE_OK;
++}
++
++void sharePageUpdateSQLdataSlot(SBlkPage *page, SBlkRowHead *row, SBlkSlotID *slot_remap, SBlkSlotID valid_slots)
++{
++    if (row->state != SBLKR_STATE_USED || row->type != SBLKR_TYPE_SQL) {
++        return;
++    }
++
++    SBlkSlotID old_slot = sharePageGetSqlDataSlotID(row);
++    if (old_slot == SHARED_BLOCK_PAGE_INVALID_SLOTID) {
++        return;
++    }
++
++    SBlkPgHead *pg_head = &page->head;
++    if (old_slot < pg_head->slotCnt) {
++        SBlkSlotID new_slot = slot_remap[old_slot];
++        if (new_slot != SHARED_BLOCK_PAGE_INVALID_SLOTID) {
++            sharePageSetSqlDataSlotID(row, new_slot);
++        } else {
++            sqlite3_log(SQLITE_WARNING, "sharePageCompress4Free(): SQL row slot %u points to deleted data slot %u",
++                valid_slots, old_slot);
++            sharePageSetSqlDataSlotID(row, new_slot);
++        }
++    } else {
++        sqlite3_log(SQLITE_WARNING, "sharePageCompress4Free(): invalid slot number %u", old_slot);
++        sharePageSetSqlDataSlotID(row, SHARED_BLOCK_PAGE_INVALID_SLOTID);
++    }
++}
++
++/*
++** Compact the page to free up space. Defragment and move only valid rows
++** to the beginning of the data area, and rebuild the slot index at the end.
++** Return SQLITE_OK on success, or SQLITE_MISMATCH if corruption is detected.
++*/
++int sharePageCompress4Free(SBlkPage *page, int *toRebuild)
++{
++    *toRebuild = 0;
++    SBlkPgHead *pg_head = &page->head;
++    if (pg_head->slotCnt == 0) {
++        pg_head->freeSize = pg_head->endPos - pg_head->beginPos;
++        return SQLITE_OK;
++    }
++
++    u32 allocMapSize = pg_head->slotCnt * sizeof(SBlkSlotID);
++    SBlkSlotID *slot_remap = (SBlkSlotID *)sqlite3_malloc(allocMapSize);
++    if (!slot_remap) {
++        return SQLITE_NOMEM;
++    }
++    memset(slot_remap, 0xFF, allocMapSize);
++
++    SBlkSlotID valid_slot_count = 0;
++    int ret = sharePageMakeUpSlotMap(page, slot_remap, &valid_slot_count);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "sharePageCompress4Free(): sharePageMakeUpSlotMap.");
++        sqlite3_free(slot_remap);
++        return ret;
++    }
++
++    if (valid_slot_count == pg_head->slotCnt) {
++        sqlite3_free(slot_remap);
++        return SQLITE_OK;
++    }
++
++    SBlkSlotID valid_slots = 0;
++    SBlkSlotID scan_slots = 0;
++    u32 write_offset = pg_head->startOffset;
++    u32 current_offset = pg_head->startOffset;
++    while (current_offset < pg_head->endPos && scan_slots < pg_head->slotCnt) {
++        SBlkRowHead *row = (SBlkRowHead *)((u8 *)page + current_offset);
++        if (row->state == SBLKR_STATE_USED) {
++            sharePageUpdateSQLdataSlot(page, row, slot_remap, valid_slots);
++            if (current_offset != write_offset) {
++                memmove((u8 *)page + write_offset, row, row->len);
++                row = (SBlkRowHead *)((u8 *)page + write_offset);
++            }
++
++            u32 slot_addr_offset = pg_head->tailOffset - ((valid_slots + 1) * sizeof(SBlkRowAddr));
++            SBlkRowAddr *row_addr = (SBlkRowAddr *)((u8 *)page + slot_addr_offset);
++            *row_addr = write_offset;
++
++            valid_slots++;
++            write_offset += row->len;
++        }
++
++        scan_slots++;
++        current_offset += row->len;
++    }
++    sqlite3_free(slot_remap);
++
++    pg_head->beginPos = write_offset; /* Reset start of data region */
++    pg_head->endPos = pg_head->tailOffset - valid_slots * sizeof(SBlkRowAddr);
++    pg_head->slotCnt = valid_slots;                           /* Number of valid slots */
++    pg_head->freeSize = pg_head->endPos - pg_head->beginPos;
++    if (pg_head->freeSize > 0) {
++        memset((u8 *)page + pg_head->beginPos, 0, pg_head->freeSize);
++    }
++
++    sqlite3_log(SQLITE_OK, "After compressed from %u slots to %u slots, free space=%u", scan_slots, valid_slots,
++        pg_head->freeSize);
++    *toRebuild = 1;
++
++    return SQLITE_OK;
++}
++
++SBlkPage *sharePageExpand4Free(void *mapAddr, u32 newPageSize)
++{
++    SBlkPage *page = (SBlkPage *)mapAddr;
++    SBlkPgHead *pg_head = &page->head;
++    u32 oldEndPos = pg_head->endPos;
++    u32 oldFreeSize = pg_head->freeSize;
++    u32 oldPageSize = pg_head->totalSize;
++    pg_head->tailOffset = newPageSize - sizeof(SBlkPgTail);
++    pg_head->endPos = oldEndPos + (newPageSize - oldPageSize);
++    pg_head->freeSize = oldFreeSize + (newPageSize - oldPageSize);
++    pg_head->totalSize = newPageSize;
++
++    /* Move data from old endPos to the new location to preserve data */
++    u32 dataToMoveSize = oldPageSize - oldEndPos;
++    if (dataToMoveSize > 0) {
++        u8 *src = (u8 *)page + oldEndPos;
++        u8 *dst = (u8 *)page + pg_head->endPos;
++        memmove(dst, src, dataToMoveSize);
++    }
++
++    return page;
++}
++
++u32 sharePageGetRowSize(SBlkRowType type, u32 payloadSize)
++{
++    u32 baseSize = sizeof(SBlkRowHead) + payloadSize;
++    return (type == SBLKR_TYPE_SQL) ? (baseSize + sizeof(SBlkSlotID)) : baseSize;
++}
++
++/*
++** Validate the magic number.
++*/
++static int sharePageCheckMagic(u64 magic)
++{
++    if (magic != SHARED_BLOCK_PAGE_MAGIC) {
++        sqlite3_log(SQLITE_CORRUPT, "sharePageCheckMagic(): invalid magic number.");
++        return SQLITE_CORRUPT;
++    }
++    return SQLITE_OK;
++}
++
++/*
++** Validate all offset fields.
++*/
++static int sharePageHeadCheckOffset(SBlkPgHead *pg_head)
++{
++    /* Validate startOffset */
++    if (pg_head->startOffset != sizeof(SBlkPage)) {
++        sqlite3_log(SQLITE_CORRUPT, "sharePageHeadCheckOffset(): invalid startOffset %u.", pg_head->startOffset);
++        return SQLITE_CORRUPT;
++    }
++
++    /* Validate tailOffset */
++    if (pg_head->tailOffset < sizeof(SBlkPage) || pg_head->tailOffset >= pg_head->totalSize) {
++        sqlite3_log(SQLITE_CORRUPT,
++            "sharePageHeadCheckOffset(): invalid tailOffset %u, totalSize %u.",
++            pg_head->tailOffset,
++            pg_head->totalSize);
++        return SQLITE_CORRUPT;
++    }
++
++    /* Validate beginPos */
++    if (pg_head->beginPos < sizeof(SBlkPage) || pg_head->beginPos > pg_head->tailOffset) {
++        sqlite3_log(SQLITE_CORRUPT,
++            "sharePageHeadCheckOffset(): invalid beginPos %u, tailOffset %u.",
++            pg_head->beginPos,
++            pg_head->tailOffset);
++        return SQLITE_CORRUPT;
++    }
++
++    /* Validate endPos */
++    if (pg_head->endPos < pg_head->beginPos || pg_head->endPos > pg_head->tailOffset) {
++        sqlite3_log(SQLITE_CORRUPT,
++            "sharePageHeadCheckOffset(): invalid endPos %u, beginPos %u, tailOffset %u.",
++            pg_head->endPos,
++            pg_head->beginPos,
++            pg_head->tailOffset);
++        return SQLITE_CORRUPT;
++    }
++
++    return SQLITE_OK;
++}
++
++/*
++** Validate size-related fields.
++*/
++static int sharePageHeadCheckSize(SBlkPgHead *pg_head)
++{
++    /* Validate totalSize */
++    u32 minSize = sizeof(SBlkPage) + sizeof(SBlkPgTail);
++    if (pg_head->totalSize < minSize) {
++        sqlite3_log(
++            SQLITE_CORRUPT, "sharePageHeadCheckSize(): invalid totalSize %u, minSize %u.", pg_head->totalSize, minSize);
++        return SQLITE_CORRUPT;
++    }
++
++    /* Validate freeSize */
++    u32 continueSpace = pg_head->endPos - pg_head->beginPos;
++    if (pg_head->freeSize < continueSpace) {
++        sqlite3_log(
++            SQLITE_CORRUPT, "sharePageHeadCheckSize(): invalid freeSize %u, expect %u.", pg_head->freeSize, continueSpace);
++        return SQLITE_CORRUPT;
++    }
++
++    /* Validate slotCnt */
++    u32 maxSlotCnt = (pg_head->tailOffset - pg_head->startOffset) / sizeof(SBlkRowAddr);
++    if (pg_head->slotCnt > maxSlotCnt) {
++        sqlite3_log(
++            SQLITE_CORRUPT, "sharePageHeadCheckSize(): invalid slotCnt %u, maxSlotCnt %u.", pg_head->slotCnt, maxSlotCnt);
++        return SQLITE_CORRUPT;
++    }
++
++    return SQLITE_OK;
++}
++
++static int sharePageHeadCheckVersion(SBlkPgHead *pg_head)
++{
++    return (pg_head->version == SHARED_BLOCK_PAGE_VERSION) ? SQLITE_OK : SQLITE_MISMATCH;
++}
++
++/*
++** Validate all members of the SBlkPgHead structure.
++**
++** page:    Pointer to the page to validate.
++**
++** Return SQLITE_OK if the page header is valid.
++** Return an error code if corruption or misuse is detected.
++*/
++int sharePageHeadCheck(SBlkPage *page)
++{
++    if (!page) {
++        sqlite3_log(SQLITE_MISUSE, "sharePageHeadCheck(): page is NULL.");
++        return SQLITE_MISUSE;
++    }
++
++    SBlkPgHead *pg_head = &page->head;
++    int ret = sharePageHeadCheckVersion(pg_head);
++    if (ret != SQLITE_OK) {
++        return ret;
++    }
++
++    ret = sharePageHeadCheckOffset(pg_head);
++    if (ret != SQLITE_OK) {
++        return ret;
++    }
++
++    ret = sharePageHeadCheckSize(pg_head);
++    if (ret != SQLITE_OK) {
++        return ret;
++    }
++
++    /* Validate Tail magic */
++    SBlkPgTail *pg_tail = (SBlkPgTail *)((u8 *)page + pg_head->tailOffset);
++    if (sharePageCheckMagic(pg_head->magic) != SQLITE_OK || sharePageCheckMagic(pg_tail->magic) != SQLITE_OK) {
++        return SQLITE_CORRUPT;
++    }
++    return SQLITE_OK;
++}
++
++int sharePageValidCheck(SBlkPage *page)
++{
++    int ret = sharePageCheckCrc32(page);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "sharePageValidCheck(): sharePageCheckCrc32 failed.");
++        return ret;
++    }
++
++    ret = sharePageHeadCheck(page);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "sharePageValidCheck(): sharePageHeadCheck failed.");
++        return ret;
++    }
++
++    return SQLITE_OK;
++}
++
++int sharePageAttach(u8 *shmMem, u32 attachSize, u32 *newPgSize, SBlkPage **page)
++{
++    SBlkPage *attachPage = (SBlkPage *)shmMem;
++    u32 curPgSize = sharePageGetTotalSize(attachPage);
++    if (curPgSize != attachSize) {
++        sqlite3_log(SQLITE_CORRUPT, "sharePageAttach(): page size misMatch.");
++        *newPgSize = curPgSize;
++        return SQLITE_CORRUPT;
++    }
++
++    /* Validate page integrity */
++    int ret = sharePageValidCheck(attachPage);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "sharePageAttach(): sharePageValidCheck failed.");
++        return SQLITE_CORRUPT;
++    }
++
++    attachPage->restoreMode = 1;
++    *page = attachPage;
++    return SQLITE_OK;
++}
++
++int sharePageBasicCheck(SBlkPage *page, SBlkRowType type)
++{
++    if (!page || page->head.magic != SHARED_BLOCK_PAGE_MAGIC) {
++        sqlite3_log(SQLITE_MISUSE, "sharePageBasicCheck(): invalid page.");
++        return SQLITE_MISUSE;
++    }
++
++    if (type < SBLKR_TYPE_SQL || type >= SBLKR_TYPE_MAX) {
++        sqlite3_log(SQLITE_MISUSE, "sharePageBasicCheck(): invalid type %u.", type);
++        return SQLITE_MISUSE;
++    }
++
++    return SQLITE_OK;
++}
++
++int sharePageParamCheck(SBlkPage *page, SBlkRowType type, u8 *payload, u32 payloadSize)
++{
++    int ret = sharePageBasicCheck(page, type);
++    if (ret != SQLITE_OK) {
++        return ret;
++    }
++
++    if (!payload || payloadSize == 0) {
++        return SQLITE_MISUSE;
++    }
++
++    return SQLITE_OK;
++}
++
++/*
++** |     SBlkRowHead    |   payload |   SBlkSlotID  |        // For SBLKR_TYPE_SQL row
++** |     SBlkRowHead    |   payload |                        // For SBLKR_TYPE_DATA row
++*/
++int sharePageInsertRow4Free(
++    SBlkPage *page,
++    SBlkRowType type,
++    QCacheVersion *ver,
++    u8 *payload,
++    u32 payloadSize,
++    SBlkSlotID *newSlotId)
++{
++    int ret = sharePageParamCheck(page, type, payload, payloadSize);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "sharePageParamCheck().");
++        return ret;
++    }
++
++    u32 rowTotalSize = sharePageGetRowSize(type, payloadSize);
++    u32 rowNeedSize = rowTotalSize + sizeof(SBlkRowAddr);
++    SBlkPgHead *pg_head = &page->head;
++
++    if (rowNeedSize > pg_head->maxRowSize) {
++        /* Size check: exceeds single row maximum limit */
++        sqlite3_log(SQLITE_TOOBIG, "sharePageInsertRow4Free(): too big row.");
++        return SQLITE_TOOBIG;
++    }
++
++    if (rowNeedSize > pg_head->freeSize) {
++        /* Space check: insufficient free space on page */
++        sqlite3_log(SQLITE_NOMEM, "sharePageInsertRow4Free(): no enough space, freeSize %u, needSize %u.",
++            pg_head->freeSize, rowNeedSize);
++        return SQLITE_NOMEM;
++    }
++
++    /* Check if contiguous space is available */
++    if ((pg_head->endPos - pg_head->beginPos) < rowNeedSize) {
++        sqlite3_log(SQLITE_NOMEM, "sharePageInsertRow4Free(): no continous space, freeSize %u, needSize %u.",
++            pg_head->freeSize, rowNeedSize);
++        return SQLITE_NOMEM;
++    }
++
++    /* Allocate memory from beginPos */
++    u32 rowOffset = pg_head->beginPos;
++    SBlkRowHead *row = (SBlkRowHead *)((u8 *)page + rowOffset);
++    row->state = SBLKR_STATE_USED; /* Mark row as in use */
++    row->type = type;              /* Set row type */
++    row->len = rowTotalSize;       /* Total length of this row */
++    row->ver = *ver;
++
++    /* Copy payload data */
++    u8 *rowPayload = (u8 *)row + sizeof(SBlkRowHead);
++    memcpy(rowPayload, payload, payloadSize);
++
++    /* For SQL type row: initialize slot ID to invalid */
++    if (type == SBLKR_TYPE_SQL) {
++        SBlkSlotID *slotId = (SBlkSlotID *)(rowPayload + payloadSize);
++        *slotId = SHARED_BLOCK_PAGE_INVALID_SLOTID;
++    }
++
++    /* Assign slot ID for this row */
++    SBlkRowAddr *rowAddr = (SBlkRowAddr *)(((u8 *)page + pg_head->endPos) - sizeof(SBlkRowAddr));
++    *rowAddr = rowOffset;
++    *newSlotId = pg_head->slotCnt;
++
++    /* Update page metadata */
++    pg_head->slotCnt++;
++    pg_head->beginPos += rowTotalSize;
++    pg_head->endPos -= sizeof(SBlkRowAddr);
++    pg_head->freeSize -= rowNeedSize;
++
++    return SQLITE_OK;
++}
++
++int sharePageInsertRow4FreeCrc32(
++    SBlkPage *page,
++    SBlkRowType type,
++    QCacheVersion *ver,
++    u8 *payload,
++    u32 payloadSize,
++    SBlkSlotID *newSlotId)
++{
++    int ret = sharePageInsertRow4Free(page, type, ver, payload, payloadSize, newSlotId);
++    if (ret == SQLITE_OK) {
++        sharePageSetCrc32(page);
++        msync(page, page->head.totalSize, MS_SYNC);
++    }
++
++    return ret;
++}
++
++static inline int sharePageRowBasicCheck(SBlkPage *page, SBlkRowHead *rowHead)
++{
++    if (rowHead->state != SBLKR_STATE_USED || rowHead->type >= SBLKR_TYPE_MAX || rowHead->type < SBLKR_TYPE_SQL ||
++        rowHead->len > page->head.maxRowSize) {
++        return SQLITE_MISUSE;
++    }
++
++    return SQLITE_OK;
++}
++
++/*
++** Find a row by slotId. 4Free: No locking.
++**
++** page:      Shared memory page pointer.
++** slotId:    Slot ID of the row to locate.
++** rowHead:   Output: Pointer to the row header.
++**
++** Return SQLITE_OK on success, error code on failure.
++*/
++int sharePageFindRow4Free(SBlkPage *page, SBlkSlotID slotId, SBlkRowHead **rowHead)
++{
++    SBlkPgHead *pg_head = &page->head;
++    if (slotId >= pg_head->slotCnt) {
++        sqlite3_log(SQLITE_MISUSE, "sharePageFindRow4Free(): invalid slotId %u, maxSlot %u.", slotId, pg_head->slotCnt);
++        return SQLITE_MISUSE;
++    }
++
++    SBlkRowAddr rowOffset = sharePageGetRowAddrById(page, slotId);
++    /* Validate offset (must be within data region) */
++    if (rowOffset < sizeof(SBlkPage) || rowOffset >= pg_head->endPos) {
++        sqlite3_log(SQLITE_MISUSE, "sharePageFindRow4Free(): invalid offset %u.", rowOffset);
++        return SQLITE_MISUSE;
++    }
++
++    SBlkRowHead *foundHead = (SBlkRowHead *)((u8 *)page + rowOffset);
++    int ret = sharePageRowBasicCheck(page, foundHead);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "sharePageFindRow4Free(): invalid row.");
++        *rowHead = foundHead;
++        return ret;
++    }
++    *rowHead = foundHead;
++    return SQLITE_OK;
++}
++
++int sharePageCmpSqlRow4Free(SBlkPage *page, SBlkSlotID slotId, const char *hotSql, u8 *isMatched)
++{
++    *isMatched = 0;
++    SBlkRowHead *rowHead = NULL;
++    int ret = sharePageFindRow4Free(page, slotId, &rowHead);
++    if (ret != SQLITE_OK || rowHead == NULL) {
++        sqlite3_log(ret, "sharePageCmpSqlRow4Free(): invalid row.");
++        return ret;
++    }
++
++    const char *payload = (const char *)sharePageRowGetPayload(rowHead);
++    if (payload != NULL && strcmp(payload, hotSql) == 0) {
++        *isMatched = 1;
++    }
++    return SQLITE_OK;
++}
++
++void sharePageUpdate4DeleteRow(SBlkPage *page, SBlkRowHead *rowHead)
++{
++    SBlkPgHead *page_hd = &page->head;
++    rowHead->state = SBLKR_STATE_DELETE;
++    page_hd->freeSize += (rowHead->len + sizeof(SBlkRowAddr));
++}
++
++u32 sharePageGetFreeSize(SBlkPage *page)
++{
++    return page->head.freeSize;
++}
++
++int sharePageCheckRowVersion(SBlkRowHead *rowHead, QCacheVersion *ver)
++{
++    if (rowHead->ver.schemaCookie != ver->schemaCookie || rowHead->ver.changeCounter != ver->changeCounter ||
++        rowHead->ver.walSalt1 != ver->walSalt1 || rowHead->ver.walSalt2 != ver->walSalt2) {
++        return SQLITE_MISMATCH;
++    }
++
++    return SQLITE_OK;
++}
++
++/*
++** Delete a row of the specified type. The slotId must refer to an SQL row.
++**
++** If type is SBLKR_TYPE_SQL: delete both the SQL row and its result set row.
++** If type is SBLKR_TYPE_DATA: delete only the result set row for the slotId.
++*/
++int sharePageDeleteRow4Free(SBlkPage *page, SBlkRowType type, SBlkSlotID slotId)
++{
++    SBlkRowHead *slotIdRow = NULL;
++    int ret = sharePageFindRow4Free(page, slotId, &slotIdRow);
++    if (ret != SQLITE_OK) {
++        return ret;
++    }
++
++    sharePageUpdate4DeleteRow(page, slotIdRow);
++    if (type == SBLKR_TYPE_DATA) {
++        return SQLITE_OK;
++    }
++
++    /* Delete the Data row if specified */
++    SBlkSlotID dataSlotId = sharePageGetSqlDataSlotID(slotIdRow);
++    if (dataSlotId == SHARED_BLOCK_PAGE_INVALID_SLOTID) {
++        return SQLITE_OK;
++    }
++
++    SBlkRowHead *dataRowHead = NULL;
++    ret = sharePageFindRow4Free(page, dataSlotId, &dataRowHead);
++    if (ret != SQLITE_OK) {
++        return ret;
++    }
++
++    /* Always delete the data row regardless of sql or data type */
++    sharePageUpdate4DeleteRow(page, dataRowHead);
++    return SQLITE_OK;
++}
++
++int sharePageDeleteRow4FreeCrc32(SBlkPage *page, SBlkRowType type, SBlkSlotID slotId)
++{
++    int ret = sharePageDeleteRow4Free(page, type, slotId);
++    sharePageSetCrc32(page);
++    msync(page, page->head.totalSize, MS_SYNC);
++    return ret;
++}
++
++int sharePageSqlRowUpdate4Free(SBlkPage *page, SBlkSlotID sqlRowSlotId, SBlkSlotID dataSlotId)
++{
++    SBlkRowHead *sqlRowHead = NULL;
++    int ret = sharePageFindRow4Free(page, sqlRowSlotId, &sqlRowHead);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "sharePageSqlRowUpdate4Free(): find row.");
++        return ret;
++    }
++
++    if (sqlRowHead->type != SBLKR_TYPE_SQL) {
++        sqlite3_log(SQLITE_MISMATCH, "sharePageSqlRowUpdate4Free(): type misMatch.");
++        return SQLITE_MISMATCH;
++    }
++
++    sharePageSetSqlDataSlotID(sqlRowHead, dataSlotId);
++    return SQLITE_OK;
++}
++
++int sharePageSqlRowUpdate4FreeCrc32(SBlkPage *page, SBlkSlotID sqlRowSlotId, SBlkSlotID dataSlotId)
++{
++    int ret = sharePageSqlRowUpdate4Free(page, sqlRowSlotId, dataSlotId);
++    sharePageSetCrc32(page);
++    msync(page, page->head.totalSize, MS_SYNC);
++    return ret;
++}
++
++int sharePageCopyRowData4Free(SBlkPage *page, SBlkSlotID dataSlotId, QCacheVersion *ver, u8 **dstBuf, u32 *dstBufLen)
++{
++    SBlkRowHead *dataRowHead = NULL;
++    int ret = sharePageFindRow4Free(page, dataSlotId, &dataRowHead);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "sharePageCopyRowData4Free(): find row.");
++        return ret;
++    }
++
++    ret = sharePageCheckRowVersion(dataRowHead, ver);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "sharePageCopyRowData4Free(): Data cache version too old.");
++        return ret;
++    }
++
++    u32 payloadLen = sharePageRowGetPayloadLen(dataRowHead);
++    u8 *tmpBuf = (u8 *)sqlite3_malloc(payloadLen);
++    if (tmpBuf == NULL) {
++        sqlite3_log(SQLITE_NOMEM, "sharePageCopyRowData4Free(): alloc dst buffer.");
++        return SQLITE_NOMEM;
++    }
++
++    u8 *payload = sharePageRowGetPayload(dataRowHead);
++    memcpy(tmpBuf, payload, payloadLen);
++    *dstBuf = tmpBuf;
++    *dstBufLen = payloadLen;
++    return SQLITE_OK;
++}
++
++int sharePageCopyDataLen4Free(SBlkPage *page, SBlkSlotID dataSlotId, QCacheVersion *ver, u32 *dstBufLen)
++{
++    *dstBufLen = 0;
++    SBlkRowHead *dataRowHead = NULL;
++    int ret = sharePageFindRow4Free(page, dataSlotId, &dataRowHead);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "sharePageCopyDataLen4Free(): find row.");
++        return ret;
++    }
++
++    ret = sharePageCheckRowVersion(dataRowHead, ver);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "sharePageCopyDataLen4Free(): check data row version.");
++        return ret;
++    }
++
++    u32 payloadLen = sharePageRowGetPayloadLen(dataRowHead);
++    *dstBufLen = payloadLen;
++    return SQLITE_OK;
++}
++
++int sharePageGetRawRowLen4Free(SBlkPage *page, SBlkSlotID slotId, u32 *dstBufLen)
++{
++    SBlkRowHead *rowHead = NULL;
++    int ret = sharePageFindRow4Free(page, slotId, &rowHead);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "sharePageGetRawRowLen4Free(): find row.");
++        return ret;
++    }
++
++    *dstBufLen = rowHead->len;
++    return SQLITE_OK;
++}
++
++int sharePageGetRawRowVer4Free(SBlkPage *page, SBlkSlotID slotId, QCacheVersion *dstVer)
++{
++    SBlkRowHead *rowHead = NULL;
++    int ret = sharePageFindRow4Free(page, slotId, &rowHead);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "sharePageGetRawRowVer4Free(): find row.");
++        return ret;
++    }
++
++    *dstVer = rowHead->ver;
++    return SQLITE_OK;
++}
++
++void sharePageDeleteAnyRow4Free(SBlkPage *page)
++{
++    SBlkPgHead *pg_head = &page->head;
++    for (u32 slotId = 0; slotId < pg_head->slotCnt; slotId++) {
++        SBlkRowHead *rowHead = NULL;
++        int ret = sharePageFindRow4Free(page, slotId, &rowHead);
++        if (ret != SQLITE_OK) {
++            continue;
++        }
++
++        sharePageUpdate4DeleteRow(page, rowHead);
++    }
++}
++
++void sharePageDumpInfo4Free(SBlkPage *page)
++{
++    const char *pNew = "New Created";
++    const char *pFile = "File Restored";
++    SBlkPgHead *pg_head = &page->head;
++    qCacheDebugAppend("------Dump page info------\n");
++    qCacheDebugAppend("checksum     : %u\n", page->checksum);
++    if (page->restoreMode) {
++        qCacheDebugAppend("restoreMode  : %s\n", pFile);
++    } else {
++        qCacheDebugAppend("restoreMode  : %s\n", pNew);
++    }
++    qCacheDebugAppend("version      : %d\n", pg_head->version);
++    qCacheDebugAppend("startOffset  : %u\n", pg_head->startOffset);
++    qCacheDebugAppend("tailOffset   : %u\n", pg_head->tailOffset);
++    qCacheDebugAppend("beginPos     : %u\n", pg_head->beginPos);
++    qCacheDebugAppend("endPos       : %u\n", pg_head->endPos);
++    qCacheDebugAppend("totalSize    : %u(B)\n", pg_head->totalSize);
++    qCacheDebugAppend("freeSize     : %u(B)\n", pg_head->freeSize);
++    qCacheDebugAppend("maxRowSize   : %u(B)\n", pg_head->maxRowSize);
++    qCacheDebugAppend("slotCnt      : %u\n", pg_head->slotCnt);
++}
++
++// ================================================================================================================//
++
++static QHashNode *qHashTableGetBucketFirst(QHashTable *hTable, const u32 bucketIdx)
++{
++    return hTable->bucket[bucketIdx];
++}
++
++static void qHashTableSetBucketFirst(QHashTable *hTable, u32 bucketIdx, QHashNode *node)
++{
++    if (hTable && bucketIdx < hTable->bucketCnt) {
++        hTable->bucket[bucketIdx] = node;
++    }
++}
++
++void qHashTableInitBasic(QHashTable *hTable, int fd, u32 initMemSize, u32 maxMemSize)
++{
++    hTable->lockFd = fd;
++    hTable->bucketCnt = QHASH_BUCKET_SIZE;
++    hTable->maskCode = QHASH_BUCKET_SIZE - 1;
++    hTable->calcMagic = QHASH_CALC_MAGIC;
++    hTable->curMemSize = initMemSize;
++    hTable->maxMemSize = maxMemSize;
++    hTable->malloc = sqlite3_malloc;
++    hTable->free = sqlite3_free;
++    hTable->lockPage = sharePageWRLock;
++    hTable->unLockPage = sharePageUnLock;
++    hTable->expandPage4Free = sharePageExpand4Free;
++    hTable->compareRow4Free = sharePageCmpSqlRow4Free;
++    hTable->insertRow4Free = sharePageInsertRow4FreeCrc32;
++    hTable->deleteRow4Free = sharePageDeleteRow4FreeCrc32;
++    hTable->updateSqlRow4Free = sharePageSqlRowUpdate4FreeCrc32;
++    hTable->copyRowData4Free = sharePageCopyRowData4Free;
++    hTable->compressPage4Free = sharePageCompress4Free;
++}
++
++/*
++** Initialize the QHashTable structure.
++*/
++int qHashTableInit(QHashTable *hTable, int fd, u32 initMemSize, u32 maxMemSize)
++{
++    memset(hTable, 0, sizeof(QHashTable));
++    u8 *mapAddr = (u8 *)mmap(NULL, initMemSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++    if (mapAddr == MAP_FAILED) {
++        sqlite3_log(SQLITE_CANTOPEN, "qHashTableInit(): mmap failed, %s", strerror(errno));
++        return SQLITE_CANTOPEN;
++    }
++
++    u32 maxRowSize = maxMemSize >> 1;
++    int ret = sharePageInit(mapAddr, initMemSize, maxRowSize, &hTable->page);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableInit(): sharePageInit failed.");
++        munmap(mapAddr, initMemSize);
++        return ret;
++    }
++
++    qHashTableInitBasic(hTable, fd, initMemSize, maxMemSize);
++
++    return SQLITE_OK;
++}
++
++void qHashTableFreeBuckets4Free(QHashTable *hTable)
++{
++    for (u32 i = 0; i < hTable->bucketCnt; i++) {
++        QHashNode **ppNode = &hTable->bucket[i];
++        while (*ppNode != NULL) {
++            QHashNode *pNode = *ppNode;
++            *ppNode = pNode->next;
++            hTable->free(pNode);
++        }
++    }
++}
++
++void qHashTableDestroy4Free(QHashTable *hTable)
++{
++    if (hTable->page) {
++        munmap(hTable->page, hTable->curMemSize);
++        hTable->page = NULL;
++    }
++    qHashTableFreeBuckets4Free(hTable);
++}
++
++int qHashTableAttach4SingleFree(QHashTable *hTable, int fd, u32 attachSize, u32 maxMemSize, u32 *newPageSize)
++{
++    /* Map to shared memory */
++    u8 *mapAddr = (u8 *)mmap(NULL, attachSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++    if (mapAddr == MAP_FAILED) {
++        sqlite3_log(SQLITE_CANTOPEN, "qHashTableAttach4Free(): mmap failed, %s", strerror(errno));
++        return SQLITE_CANTOPEN;
++    }
++
++    int ret = sharePageAttach(mapAddr, attachSize, newPageSize, &hTable->page);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableAttach4Free(): sharePageAttach failed.");
++        munmap(mapAddr, attachSize);
++        hTable->page = NULL;
++        return ret;
++    }
++
++    if (attachSize > maxMemSize) {
++        sqlite3_log(SQLITE_TOOBIG, "qHashTableAttach4Free(): old page too big.");
++        munmap(mapAddr, attachSize);
++        hTable->page = NULL;
++        return SQLITE_TOOBIG;
++    }
++
++    qHashTableInitBasic(hTable, fd, attachSize, maxMemSize);
++    return SQLITE_OK;
++}
++
++int qHashTableAttach4MultiInstFree(QHashTable *hTable, int fd, u32 attachSize, u32 maxMemSize, u32 *newPageSize)
++{
++    /* Map to shared memory */
++    u8 *mapAddr = (u8 *)mmap(NULL, attachSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++    if (mapAddr == MAP_FAILED) {
++        sqlite3_log(SQLITE_CANTOPEN, "qHashTableAttach4MultiInstFree(): mmap failed, %s", strerror(errno));
++        return SQLITE_CANTOPEN;
++    }
++
++    SBlkPage *attachPage = (SBlkPage *)mapAddr;
++    u32 curPgSize = sharePageGetTotalSize(attachPage);
++    if (curPgSize != attachSize) {
++        sqlite3_log(SQLITE_CORRUPT, "qHashTableAttach4MultiInstFree(): page size misMatch.");
++        munmap(mapAddr, attachSize);
++        *newPageSize = curPgSize;
++        return SQLITE_CORRUPT;
++    }
++
++    hTable->page = attachPage;
++    qHashTableInitBasic(hTable, fd, attachSize, maxMemSize);
++    return SQLITE_OK;
++}
++
++int qHashTableAttach4Free(
++    QHashTable *hTable, int fd, u32 attachSize, u32 maxMemSize, u8 isMultiInst, u32 *newPageSize)
++{
++    if (isMultiInst) {
++        return qHashTableAttach4MultiInstFree(hTable, fd, attachSize, maxMemSize, newPageSize);
++    }
++
++    return qHashTableAttach4SingleFree(hTable, fd, attachSize, maxMemSize, newPageSize);
++}
++
++static u32 qHashTableStr2BucketId(QHashTable *hTable, const char *str)
++{
++    u32 c;
++    u32 hash = hTable->calcMagic;
++    while ((c = *str++)) {
++        hash = ((hash << 5) + hash) + c;
++    }
++
++    return hash & hTable->maskCode;
++}
++
++int qHashTableInsert4Free(QHashTable *hTable, u32 bucketIdx, SBlkSlotID newSlotId)
++{
++    QHashNode *newNode = hTable->malloc(sizeof(QHashNode));
++    if (newNode == NULL) {
++        sqlite3_log(SQLITE_NOMEM, "QCacheInsertSql(): out of memory.");
++        return SQLITE_NOMEM;
++    }
++
++    newNode->sqlSlotId = newSlotId;
++    newNode->dataSlotId = SHARED_BLOCK_PAGE_INVALID_SLOTID;
++    newNode->hitSqlCnt = 0;
++    newNode->hitDataCnt = 0;
++    newNode->next = hTable->bucket[bucketIdx];
++    hTable->bucket[bucketIdx] = newNode;
++
++    return SQLITE_OK;
++}
++
++int qHashTableInsertPair(QHashTable *hTable, u32 bucketIdx, SBlkSlotID sqlSlotId, SBlkSlotID dataSlotId)
++{
++    /* Allocate and initialize a new node */
++    QHashNode *newNode = hTable->malloc(sizeof(QHashNode));
++    if (newNode == NULL) {
++        sqlite3_log(SQLITE_NOMEM, "qHashTableInsertPair(): out of memory.");
++        return SQLITE_NOMEM;
++    }
++
++    newNode->sqlSlotId = sqlSlotId;
++    newNode->dataSlotId = dataSlotId;
++    newNode->hitSqlCnt = 0;
++    newNode->hitDataCnt = 0;
++    newNode->next = hTable->bucket[bucketIdx];
++    hTable->bucket[bucketIdx] = newNode;
++
++    return SQLITE_OK;
++}
++
++int qHashTableDelete4Free(QHashTable *hTable, u32 bucketIdx, QHashNode *toDelete)
++{
++    QHashNode **ppNode = &hTable->bucket[bucketIdx];
++    while (*ppNode != NULL) {
++        QHashNode *pNode = *ppNode;
++        if (pNode == toDelete) {
++            *ppNode = pNode->next;
++            hTable->free(pNode);
++            break;
++        }
++        ppNode = &pNode->next;
++    }
++
++    return SQLITE_OK;
++}
++
++int qHashTableReMmap4Free(QHashTable *hTable)
++{
++    int ret = sharePageHeadCheck(hTable->page);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableReMmap4Free(): check head failed.");
++        return ret;
++    }
++
++    u32 curPgSize = sharePageGetTotalSize(hTable->page);
++    if (hTable->curMemSize == curPgSize) {
++        return SQLITE_OK;
++    }
++
++    // munmap(old_page)
++    munmap(hTable->page, hTable->curMemSize);
++
++    /* Remap to shared memory */
++    u8 *mapAddr = (u8 *)mmap(NULL, curPgSize, PROT_READ | PROT_WRITE, MAP_SHARED, hTable->lockFd, 0);
++    if (mapAddr == MAP_FAILED) {
++        sqlite3_log(SQLITE_CANTOPEN, "qHashTableReMmap4Free(): mmap failed, %s", strerror(errno));
++        hTable->page = NULL;
++        hTable->curMemSize = 0;
++        return SQLITE_CANTOPEN;
++    }
++
++    hTable->page = (SBlkPage *)mapAddr;
++    hTable->curMemSize = curPgSize;
++
++    return SQLITE_OK;
++}
++
++int qHashTableFindSql4Free(QHashTable *hTable, const char *key, u32 bucketIdx, QHashNode **found)
++{
++    int ret = SQLITE_OK;
++    u8 isMatched = 0;
++    QHashNode *prevNode = NULL;
++    QHashNode *node = qHashTableGetBucketFirst(hTable, bucketIdx);
++    while (node) {
++        QHashNode *nextNode = node->next;
++        ret = hTable->compareRow4Free(hTable->page, node->sqlSlotId, key, &isMatched);
++        if (ret != SQLITE_OK) {
++            sqlite3_log(ret, "qHashTableFindSql4Free(): invalid sql row.");
++            hTable->free(node);
++            if (prevNode) {
++                prevNode->next = nextNode;
++            } else {
++                qHashTableSetBucketFirst(hTable, bucketIdx, nextNode);
++            }
++            node = nextNode;
++            ret = SQLITE_OK;
++            continue;
++        }
++
++        if (isMatched) {
++            *found = node;
++            break;
++        }
++        prevNode = node;
++        node = nextNode;
++    }
++
++    return ret;
++}
++
++int qHashTableRebuild4Free(QHashTable *hTable)
++{
++    SBlkPage *page = hTable->page;
++    for (SBlkSlotID slotId = 0; slotId < page->head.slotCnt; slotId++) {
++        SBlkRowHead *rowHead = NULL;
++        int ret = sharePageFindRow4Free(page, slotId, &rowHead);
++        if (rowHead && rowHead->state != SBLKR_STATE_USED) {
++            continue;
++        }
++
++        if (ret != SQLITE_OK) {
++            sqlite3_log(ret, "qHashTableRebuild4Free(): find row %u failed.", slotId);
++            return ret;
++        }
++
++        /* Process only valid SQL rows */
++        if (rowHead->type != SBLKR_TYPE_SQL || rowHead->state != SBLKR_STATE_USED) {
++            continue;
++        }
++
++        /* Retrieve SQL payload */
++        const char *sqlPayload = (const char *)sharePageRowGetPayload(rowHead);
++        u32 bucketIdx = qHashTableStr2BucketId(hTable, sqlPayload);
++
++        /* Get associated data slot ID */
++        SBlkSlotID dataSlotId = SHARED_BLOCK_PAGE_INVALID_SLOTID;
++        dataSlotId = sharePageGetSqlDataSlotID(rowHead);
++        /* Validate the corresponding data slot if present */
++        if (dataSlotId != SHARED_BLOCK_PAGE_INVALID_SLOTID) {
++            SBlkRowHead *dataRowHead = NULL;
++            ret = sharePageFindRow4Free(page, dataSlotId, &dataRowHead);
++            if (ret != SQLITE_OK || dataRowHead->type != SBLKR_TYPE_DATA ||
++                dataRowHead->state != SBLKR_STATE_USED) {
++                sqlite3_log(ret, "qHashTableRebuild4Free(): find row %u failed.", dataSlotId);
++                dataSlotId = SHARED_BLOCK_PAGE_INVALID_SLOTID;
++                sharePageSetSqlDataSlotID(rowHead, dataSlotId);
++            }
++        }
++
++        QHashNode *found = NULL;
++        ret = qHashTableFindSql4Free(hTable, sqlPayload, bucketIdx, &found);
++        if (ret != SQLITE_OK) {
++            sqlite3_log(ret, "qHashTableRebuild4Free(): find node.");
++            return ret;
++        }
++
++        if (found) {
++            /* Duplicate entry exists, remove redundant row */
++            ret = hTable->deleteRow4Free(hTable->page, SBLKR_TYPE_SQL, slotId);
++            if (ret != SQLITE_OK) {
++                sqlite3_log(ret, "qHashTableRebuild4Free(): delete dup row.");
++                return ret;
++            }
++        } else {
++            ret = qHashTableInsertPair(hTable, bucketIdx, slotId, dataSlotId);
++            if (ret != SQLITE_OK) {
++                sqlite3_log(ret, "qHashTableRebuild4Free(): insert safe.");
++                return ret;
++            }
++        }
++    }
++
++    return SQLITE_OK;
++}
++
++int qHashTableReSize4Free(QHashTable *hTable, u32 newTotalSize)
++{
++    void *oldAddr = hTable->page;
++    u32 oldSize = hTable->curMemSize;
++    u32 pageSize = sysconf(_SC_PAGESIZE);
++    u32 alignedNewSize = ((newTotalSize + pageSize - 1) / pageSize) * pageSize;
++
++    /* Remap to larger shared memory region */
++    u8 *newAddr = (u8 *)mremap(oldAddr, oldSize, alignedNewSize, MREMAP_MAYMOVE);
++    if (newAddr == MAP_FAILED) {
++        int savedErrno = errno;
++        sqlite3_log(SQLITE_WARNING, "qHashTableReSize4Free(): mremap failed (errno=%d), trying fallback method",
++            savedErrno);
++        newAddr = mmap(NULL, alignedNewSize, PROT_READ | PROT_WRITE, MAP_SHARED, hTable->lockFd, 0);
++        if (newAddr == MAP_FAILED) {
++            sqlite3_log(SQLITE_CANTOPEN, "qHashTableReSize4Free(): fallback mmap also failed, errno=%d (%s)",
++                savedErrno, strerror(savedErrno));
++            return SQLITE_NOMEM;
++        }
++        memcpy(newAddr, oldAddr, oldSize);
++        memset((u8 *)newAddr + oldSize, 0, alignedNewSize - oldSize);
++        int ret = munmap(oldAddr, oldSize);
++        if (ret != 0) {
++            sqlite3_log(SQLITE_WARNING, "qHashTableReSize4Free(): munmap failed for old mapping.");
++        }
++    } else if (alignedNewSize > oldSize) {
++        memset((u8 *)newAddr + oldSize, 0, alignedNewSize - oldSize);
++    }
++
++    hTable->page = hTable->expandPage4Free(newAddr, newTotalSize);
++    hTable->curMemSize = newTotalSize;
++
++    return SQLITE_OK;
++}
++
++void qHashTableResetHitCount(QHashTable *hTable)
++{
++    int ret = hTable->lockPage(hTable->lockFd, QCACHE_PAGE_RLOCK);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableResetHitCount(): write lock.");
++        return;
++    }
++
++    for (u32 i = 0; i < hTable->bucketCnt; i++) {
++        QHashNode *pNode = hTable->bucket[i];
++        while (pNode != NULL) {
++            pNode->hitSqlCnt = 0;
++            pNode = pNode->next;
++        }
++    }
++
++    hTable->unLockPage(hTable->lockFd);
++}
++
++int qHashTableDeleteAllNodeData(QHashTable *hTable)
++{
++    int ret = hTable->lockPage(hTable->lockFd, QCACHE_PAGE_WLOCK);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableDeleteAllNodeData(): write lock.");
++        return ret;
++    }
++
++    ret = qHashTableReMmap4Free(hTable);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableDeleteAllNodeData(): qHashTableReMmap4Free.");
++        hTable->unLockPage(hTable->lockFd);
++        return ret;
++    }
++    sharePageDeleteAnyRow4Free(hTable->page);
++    qHashTableFreeBuckets4Free(hTable);
++
++    hTable->unLockPage(hTable->lockFd);
++
++    return SQLITE_OK;
++}
++
++int qHashTableDeleteNodeData(QHashTable *hTable, QHashNode *minHitNode)
++{
++    int ret = SQLITE_OK;
++    for (u32 i = 0; i < hTable->bucketCnt; i++) {
++        QHashNode *pNode = hTable->bucket[i];
++        while (pNode != NULL) {
++            if (pNode->sqlSlotId != minHitNode->sqlSlotId || pNode->dataSlotId != minHitNode->dataSlotId) {
++                pNode = pNode->next;
++                continue;
++            }
++
++            (void)hTable->deleteRow4Free(hTable->page, SBLKR_TYPE_DATA, pNode->dataSlotId);
++            pNode->hitDataCnt = 0;
++            pNode->dataSlotId = SHARED_BLOCK_PAGE_INVALID_SLOTID;
++            ret = hTable->updateSqlRow4Free(hTable->page, pNode->sqlSlotId, pNode->dataSlotId);
++            if (ret != SQLITE_OK) {
++                sqlite3_log(ret, "qHashTableDeleteNodeData(): update sql row.");
++            }
++            return SQLITE_OK;
++        }
++    }
++
++    return ret;
++}
++
++int qHashTableDeleteSql(QHashTable *hTable, const char *hotSql)
++{
++    int ret = hTable->lockPage(hTable->lockFd, QCACHE_PAGE_WLOCK);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableDeleteSql(): write lock.");
++        goto EXIT_RET0;
++    }
++
++    ret = qHashTableReMmap4Free(hTable);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableDeleteSql(): qHashTableReMmap4Free.");
++        goto EXIT_RET1;
++    }
++
++    QHashNode *found = NULL;
++    u32 bucketIdx = qHashTableStr2BucketId(hTable, hotSql);
++    ret = qHashTableFindSql4Free(hTable, hotSql, bucketIdx, &found);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableDeleteSql(): find node.");
++        goto EXIT_RET1;
++    }
++
++    if (!found) {
++        sqlite3_log(SQLITE_OK, "qHashTableDeleteSql(): sql not exist, %s.", hotSql);
++        goto EXIT_RET1;
++    }
++
++    ret = hTable->deleteRow4Free(hTable->page, SBLKR_TYPE_SQL, found->sqlSlotId);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableDeleteSql(): delete sql row.");
++        goto EXIT_RET1;
++    }
++
++    ret = qHashTableDelete4Free(hTable, bucketIdx, found);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableDeleteSql(): delete hashNode.");
++        goto EXIT_RET1;
++    }
++
++EXIT_RET1:
++    hTable->unLockPage(hTable->lockFd);
++EXIT_RET0:
++    return ret;
++}
++
++int qHashTableCalcExpandSize(SBlkPage *page, u32 maxMemSize, u32 needSize, u32 *outNewTotalSize)
++{
++    u32 stepSize = SHARED_BLOCK_PAGE_STEP_SIZE;
++    u32 curTotalSize = sharePageGetTotalSize(page);
++    u32 curFreeSize = sharePageGetFreeSize(page);
++    u32 newTotalSize = curTotalSize;
++
++    if (newTotalSize >= maxMemSize) {
++        return SQLITE_NOMEM;
++    }
++
++    while (newTotalSize < maxMemSize) {
++        u32 add = 0;
++
++        if (newTotalSize + stepSize < maxMemSize) {
++            add = stepSize;
++        } else {
++            add = maxMemSize - newTotalSize;
++        }
++
++        newTotalSize += add;
++        curFreeSize += add;
++
++        if (curFreeSize >= needSize) {
++            break;
++        }
++    }
++
++    if (curFreeSize < needSize) {
++        return SQLITE_NOMEM;
++    }
++
++    *outNewTotalSize = newTotalSize;
++    return SQLITE_OK;
++}
++
++int qHashTableCompressRebuild4Free(QHashTable *hTable, int byFast)
++{
++    int needRebuild = 0;
++    int ret = hTable->compressPage4Free(hTable->page, &needRebuild);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableCompressRebuild4Free(): compressPage4Free failed.");
++        return ret;
++    }
++
++    if (byFast && !needRebuild) {
++        return SQLITE_OK;
++    }
++
++    qHashTableFreeBuckets4Free(hTable);
++    return qHashTableRebuild4Free(hTable);
++}
++
++/*
++** Insert a row into the QHashTable page.
++** Attempt direct insertion first; if out of memory, expand the page and retry.
++**
++** hTable:     Hash table handle.
++** type:       Row type (SQL or data).
++** data:       Payload data to insert.
++** dataLen:    Length of payload data.
++** newSlotId:  Output: Assigned slot ID for the new row.
++**
++** Return SQLITE_OK on success, error code otherwise.
++*/
++int qHashTableInsertRow4Free(
++    QHashTable *hTable,
++    SBlkRowType type,
++    QCacheVersion *ver,
++    u8 *data,
++    u32 dataLen,
++    SBlkSlotID *newSlotId)
++{
++    /* Attempt direct row insertion first */
++    int ret = hTable->insertRow4Free(hTable->page, type, ver, data, dataLen, newSlotId);
++    if (ret == SQLITE_OK) {
++        return SQLITE_OK;
++    }
++
++    /* Return error if not out-of-memory */
++    if (ret != SQLITE_NOMEM) {
++        sqlite3_log(ret, "qHashTableInsertRow4Free(): insert row.");
++        return ret;
++    }
++
++    /* Calculate new expanded size */
++    u32 newTotalSize = 0;
++    u32 needSize = sharePageGetRowSize(type, dataLen);
++    ret = qHashTableCalcExpandSize(hTable->page, hTable->maxMemSize, needSize, &newTotalSize);
++    if (ret == SQLITE_OK) {
++        ret = qHashTableReSize4Free(hTable, newTotalSize);
++        if (ret != SQLITE_OK) {
++            sqlite3_log(ret, "qHashTableInsertRow4Free(): qHashTableReSize4Free failed.");
++            return ret;
++        }
++        return hTable->insertRow4Free(hTable->page, type, ver, data, dataLen, newSlotId);
++    }
++
++    ret = qHashTableCompressRebuild4Free(hTable, 1);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableInsertRow4Free(): qHashTableCompressRebuild4Free failed.");
++        return ret;
++    }
++
++    return hTable->insertRow4Free(hTable->page, type, ver, data, dataLen, newSlotId);
++}
++
++int qHashTableInsertSql(QHashTable *hTable, const char *hotSql)
++{
++    int ret = hTable->lockPage(hTable->lockFd, QCACHE_PAGE_WLOCK);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableInsertSql(): write lock.");
++        goto EXIT_RET0;
++    }
++
++    ret = qHashTableReMmap4Free(hTable);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableInsertSql(): qHashTableReMmap4Free.");
++        goto EXIT_RET1;
++    }
++
++    QHashNode *found = NULL;
++    u32 bucketIdx = qHashTableStr2BucketId(hTable, hotSql);
++    ret = qHashTableFindSql4Free(hTable, hotSql, bucketIdx, &found);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableInsertSql(): find node.");
++        goto EXIT_RET1;
++    }
++
++    if (found) {
++        sqlite3_log(SQLITE_OK, "qHashTableInsertSql(): sql exist, %s.", hotSql);
++        goto EXIT_RET1;
++    }
++
++    QCacheVersion version = {0};
++    SBlkSlotID newSlotId = SHARED_BLOCK_PAGE_INVALID_SLOTID;
++    ret = qHashTableInsertRow4Free(hTable, SBLKR_TYPE_SQL, &version, (u8 *)hotSql, strlen(hotSql) + 1, &newSlotId);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableInsertSql(): insert sql row.");
++        goto EXIT_RET1;
++    }
++
++    ret = qHashTableInsert4Free(hTable, bucketIdx, newSlotId);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableInsertSql(): insert hashNode.");
++        goto EXIT_RET1;
++    }
++
++EXIT_RET1:
++    hTable->unLockPage(hTable->lockFd);
++EXIT_RET0:
++    return ret;
++}
++
++int qHashTableFindMinHitNode(QHashTable *hTable, QHashNode *target, QHashNode *minNode)
++{
++    QHashNode tmpNode = (QHashNode){0};
++    tmpNode.hitSqlCnt = target->hitSqlCnt;
++    tmpNode.dataSlotId = SHARED_BLOCK_PAGE_INVALID_SLOTID;
++    for (u32 i = 0; i < hTable->bucketCnt; i++) {
++        QHashNode *pNode = hTable->bucket[i];
++        while (pNode != NULL) {
++            if (pNode->dataSlotId == SHARED_BLOCK_PAGE_INVALID_SLOTID || pNode->hitSqlCnt >= tmpNode.hitSqlCnt) {
++                pNode = pNode->next;
++                continue;
++            }
++
++            if (tmpNode.dataSlotId == SHARED_BLOCK_PAGE_INVALID_SLOTID || pNode->hitSqlCnt < tmpNode.hitSqlCnt) {
++                tmpNode = *pNode;
++            }
++            pNode = pNode->next;
++        }
++    }
++
++    if (tmpNode.dataSlotId == SHARED_BLOCK_PAGE_INVALID_SLOTID) {
++        return SQLITE_NOTFOUND;
++    }
++
++    *minNode = tmpNode;
++    return SQLITE_OK;
++}
++
++int qHashTableDropLFU4Free(QHashTable *hTable, QHashNode *found, u32 dataLen)
++{
++    u32 totalFreeSize = sharePageGetFreeSize(hTable->page);
++    u32 rowNeedSize = sharePageGetRowSize(SBLKR_TYPE_DATA, dataLen) + sizeof(SBlkRowAddr);
++    if (totalFreeSize >= rowNeedSize) {
++        return SQLITE_OK;
++    }
++
++    int ret = SQLITE_OK;
++    QHashNode minHitNode = (QHashNode){0};
++    do {
++        ret = qHashTableFindMinHitNode(hTable, found, &minHitNode);
++        if (ret != SQLITE_OK) {
++            sqlite3_log(ret, "qHashTableDropLFU4Free(): find minHitNode.");
++            return ret;
++        }
++
++        ret = qHashTableDeleteNodeData(hTable, &minHitNode);
++        if (ret != SQLITE_OK) {
++            sqlite3_log(ret, "qHashTableDropLFU4Free(): delete data row.");
++            return ret;
++        }
++
++        totalFreeSize = sharePageGetFreeSize(hTable->page);
++    } while (totalFreeSize < rowNeedSize);
++
++    return SQLITE_OK;
++}
++
++int qHashTableUpdateDataStay(QHashTable *hTable, u8 *data, u32 dataLen, QCacheVersion *ver, SBlkSlotID dataSlotId)
++{
++    SBlkRowHead *rowHead = NULL;
++    int ret = sharePageFindRow4Free(hTable->page, dataSlotId, &rowHead);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableUpdateDataStay(): find data row %u.", dataSlotId);
++        return ret;
++    }
++
++    u32 payloadLen = sharePageRowGetPayloadLen(rowHead);
++    if (dataLen > payloadLen) {
++        sqlite3_log(SQLITE_TOOBIG, "qHashTableUpdateDataStay(): current payloadLen %u, new payloadLen %u.", payloadLen,
++            dataLen);
++        return SQLITE_TOOBIG;
++    }
++
++    u8 *rowPayload = sharePageRowGetPayload(rowHead);
++    memset(rowPayload, 0, payloadLen);
++    memcpy(rowPayload, data, dataLen);
++    rowHead->ver = *ver;
++    sqlite3_log(SQLITE_OK, "qHashTableUpdateDataStay(): update data in row %u, old payloadLen %u, new payloadLen %u.",
++        dataSlotId, payloadLen, dataLen);
++
++    return SQLITE_OK;
++}
++
++int qHashTableUpdateSqlData(QHashTable *hTable, const char *hotSql, u8 *data, u32 dataLen, QCacheVersion *ver)
++{
++    int ret = hTable->lockPage(hTable->lockFd, QCACHE_PAGE_WLOCK);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableUpdateSqlData(): write lock.");
++        goto EXIT_RET0;
++    }
++
++    ret = qHashTableReMmap4Free(hTable);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableUpdateSqlData(): qHashTableReMmap4Free.");
++        goto EXIT_RET1;
++    }
++
++    QHashNode *found = NULL;
++    u32 bucketIdx = qHashTableStr2BucketId(hTable, hotSql);
++    ret = qHashTableFindSql4Free(hTable, hotSql, bucketIdx, &found);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableUpdateSqlData(): find node.");
++        goto EXIT_RET1;
++    }
++
++    if (!found) {
++        sqlite3_log(SQLITE_OK, "qHashTableUpdateSqlData(): sql not exist, %s.", hotSql);
++        goto EXIT_RET1;
++    }
++
++    if (found->dataSlotId != SHARED_BLOCK_PAGE_INVALID_SLOTID) {
++        ret = qHashTableUpdateDataStay(hTable, data, dataLen, ver, found->dataSlotId);
++        if (ret == SQLITE_OK) {
++            found->hitDataCnt = 0;
++            goto EXIT_RET1;
++        }
++        (void)hTable->deleteRow4Free(hTable->page, SBLKR_TYPE_DATA, found->dataSlotId);
++        found->hitDataCnt = 0;
++        found->dataSlotId = SHARED_BLOCK_PAGE_INVALID_SLOTID;
++    }
++
++    SBlkSlotID newSlotId = SHARED_BLOCK_PAGE_INVALID_SLOTID;
++    ret = qHashTableInsertRow4Free(hTable, SBLKR_TYPE_DATA, ver, data, dataLen, &newSlotId);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableUpdateSqlData(): insert data row.");
++        /* Check if sufficient space is available.
++         ** If not, evict the least frequently used (LFU) cache entry.
++         ** Return an error if still insufficient space after eviction.
++         */
++        ret = qHashTableDropLFU4Free(hTable, found, dataLen);
++        if (ret != SQLITE_OK) {
++            sqlite3_log(ret, "qHashTableUpdateSqlData(): swap LFU rows.");
++            goto EXIT_RET1;
++        }
++
++        ret = qHashTableInsertRow4Free(hTable, SBLKR_TYPE_DATA, ver, data, dataLen, &newSlotId);
++        if (ret != SQLITE_OK) {
++            sqlite3_log(ret, "qHashTableUpdateSqlData(): insert data row after swap LFU rows.");
++            goto EXIT_RET1;
++        }
++    }
++
++    ret = qHashTableFindSql4Free(hTable, hotSql, bucketIdx, &found);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableUpdateSqlData(): find node after swap LFU rows.");
++        goto EXIT_RET1;
++    }
++
++    ret = hTable->updateSqlRow4Free(hTable->page, found->sqlSlotId, newSlotId);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableUpdateSqlData(): update sql row.");
++        (void)hTable->deleteRow4Free(hTable->page, SBLKR_TYPE_DATA, newSlotId);
++        goto EXIT_RET1;
++    }
++    found->hitDataCnt = 0;
++    found->dataSlotId = newSlotId;
++
++EXIT_RET1:
++    hTable->unLockPage(hTable->lockFd);
++EXIT_RET0:
++    return ret;
++}
++
++int qHashTableIsHotSql(
++    QHashTable *hTable,
++    const char *hotSql,
++    QCacheVersion *ver,
++    u8 *isHot,
++    u8 **dstBuf,
++    u32 *dstBufLen)
++{
++    int ret = hTable->lockPage(hTable->lockFd, QCACHE_PAGE_RLOCK);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableIsHotSql(): read lock.");
++        goto EXIT_RET0;
++    }
++
++    ret = qHashTableReMmap4Free(hTable);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableIsHotSql(): qHashTableReMmap4Free.");
++        goto EXIT_RET1;
++    }
++
++    QHashNode *found = NULL;
++    u32 bucketIdx = qHashTableStr2BucketId(hTable, hotSql);
++    ret = qHashTableFindSql4Free(hTable, hotSql, bucketIdx, &found);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableIsHotSql(): find node.");
++        goto EXIT_RET1;
++    }
++
++    if (!found) {
++        goto EXIT_RET1;
++    }
++
++    *isHot = 1;
++    found->hitSqlCnt++;
++    if (found->dataSlotId == SHARED_BLOCK_PAGE_INVALID_SLOTID) {
++        *dstBufLen = 0;
++        found->hitDataCnt = 0;
++        goto EXIT_RET1;
++    }
++
++    ret = hTable->copyRowData4Free(hTable->page, found->dataSlotId, ver, dstBuf, dstBufLen);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qHashTableIsHotSql(): copy data.");
++        found->hitDataCnt = 0;
++        goto EXIT_RET1;
++    }
++    found->hitDataCnt++;
++
++EXIT_RET1:
++    hTable->unLockPage(hTable->lockFd);
++EXIT_RET0:
++    return ret;
++}
++
++int qHashTableDumpBasic(QHashTable *hTable)
++{
++    qCacheDebugAppend("------Dump Hash Table------\n");
++    qCacheDebugAppend("bucketCnt    : %u\n", hTable->bucketCnt);
++    qCacheDebugAppend("curMemSize   : %u(B)\n", hTable->curMemSize);
++    qCacheDebugAppend("maxMemSize   : %u(B)\n", hTable->maxMemSize);
++    int ret = hTable->lockPage(hTable->lockFd, QCACHE_PAGE_RLOCK);
++    if (ret != SQLITE_OK) {
++        return ret;
++    }
++
++    u32 sqlLen = 0;
++    u32 dataLen = 0;
++    QCacheVersion version = {0};
++    for (u32 i = 0; i < hTable->bucketCnt; i++) {
++        QHashNode *pNode = hTable->bucket[i];
++        while (pNode != NULL) {
++            if (pNode->sqlSlotId != SHARED_BLOCK_PAGE_INVALID_SLOTID) {
++                (void)sharePageGetRawRowLen4Free(hTable->page, pNode->sqlSlotId, &sqlLen);
++            }
++            if (pNode->dataSlotId != SHARED_BLOCK_PAGE_INVALID_SLOTID) {
++                (void)sharePageGetRawRowLen4Free(hTable->page, pNode->dataSlotId, &dataLen);
++                (void)sharePageGetRawRowVer4Free(hTable->page, pNode->dataSlotId, &version);
++            }
++            qCacheDebugAppend("hashNode[%4u, %5u, %10u, %10u][%2u, %5u], hitSqlCnt: %5u, hitDataCnt: %5u,"
++                "hotSqlLen: %6u, hotDataLen: %6u\n",
++                version.schemaCookie,
++                version.changeCounter,
++                version.walSalt1,
++                version.walSalt2,
++                pNode->sqlSlotId,
++                pNode->dataSlotId,
++                pNode->hitSqlCnt,
++                pNode->hitDataCnt,
++                sqlLen,
++                dataLen);
++            sqlLen = 0;
++            dataLen = 0;
++            pNode = pNode->next;
++        }
++    }
++
++    sharePageDumpInfo4Free(hTable->page);
++    hTable->unLockPage(hTable->lockFd);
++
++    return SQLITE_OK;
++}
++
++int qHashTableDumpSQL(QHashTable *hTable)
++{
++    qCacheDebugAppend("curMemSize   : %u(B)\n", hTable->curMemSize);
++    qCacheDebugAppend("maxMemSize   : %u(B)\n", hTable->maxMemSize);
++    int ret = hTable->lockPage(hTable->lockFd, QCACHE_PAGE_RLOCK);
++    if (ret != SQLITE_OK) {
++        return ret;
++    }
++
++    for (u32 i = 0; i < hTable->bucketCnt; i++) {
++        QHashNode *pNode = hTable->bucket[i];
++        while (pNode != NULL) {
++            SBlkRowHead *rowHead = NULL;
++            ret = sharePageFindRow4Free(hTable->page, pNode->sqlSlotId, &rowHead);
++            if (ret != SQLITE_OK) {
++                sqlite3_log(ret, "qHashTableDumpSQL: find sql row.");
++                pNode = pNode->next;
++                continue;
++            }
++            if (rowHead->type != SBLKR_TYPE_SQL) {
++                sqlite3_log(ret, "qHashTableDumpSQL: invalid sql row type.");
++                pNode = pNode->next;
++                continue;
++            }
++            const char *sqlPayload = (const char *)sharePageRowGetPayload(rowHead);
++            qCacheDebugAppend("\n");
++            qCacheDebugAppend("hotSql[%u] hotSqlStr : %s\n", pNode->sqlSlotId, sqlPayload);
++            qCacheDebugAppend("hotSql[%u] hitSqlCnt : %u\n", pNode->sqlSlotId, pNode->hitSqlCnt);
++            qCacheDebugAppend("hotSql[%u] hitDataCnt: %u\n", pNode->sqlSlotId, pNode->hitDataCnt);
++            pNode = pNode->next;
++        }
++    }
++    hTable->unLockPage(hTable->lockFd);
++
++    return SQLITE_OK;
++}
++
++// ================================================================================================================//
++
++int qCacheImageCreate(QCacheEntry *entry)
++{
++    int ret = ftruncate(entry->fd, entry->cacheFileSize);
++    if (ret != 0) {
++        sqlite3_log(SQLITE_IOERR, "qCacheImageCreate(): truncate failed, %s", strerror(errno));
++        return SQLITE_IOERR;
++    }
++
++    ret = qHashTableInit(&entry->sql2Data, entry->fd, entry->qCacheMemSize, entry->cacheFileSize);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheImageCreate(): sharePageInit failed.");
++        return ret;
++    }
++
++    return SQLITE_OK;
++}
++
++int qCacheImageRebuild4Free(QCacheEntry *entry, int fd)
++{
++    u32 newPgSize = 0;
++    int ret = qHashTableAttach4Free(&entry->sql2Data,
++        fd,
++        entry->qCacheMemSize,
++        entry->cacheFileSize,
++        entry->isMultiInst,
++        &newPgSize);
++    if (ret == SQLITE_OK) {
++        return qHashTableCompressRebuild4Free(&entry->sql2Data, 0);
++    }
++
++    if (newPgSize == 0) {
++        sqlite3_log(ret, "qCacheImageRebuild4Free(): qHashTableAttach4Free.");
++        return ret;
++    }
++
++    /* Initial attach failed, the shared memory page has changed, need to re-attach */
++    ret = qHashTableAttach4Free(
++        &entry->sql2Data, fd, newPgSize, entry->cacheFileSize, entry->isMultiInst, &newPgSize);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheImageRebuild4Free(): qHashTableAttach4Free second.");
++        return ret;
++    }
++    entry->qCacheMemSize = newPgSize;
++
++    ret = qHashTableCompressRebuild4Free(&entry->sql2Data, 0);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheImageRebuild4Free(): qHashTableCompressRebuild4Free second.");
++        return ret;
++    }
++
++    return SQLITE_OK;
++}
++
++int qCacheImageExpand(QCacheEntry *entry)
++{
++    u32 oldFileSize = SQLITE_MAX_U32;
++    int ret = getCacheFileSize(entry->QCacheMapFPath, &oldFileSize);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheImageExpand(): stat failed.");
++    }
++
++    if (oldFileSize < SHARED_BLOCK_PAGE_STEP_SIZE) {
++        ret = SQLITE_IOERR;
++        sqlite3_log(ret, "qCacheImageRecoverySafe(): file size.");
++        return ret;
++    }
++
++    if (oldFileSize < entry->cacheFileSize) {
++        ret = ftruncate(entry->fd, entry->cacheFileSize);
++        if (ret != 0) {
++            sqlite3_log(SQLITE_IOERR, "qCacheImageExpand(): ftruncate failed, %s", strerror(errno));
++            return SQLITE_IOERR;
++        }
++    }
++
++    ret = qCacheImageRebuild4Free(entry, entry->fd);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheImageExpand(): map failed.");
++        return ret;
++    }
++
++    return SQLITE_OK;
++}
++
++int qCacheImageNormal(QCacheEntry *entry)
++{
++    u32 oldFileSize = SQLITE_MAX_U32;
++    int ret = getCacheFileSize(entry->QCacheMapFPath, &oldFileSize);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheImageNormal(): stat failed.");
++    }
++
++    if (oldFileSize < SHARED_BLOCK_PAGE_STEP_SIZE) {
++        sqlite3_log(ret, "qCacheImageRecoverySafe(): file size.");
++        return SQLITE_IOERR;
++    }
++
++    ret = qCacheImageRebuild4Free(entry, entry->fd);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheImageNormal(): map failed.");
++        return ret;
++    }
++
++    return SQLITE_OK;
++}
++
++int qCacheImageRecoverySafe(QCacheEntry *entry)
++{
++    u32 oldFileSize = 0;
++    int ret = getCacheFileSize(entry->QCacheMapFPath, &oldFileSize);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheImageRecoverySafe(): stat failed.");
++        return ret;
++    }
++
++    u32 newFileSize = entry->cacheFileSize;
++    if (newFileSize > oldFileSize) {
++        /* Expand the cache file if needed */
++        ret = qCacheImageExpand(entry);
++    } else {
++        /* Normal recovery, no shrinking allowed for multi-process concurrency */
++        ret = qCacheImageNormal(entry);
++    }
++
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheImageRecoverySafe(): recovery.");
++        return ret;
++    }
++
++    return SQLITE_OK;
++}
++
++void qCacheEntryFreeBasic4Free(QCacheEntry *entry)
++{
++    qHashTableDestroy4Free(&entry->sql2Data);
++    if (entry->fd != -1) {
++        close(entry->fd);
++        entry->fd = -1;
++    }
++
++    if (entry->multiInstFd != -1) {
++        close(entry->multiInstFd);
++        entry->multiInstFd = -1;
++    }
++}
++
++void qCacheEntryDestroyInner(QCacheEntry *entry)
++{
++    qCacheEntryFreeBasic4Free(entry);
++    if (entry->QCacheMapFPath != NULL) {
++        sqlite3_free(entry->QCacheMapFPath);
++        entry->QCacheMapFPath = NULL;
++    }
++
++    if (entry->QCacheInsFlock != NULL) {
++        sqlite3_free(entry->QCacheInsFlock);
++        entry->QCacheInsFlock = NULL;
++    }
++}
++
++int qCacheImageRecoveryInner(QCacheEntry *entry)
++{
++    int ret = qCacheImageRecoverySafe(entry);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheImageRecoveryInner(): recover.");
++        qHashTableDestroy4Free(&entry->sql2Data);
++        return ret;
++    }
++
++    return SQLITE_OK;
++}
++
++int qCacheImageRecovery(QCacheEntry *entry)
++{
++    int ret = qCacheImageRecoveryInner(entry);
++    if (ret == SQLITE_OK) {
++        return ret;
++    }
++
++    if (entry->isMultiInst) {
++        return ret;
++    }
++
++    ret = qCacheImageCreate(entry);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheImageRecovery(): image create.");
++        return ret;
++    }
++
++    return SQLITE_OK;
++}
++
++int qCacheGetCacheFileAtomicly(QCacheEntry *entry, int *exists)
++{
++    int ret = 0;
++    *exists = 0;
++    mode_t mode = entry->dbFstat.st_mode;
++    int fd = open(entry->QCacheMapFPath, O_RDWR | O_CREAT | O_EXCL | O_TRUNC, mode);
++    if (fd >= 0) {
++        if (entry->dbFstat.st_uid != (uid_t)-1 && entry->dbFstat.st_gid != (gid_t)-1) {
++            ret = fchown(fd, entry->dbFstat.st_uid, entry->dbFstat.st_gid);
++            if (ret != 0) {
++                sqlite3_log(SQLITE_IOERR, "qCacheGetCacheFileAtomicly(): fchown failed, %s", strerror(errno));
++            }
++        }
++
++        ret = sharePageWRLock(fd, QCACHE_PAGE_WLOCK);
++        if (ret != 0) {
++            sqlite3_log(SQLITE_IOERR_LOCK, "qCacheGetCacheFileAtomicly(): flock failed, %s", strerror(errno));
++            close(fd);
++            return SQLITE_IOERR_LOCK;
++        }
++
++        entry->fd = fd;
++        return SQLITE_OK;
++    }
++
++    if (errno != EEXIST) {
++        sqlite3_log(SQLITE_IOERR, "qCacheGetCacheFileAtomicly(): open failed, %s", strerror(errno));
++        return SQLITE_IOERR;
++    }
++
++    fd = open(entry->QCacheMapFPath, O_RDWR);
++    if (fd < 0) {
++        sqlite3_log(SQLITE_IOERR, "qCacheGetCacheFileAtomicly(): open existed file failed, %s", strerror(errno));
++        return SQLITE_IOERR;
++    }
++
++    ret = sharePageWRLock(fd, QCACHE_PAGE_WLOCK);
++    if (ret != 0) {
++        sqlite3_log(SQLITE_IOERR_LOCK, "qCacheGetCacheFileAtomicly(): flock existed file failed, %s", strerror(errno));
++        close(fd);
++        return SQLITE_IOERR_LOCK;
++    }
++
++    *exists = 1;
++    entry->fd = fd;
++    return SQLITE_OK;
++}
++
++int qCacheLocateQCacheFile(QCacheEntry *entry, qCacheInitMode *initMode)
++{
++    u32 flockFpathLen = strlen(entry->QCacheMapFPath) + strlen(QCACHE_INSTANCE_LOCK_SUFFIX) + 1;
++    char *flockFpath = (char *)sqlite3_malloc(flockFpathLen);
++    if (flockFpath == NULL) {
++        sqlite3_log(SQLITE_NOMEM, "qCacheLocateQCacheFile(): create lock file path.");
++        return SQLITE_NOMEM;
++    }
++    strcpy(flockFpath, entry->QCacheMapFPath);
++    strcat(flockFpath, QCACHE_INSTANCE_LOCK_SUFFIX);
++    entry->QCacheInsFlock = flockFpath;
++
++    u32 fileSize = (entry->cacheFileSize > 0) ? entry->cacheFileSize : DEFAULT_CACHE_FILE_SIZE;
++    fileSize = (fileSize > SHARED_BLOCK_PAGE_STEP_SIZE) ? fileSize : SHARED_BLOCK_PAGE_STEP_SIZE;
++    entry->cacheFileSize = fileSize;
++    entry->qCacheMemSize = SHARED_BLOCK_PAGE_STEP_SIZE;
++
++    int exists = 0;
++    int ret = qCacheGetCacheFileAtomicly(entry, &exists);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(SQLITE_IOERR, "qCacheLocateQCacheFile(): qCacheGetCacheFileAtomicly failed.");
++        return SQLITE_IOERR;
++    }
++
++    *initMode = exists ? QCACHE_DATA_RECOVERY : QCACHE_DATA_INIT;
++    return SQLITE_OK;
++}
++
++void qCacheUnLocateQCacheFile(QCacheEntry *entry)
++{
++    sharePageUnLock(entry->fd);
++}
++
++int qCacheEntryMakeInAccessible(QCacheEntry *entry)
++{
++    if (!entry) {
++        return SQLITE_OK;
++    }
++
++    entry->inAccessible = 0;
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++    qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] qcache entry Disabled, inAccessible = %d.", entry->inAccessible);
++#endif /* SQLITE_QUERY_CACHE_DEBUG */
++    return SQLITE_OK;
++}
++
++/*
++** Register a hot SQL statement.
++** Add to cache if not present; ignore if already exists.
++*/
++int qCacheEntryRegisterHotSql(QCacheEntry *entry, const char *hotSql)
++{
++    if (!entry || !hotSql) {
++        sqlite3_log(SQLITE_MISUSE, "qCacheEntryRegisterHotSql(): invalid para.");
++        return SQLITE_MISUSE;
++    }
++
++    return qHashTableInsertSql(&entry->sql2Data, hotSql);
++}
++
++/*
++** Unregister a hot SQL statement.
++** Remove from cache if present; ignore if not found.
++*/
++int qCacheEntryUnRegisterHotSql(QCacheEntry *entry, const char *hotSql)
++{
++    if (!entry || !hotSql) {
++        sqlite3_log(SQLITE_MISUSE, "qCacheEntryUnRegisterHotSql(): invalid para.");
++        return SQLITE_MISUSE;
++    }
++
++    return qHashTableDeleteSql(&(entry->sql2Data), hotSql);
++}
++
++/*
++** Store data for a hot SQL into the cache.
++** Ignore if SQL is not hot; otherwise cache the data and rebuild mappings.
++*/
++int qCacheEntryUpdateHotSqlData(QCacheEntry *entry, const char *hotSql, u8 *data, u32 dataLen, QCacheVersion *ver)
++{
++    if (!entry || !hotSql || !data || !ver) {
++        sqlite3_log(SQLITE_MISUSE, "qCacheEntryUpdateHotSqlData(): invalid para.");
++        return SQLITE_MISUSE;
++    }
++
++    return qHashTableUpdateSqlData(&entry->sql2Data, hotSql, data, dataLen, ver);
++}
++
++int qCacheEntryDeleteAllData(QCacheEntry *entry)
++{
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++    qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] qcache entry Delete data.");
++#endif /* SQLITE_QUERY_CACHE_DEBUG */
++
++    int ret = qHashTableDeleteAllNodeData(&entry->sql2Data);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheEntryDeleteAllData(): qHashTable Delete data.");
++        return ret;
++    }
++
++    return SQLITE_OK;
++}
++
++int qCacheEntryDebugInfo(QCacheEntry *entry, QCacheVersion *ver, u32 isDebug)
++{
++    qCacheDebugAppend("\n======Dump Qcache Start======\n");
++    if (isDebug) {
++        qCacheDebugAppend("fd           : %u\n", entry->fd);
++        qCacheDebugAppend("isMultiInst  : %u\n", entry->isMultiInst);
++        qCacheDebugAppend("multiInstFd  : %d\n", entry->multiInstFd);
++        qCacheDebugAppend("currVersion  : [%4u, %5u, %10u, %10u]\n", ver->schemaCookie, ver->changeCounter,
++            ver->walSalt1, ver->walSalt2);
++    }
++    qCacheDebugAppend("ttlCycle     : %u(s)\n", entry->ttlCycle);
++    if (isDebug) {
++        qCacheDebugAppend("qCacheMemSize: %u(B)\n", entry->qCacheMemSize);
++        qCacheDebugAppend("cacheFileSize: %u(B)\n", entry->cacheFileSize);
++        qCacheDebugAppend("inAccessible : %d\n", entry->inAccessible);
++        qCacheDebugAppend("QCacheMapFPath: %s\n", entry->QCacheMapFPath);
++        qCacheDebugAppend("QCacheInsFlock: %s\n", entry->QCacheInsFlock);
++    }
++
++    if (isDebug) {
++        (void)qHashTableDumpBasic(&entry->sql2Data);
++    } else {
++        (void)qHashTableDumpSQL(&entry->sql2Data);
++    }
++
++    qCacheDebugAppend("======Dump Qcache End======\n\n");
++    qCacheDebugPrint();
++
++    return SQLITE_OK;
++}
++
++// ================================================================================================================
++
++static pthread_mutex_t g_QcacheEntryMutex = PTHREAD_MUTEX_INITIALIZER;
++static QCacheEntry *g_QcacheEntrySingleton = NULL;
++
++QCacheEntry *sqlite3QCacheGetProcessEntry(void)
++{
++    return g_QcacheEntrySingleton;
++}
++
++static void sqlite3QCacheSetProcessEntry(QCacheEntry *newEntry)
++{
++    g_QcacheEntrySingleton = newEntry;
++}
++
++static void qCacheDestroyProcessEntry(void)
++{
++    if (!g_QcacheEntrySingleton) {
++        return;
++    }
++
++    qCacheEntryDestroyInner(g_QcacheEntrySingleton);
++}
++
++static void qCacheRegProcessEntryCleanUp(void)
++{
++    atexit(qCacheDestroyProcessEntry);
++}
++
++void qCacheEntryDoRoutine(QCacheEntry *entry)
++{
++    if (!entry) {
++        return;
++    }
++
++    struct timespec startTs = entry->ts;
++    struct timespec currTs;
++    clock_gettime(CLOCK_MONOTONIC, &currTs);
++    u32 invalidLFUPeriod = entry->ttlCycle;
++    if (currTs.tv_sec - startTs.tv_sec < invalidLFUPeriod) {
++        return;
++    }
++
++    qHashTableResetHitCount(&entry->sql2Data);
++    entry->ts = currTs;
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++    qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] qcache entry Reseted hitcount.");
++#endif /* SQLITE_QUERY_CACHE_DEBUG */
++}
++
++static int buildCacheFilePath(const char *dbPath, char *cacheFilePath, size_t pathSize)
++{
++    if (!dbPath || !cacheFilePath || pathSize == 0) {
++        return SQLITE_MISUSE;
++    }
++
++    size_t dbPathLen = strlen(dbPath);
++    size_t suffixLen = strlen(CACHE_FILE_SUFFIX);
++
++    if (dbPathLen + suffixLen + 1 > pathSize) {
++        return SQLITE_MISUSE;
++    }
++
++    strcpy(cacheFilePath, dbPath);
++    strcat(cacheFilePath, CACHE_FILE_SUFFIX);
++
++    return SQLITE_OK;
++}
++
++int qCacheEntryCreateInner(QCacheEntry *entry, const char *dbPath)
++{
++    size_t dbPathLen = strlen(dbPath);
++    size_t suffixLen = strlen(CACHE_FILE_SUFFIX);
++    size_t cacheFilePathLen = dbPathLen + suffixLen + 1;
++    entry->QCacheMapFPath = (char *)sqlite3_malloc(cacheFilePathLen);
++    if (entry->QCacheMapFPath == NULL) {
++        sqlite3_log(SQLITE_NOMEM, "qCacheEntryCreateInner(): malloc entry.");
++        return SQLITE_NOMEM;
++    }
++
++    int ret = buildCacheFilePath(dbPath, entry->QCacheMapFPath, (size_t)cacheFilePathLen);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheEntryCreateInner(): buildCacheFilePath failed.");
++        sqlite3_free(entry->QCacheMapFPath);
++        entry->QCacheMapFPath = NULL;
++        return ret;
++    }
++
++    int retIn = lstat(dbPath, &entry->dbFstat);
++    if (retIn != 0) {
++        sqlite3_log(SQLITE_IOERR, "qCacheEntryCreateInner(): lstat failed, %s", strerror(errno));
++        entry->dbFstat.st_uid = -1;
++        entry->dbFstat.st_gid = -1;
++        entry->dbFstat.st_mode = 0644;
++    }
++
++    entry->fd = -1;
++    entry->cacheFileSize = 0;
++    entry->multiInstFd = -1;
++    entry->isMultiInst = 0;
++    entry->inAccessible = 0;
++    entry->QCacheInsFlock = NULL;
++    entry->ttlCycle = QHASH_HIT_LFU_CYCLE;
++    clock_gettime(CLOCK_MONOTONIC, &entry->ts);
++
++    return SQLITE_OK;
++}
++
++int qCacheEntryHandleByType(QCacheEntry *entry, QCacheMsgType msgType, QCacheVersion *ver)
++{
++    int ret = SQLITE_OK;
++    switch (msgType) {
++        case QCACHE_MSG_EXIT:
++            ret = qCacheEntryMakeInAccessible(entry);
++            break;
++        case QCACHE_MSG_DELETE_ALL:
++            ret = qCacheEntryDeleteAllData(entry);
++            break;
++        case QCACHE_MSG_DEBUG:
++            ret = qCacheEntryDebugInfo(entry, ver, 1);
++            break;
++        case QCACHE_MSG_INFO:
++            ret = qCacheEntryDebugInfo(entry, ver, 0);
++            break;
++        default:
++            break;
++    }
++    qCacheEntryDoRoutine(entry);
++
++    return ret;
++}
++
++int qCacheEntryLoadImage(QCacheEntry *entry, u32 cacheFileSize)
++{
++    entry->cacheFileSize = cacheFileSize;
++    qCacheInitMode initMode;
++    int ret = qCacheLocateQCacheFile(entry, &initMode);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheEntryLoadImage(): qCacheLocateQCacheFile failed.");
++        return ret;
++    }
++
++    if (initMode == QCACHE_DATA_INIT) {
++        ret = qCacheImageCreate(entry);
++    } else {
++        ret = qCacheImageRecovery(entry);
++    }
++
++    qCacheUnLocateQCacheFile(entry);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheEntryLoadImage(): qCacheImageCreate failed.");
++        qCacheEntryDestroyInner(entry);
++        return ret;
++    }
++
++    return SQLITE_OK;
++}
++
++int sqlite3QCacheCloseProcessEntry(void)
++{
++    QCacheEntry *entry = sqlite3QCacheGetProcessEntry();
++    if (!entry) {
++        return SQLITE_OK;
++    }
++
++    return qCacheEntryHandleByType(entry, QCACHE_MSG_EXIT, NULL);
++}
++
++static int sqlite3QCacheEntryCreate(sqlite3 *db, u32 cacheFileSize, QCacheEntry **newEntry)
++{
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++    struct timespec startTime;
++    struct timespec endTime;
++    clock_gettime(CLOCK_MONOTONIC, &startTime);
++#endif
++    const char *dbPath = sqlite3_db_filename(db, "main");
++    if (dbPath == NULL) {
++        sqlite3_log(SQLITE_NOTADB, "sqlite3QCacheEntryCreate, sqlite3_db_filename.");
++        return SQLITE_NOTADB;
++    }
++
++    u32 entrySize = (u32)sizeof(QCacheEntry);
++    u8 *tmpEntry = (u8 *)sqlite3_malloc(entrySize);
++    if (tmpEntry == NULL) {
++        sqlite3_log(SQLITE_NOMEM, "sqlite3QCacheEntryCreate, alloc entry.");
++        return SQLITE_NOMEM;
++    }
++    memset(tmpEntry, 0, entrySize);
++    QCacheEntry *curEntry = (QCacheEntry *)tmpEntry;
++
++    int ret = qCacheEntryCreateInner(curEntry, dbPath);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "sqlite3QCacheEntryCreate(): qCacheEntryCreateInner failed.");
++        sqlite3_free(tmpEntry);
++        return ret;
++    }
++
++    ret = qCacheEntryLoadImage(curEntry, cacheFileSize);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "sqlite3QCacheEntryCreate(): qCacheEntryLoadImage.");
++        sqlite3_free(tmpEntry);
++        return ret;
++    }
++
++    *newEntry= curEntry;
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++    clock_gettime(CLOCK_MONOTONIC, &endTime);
++    double elapsed = (endTime.tv_sec - startTime.tv_sec) * 1000000.0;
++    elapsed += (endTime.tv_nsec - startTime.tv_nsec) / 1000.0;
++    qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] create new entry cost %f us.", elapsed);
++#endif
++    return SQLITE_OK;
++}
++
++int qCacheCreateProcessEntry(sqlite3 *db, u32 cacheFileSize, QCacheEntry **entry)
++{
++    *entry = NULL;
++    int ret = pthread_mutex_lock(&g_QcacheEntryMutex);
++    if (ret != 0) {
++        sqlite3_log(ret, "qCacheCreateProcessEntry(): write lock, errno %d.", errno);
++        return SQLITE_IOERR;
++    }
++
++    QCacheEntry *glbEntry = sqlite3QCacheGetProcessEntry();
++    if (glbEntry) {
++        *entry = glbEntry;
++        pthread_mutex_unlock(&g_QcacheEntryMutex);
++        return SQLITE_OK;
++    }
++
++    ret = qCacheInitMemBlockPool(QCACHE_SQLSTR_POOL_MAX);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheCreateProcessEntry(): qCacheInitMemBlockPool.");
++        pthread_mutex_unlock(&g_QcacheEntryMutex);
++        return ret;
++    }
++
++    QCacheEntry *newEntry = NULL;
++    ret = sqlite3QCacheEntryCreate(db, cacheFileSize, &newEntry);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheCreateProcessEntry(): create new entry.");
++        qCacheDestroyMemBlockPool();
++        pthread_mutex_unlock(&g_QcacheEntryMutex);
++        return ret;
++    }
++
++    *entry = newEntry;
++    sqlite3QCacheSetProcessEntry(newEntry);
++
++    qCacheRegMemBlockPoolCleanUp();
++    qCacheRegProcessEntryCleanUp();
++
++    pthread_mutex_unlock(&g_QcacheEntryMutex);
++
++    return SQLITE_OK;
++}
++
++int qCacheRebuildProcessEntry(QCacheEntry *entry, u32 cacheFileSize)
++{
++    int ret = pthread_mutex_lock(&g_QcacheEntryMutex);
++    if (ret != 0) {
++        sqlite3_log(ret, "qCacheRebuildProcessEntry(): write lock, errno %d.", errno);
++        return SQLITE_IOERR;
++    }
++
++    qCacheEntryFreeBasic4Free(entry);
++
++    ret = qCacheEntryLoadImage(entry, cacheFileSize);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheRebuildProcessEntry(): qCacheEntryLoadImage.");
++        pthread_mutex_unlock(&g_QcacheEntryMutex);
++        return ret;
++    }
++
++    entry->inAccessible = 0;
++    pthread_mutex_unlock(&g_QcacheEntryMutex);
++
++    return SQLITE_OK;
++}
++
++static int qCacheNormalizeWhiteSpace(const char *sql, size_t len, char *result)
++{
++    if (sql == NULL || result == NULL) {
++        return SQLITE_MISUSE;
++    }
++
++    size_t j = 0;
++    int in_string = 0;
++    char quote_char = 0;
++    int need_space = 0;
++    int has_content = 0;
++
++    for (size_t i = 0; i < len; i++) {
++        char c = sql[i];
++        if (!in_string && (c == '\'' || c == '"')) {
++            in_string = 1;
++            quote_char = c;
++            if (need_space && has_content) {
++                result[j++] = ' ';
++                need_space = 0;
++            }
++            result[j++] = c;
++            has_content = 1;
++            continue;
++        } else if (in_string) {
++            result[j++] = c;
++            if (c == quote_char && i + 1 < len && sql[i + 1] == quote_char) {
++                result[j++] = sql[++i];
++                continue;
++            } else if (c == quote_char) {
++                in_string = 0;
++                quote_char = 0;
++            }
++            has_content = 1;
++            continue;
++        }
++
++        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
++            if (has_content) {
++                need_space = 1;
++            }
++            if (c == '\r' && i + 1 < len && sql[i + 1] == '\n') {
++                i++;
++            }
++            continue;
++        }
++
++        if (need_space && has_content) {
++            result[j++] = ' ';
++            need_space = 0;
++        }
++
++        result[j++] = c;
++        has_content = 1;
++    }
++
++    result[j] = '\0';
++    if (j > 0 && result[j - 1] == ' ') {
++        result[j - 1] = '\0';
++    }
++
++    return SQLITE_OK;
++}
++
++char *qCacheAllocNormalizedSqlStr(sqlite3_stmt *pStmt)
++{
++    char *sqlStr = sqlite3_expanded_sql(pStmt);
++    if (sqlStr == NULL) {
++        return NULL;
++    }
++
++    size_t allocSize = strlen(sqlStr) + 1;
++    char *result = qCacheMemBlockPoolAllocMem(allocSize);
++    if (!result) {
++        sqlite3_log(SQLITE_NOMEM, "qCacheAllocNormalizedSqlStr(): qCacheMemBlockPoolAllocMem.");
++        return NULL;
++    }
++
++    int ret = qCacheNormalizeWhiteSpace(sqlStr, allocSize - 1, result);
++    sqlite3_free(sqlStr);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheGetNormalizedSqlStr, normalize sql string white space.");
++        return NULL;
++    }
++
++    return result;
++}
++
++void qCacheFreeNormalizedSqlStr(char *sqlStr)
++{
++    if (!sqlStr) {
++        return;
++    }
++
++    qCacheMemBlockPoolFreeMem(sqlStr);
++}
++
++int sqlite3QCacheRegister(sqlite3 *db, const char *hotSql)
++{
++    if (!db || !hotSql) {
++        return SQLITE_MISUSE;
++    }
++
++    QCacheEntry *entry = NULL;
++    int ret = qCacheCreateProcessEntry(db, 0, &entry);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "sqlite3QCacheRegister(): qCacheCreateProcessEntry.");
++        return ret;
++    }
++
++    size_t allocSize = strlen(hotSql) + 1;
++    char *normalizedStr = qCacheMemBlockPoolAllocMem(allocSize);
++    if (!normalizedStr) {
++        sqlite3_log(SQLITE_NOMEM, "sqlite3QCacheRegister(): qCacheMemBlockPoolAllocMem.");
++        return SQLITE_NOMEM;
++    }
++
++    ret = qCacheNormalizeWhiteSpace(hotSql, allocSize - 1, normalizedStr);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "sqlite3QCacheRegister(): qCacheNormalizeWhiteSpace.");
++        qCacheMemBlockPoolFreeMem(normalizedStr);
++        return ret;
++    }
++
++    ret = qCacheEntryRegisterHotSql(entry, normalizedStr);
++    if (ret != SQLITE_OK) {
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++        qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] register SQL error: %s.", normalizedStr);
++#endif
++        sqlite3_log(ret, "sqlite3QCacheRegister(): register normalizedStr.");
++        qCacheMemBlockPoolFreeMem(normalizedStr);
++        return ret;
++    }
++
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++    qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] register SQL ok: %s.", normalizedStr);
++#endif
++
++    qCacheMemBlockPoolFreeMem(normalizedStr);
++    return SQLITE_OK;
++}
++
++int sqlite3QCacheUnRegister(const char *hotSql)
++{
++    if (!hotSql) {
++        return SQLITE_MISUSE;
++    }
++
++    QCacheEntry *entry = sqlite3QCacheGetProcessEntry();
++    if (!entry || entry->inAccessible) {
++        sqlite3_log(SQLITE_MISUSE, "sqlite3QCacheUnRegister(): global entry not created.");
++        return SQLITE_MISUSE;
++    }
++
++    size_t allocSize = strlen(hotSql) + 1;
++    char *normalizedStr = qCacheMemBlockPoolAllocMem(allocSize);
++    if (!normalizedStr) {
++        sqlite3_log(SQLITE_NOMEM, "sqlite3QCacheUnRegister(): qCacheMemBlockPoolAllocMem.");
++        return SQLITE_NOMEM;
++    }
++
++    int ret = qCacheNormalizeWhiteSpace(hotSql, allocSize - 1, normalizedStr);
++    if (ret != SQLITE_OK) {
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++        qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] unRegister SQL error: %s.", normalizedStr);
++#endif
++        sqlite3_log(ret, "sqlite3QCacheUnRegister(): unRegister normalizedStr.");
++        qCacheMemBlockPoolFreeMem(normalizedStr);
++        return ret;
++    }
++
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++    qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] unRegister SQL ok: %s.", normalizedStr);
++#endif
++    qCacheMemBlockPoolFreeMem(normalizedStr);
++
++    return SQLITE_OK;
++}
++
++int qCacheIsHotSql(QCacheEntry *entry, const char *hotSql, QCacheVersion *ver, u8 *isHot, u8 **dataBuf, u32 *dstBufLen)
++{
++    if (!entry || !hotSql || !isHot || !ver || !dstBufLen || !dataBuf) {
++        return SQLITE_MISUSE;
++    }
++
++    *isHot = 0;
++    *dstBufLen = 0;
++    return qHashTableIsHotSql(&entry->sql2Data, hotSql, ver, isHot, dataBuf, dstBufLen);
++}
++
++static void qCacheResetVdbeMem(Vdbe *v)
++{
++    sqlite3_free(v->pCacheReadBuf);
++    v->pCacheReadBuf = NULL;
++    if (v->aMem) {
++        for (int i = 0; i < v->nMem; i++) {
++            v->aMem[i].flags = MEM_Undefined;
++        }
++    }
++}
++
++/**
++ * |         cacheBuf      |     rowHead  |   columnHead  |    data     |
++ * | totalRows | totalSize | column | len | type |  bytes | column data |
++ */
++int qCacheReadRowFromBuf(Vdbe *v, CacheBuffer *pBuf, int *readPos)
++{
++    if (*readPos >= pBuf->totalSize) {
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++        sqlite3_log(SQLITE_ERROR, "[sqlite][qcache]qCache get row end, readPos %d, totalSize %d.",
++          *readPos, pBuf->totalSize);
++#endif
++        qCacheResetVdbeMem(v);
++        return SQLITE_DONE;
++    }
++
++    char *rowPtr = pBuf->data + (*readPos - sizeof(CacheBuffer));
++    RowHeader *rh = (RowHeader *)rowPtr;
++    rowPtr += sizeof(RowHeader);
++
++    v->pResultRow = v->aMem;
++    v->nResColumn = rh->nCol;
++    if (v->nResColumn > v->nMem) {
++        sqlite3_log(SQLITE_CORRUPT, "qCacheReadRowFromBuf(): nCol %d > nMem %d.", v->nResColumn, v->nMem);
++        return SQLITE_CORRUPT;
++    }
++
++    Mem *aCol = v->pResultRow;
++    int rowLenTmp = (int)sizeof(RowHeader);
++    for (int i = 0; i < rh->nCol; i++) {
++        ColHeader *ch = (ColHeader *)rowPtr;
++        rowPtr += sizeof(ColHeader);
++
++        Mem *m = &aCol[i];
++        memset(m, 0, sizeof(Mem));
++        m->flags = ch->type & MEM_TypeMask;
++        if (ch->type == MEM_Int) {
++            m->u.i = *(i64 *)rowPtr;
++        } else if (ch->type == MEM_Real) {
++            m->u.r = *(double *)rowPtr;
++        } else if (ch->type == MEM_Blob) {
++            m->z = rowPtr;
++            m->n = ch->bytes;
++            m->flags = MEM_Blob | MEM_Static;
++        } else if (ch->type == MEM_Str) {
++            m->z = rowPtr;
++            m->n = ch->bytes - 1;
++            m->flags |= MEM_Str | MEM_Static | MEM_Term;
++            m->enc = SQLITE_UTF8;
++        } else if (ch->type == MEM_Null) {
++            // do nothing
++        } else {
++            sqlite3_log(SQLITE_MISMATCH, "unKnown data type.");
++        }
++        rowPtr += ch->bytes;
++        rowLenTmp += ((int)sizeof(ColHeader) + ch->bytes);
++    }
++
++    *readPos += rowLenTmp;
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++    sqlite3_log(SQLITE_ERROR, "[sqlite][qcache]qCache get a row: nCol %d, readPos %d, totalSize %d.",
++      v->nResColumn, *readPos, pBuf->totalSize);
++#endif
++
++    return SQLITE_ROW;
++}
++
++int qCachePrepareLocalHotSqlData(sqlite3_stmt *pStmt, Vdbe *v, QCacheVersion *ver, QCacheEntry *entry)
++{
++    if (v->cacheFlags & QCACHE_FLAGS_IS_CHECKED) {
++        return SQLITE_MISMATCH;
++    }
++
++    char *normalizedStr = qCacheAllocNormalizedSqlStr(pStmt);
++    if (normalizedStr == NULL) {
++        return SQLITE_NOMEM;
++    }
++    
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++    int errno_0 = errno;
++    struct timespec startTime;
++    struct timespec endTime;
++    clock_gettime(CLOCK_MONOTONIC, &startTime);
++#endif // SQLITE_QUERY_CACHE_DEBUG
++
++    u8 isHot = 0;
++    u32 dataLen = 0;
++    u8 *dataBuf = NULL;
++    v->cacheFlags |= QCACHE_FLAGS_IS_CHECKED;
++    int ret = qCacheIsHotSql(entry, normalizedStr, ver, &isHot, &dataBuf, &dataLen);
++    v->cacheFlags |= ((isHot) ? QCACHE_FLAGS_IS_HOTSQL : 0);
++
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++    clock_gettime(CLOCK_MONOTONIC, &endTime);
++    double elapsed = (endTime.tv_sec - startTime.tv_sec) * 1000000.0;
++    elapsed += (endTime.tv_nsec - startTime.tv_nsec) / 1000.0;
++    // DFX
++    int errno_1 = errno;
++    if (isHot) {
++        qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] query SQL hit[1][%u] errno[%d:%d] elapse %f us: %s.",
++          (dataLen > 0), errno_0, errno_1, elapsed, normalizedStr);
++    } else {
++        qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] query SQL hit[0][0] errno[%d:%d] elapse %f us: %s.",
++          errno_0, errno_1, elapsed, normalizedStr);
++    }
++#endif // SQLITE_QUERY_CACHE_DEBUG
++
++    qCacheFreeNormalizedSqlStr(normalizedStr);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCachePrepareLocalHotSqlData(): is hot sql.");
++        return ret;
++    }
++
++    if (!dataBuf || !dataLen) {
++        return SQLITE_NOTFOUND;
++    }
++
++    v->pCacheReadBuf = dataBuf;
++    v->cacheReadPos = sizeof(CacheBuffer);
++    return SQLITE_OK;
++}
++
++int sqlite3QCacheIsQueryCase(sqlite3_stmt *pStmt, Vdbe *v)
++{
++    if (!sqlite3_stmt_readonly(pStmt) || v->zSql == NULL) {
++        return 0;
++    }
++
++    char *sqlStr = v->zSql;
++    if ((sqlite3_strnicmp(sqlStr, QCACHE_HOTSQL_PREFIX_1, QCACHE_HOTSQL_PREFIX_1_LEN) == 0) ||
++        (sqlite3_strnicmp(sqlStr, QCACHE_HOTSQL_PREFIX_2, QCACHE_HOTSQL_PREFIX_2_LEN) == 0)) {
++        return 1;
++    }
++
++    return 0;
++}
++
++void sqlite3UpdateQCache2SharedBlock(Vdbe *p)
++{
++#ifdef SQLITE_SHARED_BLOCK_OPTIMIZATION
++  if( !p || !p->pCacheReadBuf ){
++    return;
++  }
++
++  CacheBuffer *pCache = (CacheBuffer *)p->pCacheReadBuf;
++  if( p->pSharedBlock && p->pSharedBlock->pContext && p->pSharedBlock->xFinish ){
++    void *pCtx = p->pSharedBlock->pContext;
++    int totalRecords = pCache->countRows;
++    if( totalRecords == 0 ){
++      totalRecords = pCache->totalRows;
++    }
++    p->pSharedBlock->xFinish(pCtx, totalRecords, totalRecords);
++  }
++#endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
++}
++
++void sqlite3UpdateSharedBlock2QCache(Vdbe *p)
++{
++#ifdef SQLITE_SHARED_BLOCK_OPTIMIZATION
++  if( !p || !p->pCacheWriteBuf ){
++    return;
++  }
++
++  CacheBuffer *writeBuf = (CacheBuffer *)p->pCacheWriteBuf;
++  if( p->totalRows>0 ){
++    writeBuf->countRows = p->totalRows;
++  }
++#endif /* SQLITE_SHARED_BLOCK_OPTIMIZATION */
++}
++
++int sqlite3QCacheGetRowData(sqlite3 *db, sqlite3_stmt *pStmt, Vdbe *v, u8 *isGetRow)
++{
++    *isGetRow = 0;
++    if (!pStmt || !v || !db || (v->pCacheWriteBuf)) {
++        return SQLITE_OK;
++    }
++
++    QCacheEntry *entry = sqlite3QCacheGetProcessEntry();
++    if (!entry || entry->inAccessible) {
++        return SQLITE_OK;
++    }
++
++    if (!sqlite3QCacheIsQueryCase(pStmt, v)) {
++        return SQLITE_OK;
++    }
++
++    if (!v->pCacheReadBuf) {
++        QCacheVersion version = {0};
++        sqlite3QCacheGetSchemaCookie(db, &version.schemaCookie);
++        sqlite3QCacheGetChangeCounter(db, &version.changeCounter);
++        sqlite3QCacheGetWALSalt(db, &version.walSalt1, &version.walSalt2);
++        int ret = qCachePrepareLocalHotSqlData(pStmt, v, &version, entry);
++        if (ret != SQLITE_OK) {
++            return SQLITE_OK;
++        }
++    }
++
++    *isGetRow = 1;
++    /* Local cache data exists, parse directly from local cache */
++    return qCacheReadRowFromBuf(v, (CacheBuffer *)v->pCacheReadBuf, &v->cacheReadPos);
++}
++
++int qCacheGetResultRowSize(int nCol, Mem *aCol, int *rowSz)
++{
++    int rowSize = sizeof(RowHeader);
++    for (int i = 0; i < nCol; i++) {
++        int dataBytes = 0;
++        Mem *m = &aCol[i];
++        int type = m->flags & MEM_TypeMask;
++        if (type & MEM_Int) {
++            dataBytes = 8;
++        } else if (type & MEM_Real) {
++            dataBytes = 8;
++        } else if (type & MEM_Blob) {
++            dataBytes = m->n;
++        } else if (type & MEM_Str) {
++            dataBytes = m->n + 1;
++        } else if (type & MEM_Null) {
++            dataBytes = 0;
++        } else {
++            sqlite3_log(SQLITE_MISMATCH, "unKnown data type.");
++            return SQLITE_MISMATCH;
++        }
++
++        rowSize += sizeof(ColHeader) + dataBytes;
++    }
++    *rowSz = rowSize;
++    return SQLITE_OK;
++}
++
++int qCacheGetCacheWriteBuffer(Vdbe *v, int rowSz)
++{
++    int totalSize = 0;
++    if (v->cacheFlags & QCACHE_FLAGS_IS_TOOBIG) {
++        return SQLITE_TOOBIG;
++    }
++
++    if (v->pCacheWriteBuf == NULL) {
++        totalSize = (int)sizeof(CacheBuffer) + rowSz;
++    } else {
++        CacheBuffer *writeBuf = (CacheBuffer *)v->pCacheWriteBuf;
++        totalSize = writeBuf->totalSize + rowSz;
++    }
++
++    if (totalSize > (int)HOT_CACHE_BUFFER_SIZE) {
++        sqlite3_log(SQLITE_TOOBIG, "qCacheGetCacheWriteBuffer(): sql data too big.");
++        if (v->pCacheWriteBuf) {
++            sqlite3_free(v->pCacheWriteBuf);
++            v->pCacheWriteBuf = NULL;
++        }
++        v->cacheFlags |= QCACHE_FLAGS_IS_TOOBIG;
++        return SQLITE_TOOBIG;
++    }
++
++    if (v->pCacheWriteBuf == NULL) {
++        v->pCacheWriteBuf = (u8 *)sqlite3_malloc(HOT_CACHE_BUFFER_SIZE);  // sqlite3DbMallocZero
++        if (v->pCacheWriteBuf == NULL) {
++            sqlite3_log(SQLITE_NOMEM, "qCacheGetCacheWriteBuffer(): no memory.");
++            return SQLITE_NOMEM;
++        }
++        memset(v->pCacheWriteBuf, 0, HOT_CACHE_BUFFER_SIZE);
++
++        CacheBuffer *writeBuf = (CacheBuffer *)v->pCacheWriteBuf;
++        writeBuf->totalSize = (int)sizeof(CacheBuffer);
++        sqlite3UpdateSharedBlock2QCache(v);
++    }
++
++    return SQLITE_OK;
++}
++
++int qCacheAppend2WriteBuffer(Vdbe *v, int nCol, Mem *aCol, int rowSize)
++{
++    CacheBuffer *cacheBuf = (CacheBuffer *)v->pCacheWriteBuf;
++    char *writePos = cacheBuf->data + (cacheBuf->totalSize - (int)sizeof(CacheBuffer));
++    RowHeader *rh = (RowHeader *)writePos;
++    rh->nCol = nCol;
++    writePos += sizeof(RowHeader);
++
++    for (int i = 0; i < nCol; i++) {
++        Mem *m = &aCol[i];
++        ColHeader ch = {0};
++        ch.type = m->flags & MEM_TypeMask;
++        ch.bytes = 0;
++        void *pData = NULL;
++
++        if (ch.type == MEM_Int) {
++            ch.bytes = 8;
++            pData = &m->u.i;
++        } else if (ch.type == MEM_Real) {
++            ch.bytes = 8;
++            pData = &m->u.r;
++        } else if (ch.type == MEM_Blob) {
++            ch.bytes = m->n;
++            pData = m->z;
++        } else if (ch.type == MEM_Str) {
++            ch.bytes = m->n + 1;
++            pData = m->z;
++        } else if (ch.type == MEM_Null) {
++            ch.bytes = 0;
++        }
++
++        memcpy(writePos, &ch, sizeof(ColHeader));
++        writePos += sizeof(ColHeader);
++        if (ch.bytes > 0 && pData) {
++            memcpy(writePos, pData, ch.bytes);
++            writePos += ch.bytes;
++        }
++    }
++
++    cacheBuf->totalRows++;
++    cacheBuf->totalSize += rowSize;
++    sqlite3UpdateSharedBlock2QCache(v);
++
++    return SQLITE_OK;
++}
++
++/**
++ * |         cacheBuf      |     rowHead  |   columnHead  |    data     |
++ * | totalRows | totalSize | column | len | type |  bytes | column data |
++ */
++int qCacheBufferAppendRowData(Vdbe *v)
++{
++    if (!v) {
++        return SQLITE_OK;
++    }
++
++    int nCol = v->nResColumn;
++    Mem *aCol = v->pResultRow;
++    if (nCol == 0 || aCol == NULL) {
++        return SQLITE_OK;
++    }
++
++    int rowSize = 0;
++    int ret = qCacheGetResultRowSize(nCol, aCol, &rowSize);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheBufferAppendRowData(): get row size.");
++        return ret;
++    }
++
++    ret = qCacheGetCacheWriteBuffer(v, rowSize);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "qCacheBufferAppendRowData(): get cache buffer.");
++        return ret;
++    }
++
++    return qCacheAppend2WriteBuffer(v, nCol, aCol, rowSize);
++}
++
++int sqlite3QCacheProcessAfterStep(sqlite3 *db, sqlite3_stmt *pStmt, Vdbe *v, int rc)
++{
++    if (!pStmt || !v || !db) {
++        return SQLITE_OK;
++    }
++
++    QCacheEntry *entry = sqlite3QCacheGetProcessEntry();
++    if (!entry || entry->inAccessible) {
++        return SQLITE_OK;
++    }
++
++    if (!sqlite3QCacheIsQueryCase(pStmt, v)) {
++        return SQLITE_OK;
++    }
++
++    qCacheEntryDoRoutine(entry);
++
++    // only for query action
++    int ret = SQLITE_OK;
++    if (rc == SQLITE_ROW && (v->cacheFlags & QCACHE_FLAGS_IS_HOTSQL)) {
++        ret = qCacheBufferAppendRowData(v);
++    } else if (rc == SQLITE_DONE && v->pCacheWriteBuf) {
++        QCacheVersion version = {0};
++        sqlite3QCacheGetSchemaCookie(db, &version.schemaCookie);
++        sqlite3QCacheGetChangeCounter(db, &version.changeCounter);
++        sqlite3QCacheGetWALSalt(db, &version.walSalt1, &version.walSalt2);
++
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++        struct timespec startTime;
++        struct timespec endTime;
++        clock_gettime(CLOCK_MONOTONIC, &startTime);
++#endif // SQLITE_QUERY_CACHE_DEBUG
++
++        CacheBuffer *pCache = (CacheBuffer *)v->pCacheWriteBuf;
++        char *normalizedStr = qCacheAllocNormalizedSqlStr(pStmt);
++        ret = qCacheEntryUpdateHotSqlData(entry, normalizedStr, v->pCacheWriteBuf, pCache->totalSize, &version);
++        if (ret != SQLITE_OK) {
++            sqlite3_log(ret, "sqlite3QCacheProcessAfterStep(): qCacheEntryUpdateHotSqlData.");
++        }
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++        clock_gettime(CLOCK_MONOTONIC, &endTime);
++        double elapsed = (endTime.tv_sec - startTime.tv_sec) * 1000000.0;
++        elapsed += (endTime.tv_nsec - startTime.tv_nsec) / 1000.0;
++        qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] sqlite done update SQL data[%d:%d] elapse %f us: %s.",
++            pCache->totalRows, pCache->totalSize, elapsed, normalizedStr);
++#endif // SQLITE_QUERY_CACHE_DEBUG
++
++        sqlite3_free(v->pCacheWriteBuf);
++        v->pCacheWriteBuf = NULL;
++        qCacheFreeNormalizedSqlStr(normalizedStr);
++    } else {
++        ret = rc;
++    }
++
++    return ret;
++}
++
++void sqlite3QCacheBufReset(sqlite3 *db, sqlite3_stmt *pStmt)
++{
++    if (!db || !pStmt) {
++        return;
++    }
++
++    QCacheEntry *entry = sqlite3QCacheGetProcessEntry();
++    if (!entry) {
++        return;
++    }
++
++    Vdbe *v = (Vdbe *)pStmt;
++    if (v->pCacheReadBuf) {
++        sqlite3_free(v->pCacheReadBuf);  // sqlite3DbFree
++        v->pCacheReadBuf = NULL;
++    }
++    v->cacheReadPos = 0;
++    v->cacheFlags = 0;
++
++    if (!v->pCacheWriteBuf) {
++        return;
++    }
++
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++    struct timespec startTime;
++    struct timespec endTime;
++    clock_gettime(CLOCK_MONOTONIC, &startTime);
++#endif // SQLITE_QUERY_CACHE_DEBUG
++
++    QCacheVersion version = {0};
++    sqlite3QCacheGetSchemaCookie(db, &version.schemaCookie);
++    sqlite3QCacheGetChangeCounter(db, &version.changeCounter);
++    sqlite3QCacheGetWALSalt(db, &version.walSalt1, &version.walSalt2);
++    CacheBuffer *pCache = (CacheBuffer *)v->pCacheWriteBuf;
++    char *normalizedStr = qCacheAllocNormalizedSqlStr(pStmt);
++    int ret = qCacheEntryUpdateHotSqlData(entry, normalizedStr, v->pCacheWriteBuf, pCache->totalSize, &version);
++    if (ret != SQLITE_OK) {
++        sqlite3_log(ret, "sqlite3QCacheBufReset(): qCacheEntryUpdateHotSqlData.");
++    }
++
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++        clock_gettime(CLOCK_MONOTONIC, &endTime);
++        double elapsed = (endTime.tv_sec - startTime.tv_sec) * 1000000.0;
++        elapsed += (endTime.tv_nsec - startTime.tv_nsec) / 1000.0;
++        qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] sqlite reset update SQL data[%d:%d] elapse %f us: %s.",
++            pCache->totalRows, pCache->totalSize, elapsed, normalizedStr);
++#endif // SQLITE_QUERY_CACHE_DEBUG
++
++    qCacheFreeNormalizedSqlStr(normalizedStr);
++    sqlite3_free(v->pCacheWriteBuf);  // sqlite3DbFree
++    v->pCacheWriteBuf = NULL;
++}
++
++static int QCacheStr2UintSafe(const char *s, unsigned int *out)
++{
++    if (!s || !out) {
++        return SQLITE_ERROR;
++    }
++
++    char *end;
++    errno = 0;
++    unsigned long val = strtoul(s, &end, 10);
++    if (end == s) {
++        return SQLITE_ERROR;
++    }
++    if (*end != 0) {
++        return SQLITE_ERROR;
++    }
++    if (errno == ERANGE) {
++        return SQLITE_ERROR;
++    }
++    if (val > UINT_MAX) {
++        return SQLITE_ERROR;
++    }
++
++    *out = (unsigned int)val;
++    return SQLITE_OK;
++}
++
++int sqlite3QCacheEntrySetTtlcycle(const char *zTimeStr)
++{
++    if (!zTimeStr) {
++        return SQLITE_OK;
++    }
++
++    QCacheEntry *entry = sqlite3QCacheGetProcessEntry();
++    if (!entry || entry->inAccessible) {
++        return SQLITE_OK;
++    }
++
++    u32 invalidPeriod = 0;
++    if (QCacheStr2UintSafe(zTimeStr, (u32 *)&invalidPeriod) == SQLITE_OK) {
++        entry->ttlCycle = invalidPeriod;
++    }
++
++    return SQLITE_OK;
++}
++
++int sqlite3QCacheEntryCreateBySize(sqlite3 *db, const char *cacheSize)
++{
++    if (!db || !cacheSize) {
++        return SQLITE_OK;
++    }
++
++    u32 cacheFileSizeKB = 0;
++    if (QCacheStr2UintSafe(cacheSize, (u32 *)&cacheFileSizeKB) != SQLITE_OK) {
++        return SQLITE_ERROR;
++    }
++    u32 cacheFileSizeBytes = QCACHE_ALIGN_UP_TO_4KB_BYTES(cacheFileSizeKB);
++
++    int ret = SQLITE_OK;
++    QCacheEntry *entry = sqlite3QCacheGetProcessEntry();
++    if (!entry) {
++        ret = qCacheCreateProcessEntry(db, cacheFileSizeBytes, &entry);
++        if (ret != SQLITE_OK) {
++            sqlite3_log(ret, "sqlite3QCacheEntryCreateBySize(): qCacheCreateProcessEntry.");
++            return ret;
++        }
++        return SQLITE_OK;
++    }
++    sqlite3_log(SQLITE_ERROR, "[sqlite][qcache] sqlite query create entry by size %u.", cacheFileSizeBytes);
++    if (entry->cacheFileSize >= cacheFileSizeBytes || !entry->inAccessible) {
++        entry->inAccessible = 0;
++        return SQLITE_OK;
++    }
++
++    return qCacheRebuildProcessEntry(entry, cacheFileSizeBytes);
++}
++
++int sqlite3QCacheServiceCtrl(sqlite3 *db, const char *enableStr)
++{
++    if (!db || !enableStr) {
++        return SQLITE_OK;
++    }
++
++    u32 enableFlag = 0;
++    if (QCacheStr2UintSafe(enableStr, (u32 *)&enableFlag) != SQLITE_OK) {
++        return SQLITE_ERROR;
++    }
++
++    enableFlag = (enableFlag > 0) ? 1 : 0;
++    QCacheEntry *entry = sqlite3QCacheGetProcessEntry();
++    if ((enableFlag && entry) || (!enableFlag && (!entry))) {
++        return SQLITE_OK;
++    }
++
++    if (enableFlag) {
++        return qCacheCreateProcessEntry(db, 0, &entry);
++    }
++
++    return sqlite3QCacheCloseProcessEntry();
++}
++
++int sqlite3QCacheServiceDebug(const char *enableStr, QCacheVersion *version)
++{
++    if (!enableStr || !version) {
++        return SQLITE_OK;
++    }
++
++    QCacheEntry *entry = sqlite3QCacheGetProcessEntry();
++    if (!entry) {
++        sqlite3_log(SQLITE_MISUSE, "sqlite3QCacheServiceDebug(): sqlite3QCacheGetProcessEntry.");
++        return SQLITE_MISUSE;
++    }
++
++    u32 enableFlag = 0;
++    if (QCacheStr2UintSafe(enableStr, (u32 *)&enableFlag) != SQLITE_OK) {
++        return SQLITE_ERROR;
++    }
++
++    if (enableFlag <= 0) {
++        return SQLITE_OK;
++    }
++
++    if (enableFlag == HOTSQL_DELE_ALL_CODE) {
++        return qCacheEntryHandleByType(entry, QCACHE_MSG_DELETE_ALL, version);
++    }
++
++    return qCacheEntryHandleByType(entry, QCACHE_MSG_DEBUG, version);
++}
++
++int sqlite3QCacheServiceInfo(const char *enableStr, QCacheVersion *version)
++{
++    if (!enableStr) {
++        return SQLITE_OK;
++    }
++
++    QCacheEntry *entry = sqlite3QCacheGetProcessEntry();
++    if (!entry) {
++        sqlite3_log(SQLITE_MISUSE, "sqlite3QCacheServiceInfo(): sqlite3QCacheGetProcessEntry.");
++        return SQLITE_MISUSE;
++    }
++
++    u32 enableFlag = 0;
++    if (QCacheStr2UintSafe(enableStr, (u32 *)&enableFlag) != SQLITE_OK) {
++        return SQLITE_ERROR;
++    }
++
++    if (enableFlag <= 0) {
++        return SQLITE_OK;
++    }
++
++    return qCacheEntryHandleByType(entry, QCACHE_MSG_INFO, version);
++}
++
++#endif /* SQLITE_QUERY_CACHE */
++/* fuction for hot sql cache end */
++
+ /*
+ ** Function prototypes
+ */
+@@ -31442,7 +34989,11 @@ static char *printfTempBuf(sqlite3_str *pAccum, sqlite3_int64 n){
+ ** SQLITE_PRINT_BUF_SIZE to be something smaller, if desired.
+ */
+ #ifndef SQLITE_PRINT_BUF_SIZE
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++# define SQLITE_PRINT_BUF_SIZE 700
++#else
+ # define SQLITE_PRINT_BUF_SIZE 70
++#endif // SQLITE_QUERY_CACHE_DEBUG
+ #endif
+ #define etBUFSIZE SQLITE_PRINT_BUF_SIZE  /* Size of the output buffer */
+ 
+@@ -57609,6 +61160,10 @@ SQLITE_PRIVATE void sqlite3WalDb(Wal *pWal, sqlite3 *db);
+ SQLITE_PRIVATE int sqlite3WalSystemErrno(Wal*);
+ #endif
+ 
++#ifdef SQLITE_QUERY_CACHE
++int sqlite3WalGetSaltVal(Wal *pWal, u32 *salt1, u32 *salt2);
++#endif /* SQLITE_QUERY_CACHE */
++
+ #endif /* ifndef SQLITE_OMIT_WAL */
+ #endif /* SQLITE_WAL_H */
+ 
+@@ -65727,6 +69282,25 @@ SQLITE_PRIVATE int sqlite3PagerWalSystemErrno(Pager *pPager){
+ }
+ #endif
+ 
++#ifdef SQLITE_QUERY_CACHE
++int sqlite3PagerGetWalSalt(Pager *pPager, u32 *salt1, u32 *salt2){
++  if( !pPager->pWal ){
++    return 0;
++  }
++
++  return sqlite3WalGetSaltVal(pPager->pWal, salt1, salt2);
++}
++
++int sqlite3PagerGetChangeCounter(Pager *pPager, u32 *changeCounter){
++  if( pPager->pWal ){
++    return 0;
++  }
++  *changeCounter = sqlite3Get4byte((u8*)pPager->dbFileVers);
++  return 1;
++}
++#endif /* SQLITE_QUERY_CACHE */
++
++
+ #endif /* SQLITE_OMIT_DISKIO */
+ 
+ /************** End of pager.c ***********************************************/
+@@ -70321,6 +73895,18 @@ SQLITE_PRIVATE sqlite3_file *sqlite3WalFile(Wal *pWal){
+   return pWal->pWalFd;
+ }
+ 
++#ifdef SQLITE_QUERY_CACHE
++int sqlite3WalGetSaltVal(Wal *pWal, u32 *salt1, u32 *salt2){
++  if (!pWal) {
++    return 0;
++  }
++
++  *salt1 = pWal->hdr.aSalt[0];
++  *salt2 = pWal->hdr.aSalt[1];
++  return 1;
++}
++#endif /* SQLITE_QUERY_CACHE */
++
+ #endif /* #ifndef SQLITE_OMIT_WAL */
+ 
+ /************** End of wal.c *************************************************/
+@@ -91682,6 +95268,27 @@ SQLITE_API int sqlite3_finalize(sqlite3_stmt *pStmt){
+     if( vdbeSafety(v) ) return SQLITE_MISUSE_BKPT;
+     sqlite3_mutex_enter(db->mutex);
+     checkProfileCallback(db, v);
++
++#ifdef SQLITE_QUERY_CACHE
++    if( sqlite3QCacheGetProcessEntry() ){
++      sqlite3QCacheBufReset(db, pStmt);
++    }
++
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++    if( db->startTime.tv_sec!=0 || db->startTime.tv_nsec!=0 ){
++      struct timespec endTime;
++      clock_gettime(CLOCK_MONOTONIC, &endTime);
++      double elapsed = (endTime.tv_sec - db->startTime.tv_sec) * 1000000.0;
++      elapsed += (endTime.tv_nsec - db->startTime.tv_nsec) / 1000.0;
++      char *normalizedStr = qCacheAllocNormalizedSqlStr(pStmt);
++      qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] sqlite exec query SQL finalize cost %f us: %s.", elapsed, normalizedStr);
++      qCacheFreeNormalizedSqlStr(normalizedStr);
++      db->startTime.tv_sec = 0;
++      db->startTime.tv_nsec = 0;
++    }
++#endif /* SQLITE_QUERY_CACHE_DEBUG */
++#endif /* SQLITE_QUERY_CACHE */
++
+     assert( v->eVdbeState>=VDBE_READY_STATE );
+     rc = sqlite3VdbeReset(v);
+     sqlite3VdbeDelete(v);
+@@ -91708,6 +95315,27 @@ SQLITE_API int sqlite3_reset(sqlite3_stmt *pStmt){
+     sqlite3 *db = v->db;
+     sqlite3_mutex_enter(db->mutex);
+     checkProfileCallback(db, v);
++
++#ifdef SQLITE_QUERY_CACHE
++    if( sqlite3QCacheGetProcessEntry() ){
++      sqlite3QCacheBufReset(db, pStmt);
++    }
++
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++    if( db->startTime.tv_sec!=0 || db->startTime.tv_nsec!=0 ){
++      struct timespec endTime;
++      clock_gettime(CLOCK_MONOTONIC, &endTime);
++      double elapsed = (endTime.tv_sec - db->startTime.tv_sec) * 1000000.0;
++      elapsed += (endTime.tv_nsec - db->startTime.tv_nsec) / 1000.0;
++      char *normalizedStr = qCacheAllocNormalizedSqlStr(pStmt);
++      qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] sqlite exec query SQL reset cost %f us: %s.", elapsed, normalizedStr);
++      qCacheFreeNormalizedSqlStr(normalizedStr);
++      db->startTime.tv_sec = 0;
++      db->startTime.tv_nsec = 0;
++    }
++#endif /* SQLITE_QUERY_CACHE_DEBUG */
++#endif /* SQLITE_QUERY_CACHE */
++
+     rc = sqlite3VdbeReset(v);
+     sqlite3VdbeRewind(v);
+     assert( (rc & (db->errMask))==rc );
+@@ -92655,6 +96283,36 @@ SQLITE_API int sqlite3_step(sqlite3_stmt *pStmt){
+   }
+   db = v->db;
+   sqlite3_mutex_enter(db->mutex);
++
++#ifdef SQLITE_QUERY_CACHE
++  int cacheFlags = 0;
++  if( sqlite3QCacheGetProcessEntry() ){
++    u8 isGetRow = 0;
++    rc = sqlite3QCacheGetRowData(db, pStmt, v, &isGetRow);
++    cacheFlags = v->cacheFlags;
++    if (isGetRow) {
++      sqlite3UpdateQCache2SharedBlock(v);
++      sqlite3_mutex_leave(db->mutex);
++
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++      if( (db->startTime.tv_sec!=0 || db->startTime.tv_nsec!=0) && rc == SQLITE_DONE ){
++        struct timespec endTime;
++        clock_gettime(CLOCK_MONOTONIC, &endTime);
++        double elapsed = (endTime.tv_sec - db->startTime.tv_sec) * 1000000.0;
++        elapsed += (endTime.tv_nsec - db->startTime.tv_nsec) / 1000.0;
++        char *normalizedStr = qCacheAllocNormalizedSqlStr(pStmt);
++        qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] sqlite exec query SQL fast cost %f us: %s.", elapsed, normalizedStr);
++        qCacheFreeNormalizedSqlStr(normalizedStr);
++        db->startTime.tv_sec = 0;
++        db->startTime.tv_nsec = 0;
++      }
++#endif /* SQLITE_QUERY_CACHE_DEBUG */
++
++      return rc;
++    }
++  }
++#endif /* SQLITE_QUERY_CACHE */
++
+   while( (rc = sqlite3Step(v))==SQLITE_SCHEMA
+          && cnt++ < SQLITE_MAX_SCHEMA_RETRY ){
+     int savedPc = v->pc;
+@@ -92719,6 +96377,28 @@ SQLITE_API int sqlite3_step(sqlite3_stmt *pStmt){
+     db->mDropSchemaName = NULL;
+   }
+ #endif /* SQLITE_ENABLE_DROPTABLE_CALLBACK */
++
++#ifdef SQLITE_QUERY_CACHE
++  if( sqlite3QCacheGetProcessEntry() ){
++    v->cacheFlags = cacheFlags;
++    sqlite3QCacheProcessAfterStep(db, pStmt, v, rc);
++  }
++
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++  if( (db->startTime.tv_sec!=0 || db->startTime.tv_nsec!=0) && rc == SQLITE_DONE ){
++    struct timespec endTime;
++    clock_gettime(CLOCK_MONOTONIC, &endTime);
++    double elapsed = (endTime.tv_sec - db->startTime.tv_sec) * 1000000.0;
++    elapsed += (endTime.tv_nsec - db->startTime.tv_nsec) / 1000.0;
++    char *normalizedStr = qCacheAllocNormalizedSqlStr(pStmt);
++    qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] sqlite exec query SQL normal cost %f us: %s.", elapsed, normalizedStr);
++    qCacheFreeNormalizedSqlStr(normalizedStr);
++    db->startTime.tv_sec = 0;
++    db->startTime.tv_nsec = 0;
++  }
++#endif /* SQLITE_QUERY_CACHE_DEBUG */
++#endif /* SQLITE_QUERY_CACHE */
++
+   sqlite3_mutex_leave(db->mutex);
+   return rc;
+ }
+@@ -132617,6 +136297,125 @@ static void fpdecodeFunc(
+ }
+ #endif /* SQLITE_DEBUG */
+ 
++#ifdef SQLITE_QUERY_CACHE
++static void sqlite3HotSqlRegFuncImpl(
++    sqlite3_context *context,
++    int argc,
++    sqlite3_value **argv
++){
++    int rc;
++    sqlite3 *db;
++    const char *zSql;
++    if( argc!=1 ){
++        sqlite3_result_error(context, "HotSql exactly one argument required", -1);
++        return;
++    }
++    if( sqlite3_value_type(argv[0])==SQLITE_NULL ){
++        sqlite3_result_null(context);
++        return;
++    }
++    zSql = (const char*)sqlite3_value_text(argv[0]);
++    if( zSql==0 ){
++        sqlite3_result_null(context);
++        return;
++    }
++
++    db = sqlite3_context_db_handle(context);
++    if( db == 0 ){
++        sqlite3_result_error(context, "HotSql unable to get database handle", -1);
++        return;
++    }
++
++    rc = sqlite3QCacheRegister(db, zSql);
++    if( rc!=SQLITE_OK ){
++        sqlite3_result_error(context, "HotSql unable to execute Register fun", -1);
++        return;
++    }
++
++    sqlite3_result_int(context, 1);
++
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++        qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] register hotSql by sqlite3HotSqlRegFunc: %s.", zSql);
++#endif /* SQLITE_QUERY_CACHE_DEBUG */
++}
++
++static void sqlite3HotSqlUnRegFuncImpl(
++    sqlite3_context *context,
++    int argc,
++    sqlite3_value **argv
++){
++    int rc;
++    const char *zSql;
++    if( argc!=1 ){
++        sqlite3_result_error(context, "HotSql exactly one argument required", -1);
++        return;
++    }
++    if( sqlite3_value_type(argv[0])==SQLITE_NULL ){
++        sqlite3_result_null(context);
++        return;
++    }
++    zSql = (const char*)sqlite3_value_text(argv[0]);
++    if( zSql==0 ){
++        sqlite3_result_null(context);
++        return;
++    }
++
++    rc = sqlite3QCacheUnRegister(zSql);
++    if( rc!=SQLITE_OK ){
++        sqlite3_result_error(context, "HotSql unable to execute unRegister fun", -1);
++        return;
++    }
++
++    sqlite3_result_int(context, 1);
++
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++        qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] unRegister hotSql by sqlite3HotSqlUnRegFunc: %s.", zSql);
++#endif /* SQLITE_QUERY_CACHE_DEBUG */
++}
++
++static void sqlite3HotSqlEnableFuncImpl(
++    sqlite3_context *context,
++    int argc,
++    sqlite3_value **argv
++){
++    int rc;
++    sqlite3 *db;
++    const char *zSql;
++    if( argc!=1 ){
++        sqlite3_result_error(context, "HotSql exactly one argument required", -1);
++        return;
++    }
++    if( sqlite3_value_type(argv[0])==SQLITE_NULL ){
++        sqlite3_result_null(context);
++        return;
++    }
++    zSql = (const char*)sqlite3_value_text(argv[0]);
++    if( zSql==0 ){
++        sqlite3_result_null(context);
++        return;
++    }
++
++    db = sqlite3_context_db_handle(context);
++    if( db == 0 ){
++        sqlite3_result_error(context, "HotSql unable to get database handle", -1);
++        return;
++    }
++
++    rc = sqlite3QCacheServiceCtrl(db, zSql);
++    if( rc!=SQLITE_OK ){
++        sqlite3_result_error(context, "HotSql unable to execute Ctrl fun", -1);
++        return;
++    }
++
++    sqlite3_result_int(context, 1);
++
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++        qCachePrintFulllog(SQLITE_ERROR, "[sqlite][qcache] service control by sqlite3HotSqlEnableFunc: %s.", zSql);
++#endif /* SQLITE_QUERY_CACHE_DEBUG */
++}
++
++#endif /* SQLITE_QUERY_CACHE */
++
+ /*
+ ** All of the FuncDef structures in the aBuiltinFunc[] array above
+ ** to the global function hash table.  This occurs at start-time (as
+@@ -132789,6 +136588,13 @@ SQLITE_PRIVATE void sqlite3RegisterBuiltinFunctions(void){
+     FUNCTION(sign,               1, 0, 0,      signFunc    ),
+     INLINE_FUNC(coalesce,       -1, INLINEFUNC_coalesce, 0 ),
+     INLINE_FUNC(iif,             3, INLINEFUNC_iif,      0 ),
++
++#ifdef SQLITE_QUERY_CACHE
++    SFUNCTION(sqlite3HotSqlRegFunc, 1, 0, 0, sqlite3HotSqlRegFuncImpl),
++    SFUNCTION(sqlite3HotSqlUnRegFunc, 1, 0, 0, sqlite3HotSqlUnRegFuncImpl),
++    SFUNCTION(sqlite3HotSqlEnableFunc, 1, 0, 0, sqlite3HotSqlEnableFuncImpl),
++#endif /* SQLITE_QUERY_CACHE */
++
+   };
+ #ifndef SQLITE_OMIT_ALTERTABLE
+   sqlite3AlterFunctions();
+@@ -140387,6 +144193,193 @@ static int integrityCheckResultRow(Vdbe *v){
+ static int PragmaCksumPersistEnable(sqlite3 *db, int iDb, Parse *parse, const char *zLeft, const char *zRight);
+ #endif
+ 
++#ifdef SQLITE_QUERY_CACHE
++static int sqlite3HotSqlInterception(sqlite3 *db)
++{
++#ifdef SQLITE_HAS_CODEC
++    if (db->aDb->pBt->pBt->pPager->xCodec != 0) {
++        return 1;
++    }
++#endif /* SQLITE_HAS_CODEC */
++    return 0;
++}
++
++/*
++ * Retrieve WAL salt1/salt2 from a database connection.
++ *
++ * Results:
++ *   1 if the database is in WAL mode and salts are obtained successfully.
++ *   0 otherwise (not WAL or error).
++ */
++int sqlite3QCacheGetWALSalt(sqlite3 *db, u32 *salt1, u32 *salt2)
++{
++    /* Basic sanity checking */
++    if (!db || !salt1 || !salt2) {
++        return 0;
++    }
++
++    Btree *pBt = db->aDb[0].pBt;
++    if (!pBt) {
++        return 0;
++    }
++
++    Pager *pPager = sqlite3BtreePager(pBt);
++    if (!pPager) {
++        return 0;
++    }
++
++    return sqlite3PagerGetWalSalt(pPager, salt1, salt2);
++}
++
++int sqlite3QCacheGetSchemaCookie(sqlite3 *db, u32 *schemaCookie)
++{
++    if (!db) {
++        return 0;
++    }
++
++    Schema *pS = db->aDb[0].pSchema;
++    if (pS == NULL) {
++        return 0;
++    }
++
++    Btree *pBt = db->aDb[0].pBt;
++    if (!pBt) {
++        return 0;
++    }
++
++    // fromDb==0: use in-memory value if available
++    int rc = SQLITE_OK;
++    int openedTransaction = 0;
++    if (sqlite3BtreeTxnState(pBt) == SQLITE_TXN_NONE) {
++        rc = sqlite3BtreeBeginTrans(pBt, 0, 0);
++        if (rc != SQLITE_OK) {
++            return rc;
++        }
++        openedTransaction = 1;
++    }
++
++    sqlite3BtreeGetMeta(pBt, BTREE_SCHEMA_VERSION, schemaCookie);
++
++    if (openedTransaction) {
++        sqlite3BtreeCommit(pBt);
++    }
++
++    return SQLITE_OK;
++}
++
++static int QCacheGetChangeCounterFromFile(Btree *pBt, Pager *pPager, u32 *chgCounter)
++{
++    int rc = 0;
++    sqlite3BtreeEnter(pBt);
++
++    if (pPager->fd == NULL) {
++        rc = 0;
++        goto end;
++    }
++    sqlite3_file *fd = pPager->fd;
++    u8 pageBuf[100] = {0};
++    rc = sqlite3OsRead(fd, pageBuf, sizeof(pageBuf), 0);
++    if (rc != SQLITE_OK) {
++        rc = 0;
++        goto end;
++    }
++
++    char dbFileVers[16];
++    memcpy(dbFileVers, &pageBuf[24], 16);
++    *chgCounter = sqlite3Get4byte((u8*)dbFileVers);
++    rc = 1;
++
++end:
++    sqlite3BtreeLeave(pBt);
++    return rc;
++}
++
++int QCacheGetChangeCounterWAL(Pager *pPager, u32 *pChangeCounter)
++{
++    if( !pPager || !pPager->pWal ){
++        return SQLITE_ERROR;
++    }
++
++    Wal *pWal = pPager->pWal;
++
++    *pChangeCounter = pWal->hdr.iChange;
++    return SQLITE_OK;
++}
++
++int sqlite3QCacheGetChangeCounter(sqlite3 *db, u32 *chgCounter)
++{
++    if (!db || !chgCounter) {
++        return 0;
++    }
++
++    Btree *pBt = db->aDb[0].pBt;
++    if (!pBt) {
++        return 0;
++    }
++
++    Pager *pPager = sqlite3BtreePager(pBt);
++    if (!pPager) {
++        return 0;
++    }
++
++    if (pPager->pWal) {
++        return QCacheGetChangeCounterWAL(pPager, chgCounter);
++    }
++
++    return QCacheGetChangeCounterFromFile(pBt, pPager, chgCounter);
++}
++
++/*
++** Handler for PRAGMA hot_sql_register and PRAGMA hot_sql_unregister
++** zLeft:  Name of the PRAGMA (hot_sql_register / hot_sql_unregister)
++** zRight: SQL statement string to register or unregister from query cache
++**
++** Return non-zero if the pragma is recognized and processed.
++*/
++int PragmaHotSql(sqlite3 *db, Parse *pParse, const char *zLeft, const char *zRight)
++{
++    if (!db || !zLeft || !zRight) {
++        return SQLITE_OK;
++    }
++
++    /* Check if it is a HotSQL-related PRAGMA */
++    if (sqlite3_strnicmp(zLeft, QCACHE_HOTSQL_PREFIX, strlen(QCACHE_HOTSQL_PREFIX)) != 0) {
++        return SQLITE_OK;
++    }
++
++    /* Forbid HotSQL in encrypted databases */
++    if (sqlite3HotSqlInterception(db)) {
++        sqlite3ErrorMsg(pParse, "hot SQL is not supported in encrypted database");
++        return SQLITE_PERM;
++    }
++
++    if (sqlite3StrICmp(zLeft, QCACHE_HOTSQL_REGISTER) == 0) {
++        return sqlite3QCacheRegister(db, zRight);
++    } else if (sqlite3StrICmp(zLeft, QCACHE_HOTSQL_UNREGISTER) == 0) {
++        return sqlite3QCacheUnRegister(zRight);
++    } else if (sqlite3StrICmp(zLeft, QCACHE_HOTSQL_INVALID_TIME) == 0) {
++        return sqlite3QCacheEntrySetTtlcycle(zRight);
++    } else if (sqlite3StrICmp(zLeft, QCACHE_HOTSQL_CACHE_SIZE) == 0) {
++        return sqlite3QCacheEntryCreateBySize(db, zRight);
++    } else if (sqlite3StrICmp(zLeft, QCACHE_HOTSQL_ENABLE) == 0) {
++        return sqlite3QCacheServiceCtrl(db, zRight);
++    } else {
++        QCacheVersion version = {0};
++        sqlite3QCacheGetSchemaCookie(db, &version.schemaCookie);
++        sqlite3QCacheGetChangeCounter(db, &version.changeCounter);
++        sqlite3QCacheGetWALSalt(db, &version.walSalt1, &version.walSalt2);
++        if (sqlite3StrICmp(zLeft, QCACHE_HOTSQL_DEBUG) == 0) {
++            return sqlite3QCacheServiceDebug(zRight, &version);
++        } else if (sqlite3StrICmp(zLeft, QCACHE_HOTSQL_INFO) == 0) {
++            return sqlite3QCacheServiceInfo(zRight, &version);
++        }
++    }
++
++    return SQLITE_OK;
++}
++
++#endif /* SQLITE_QUERY_CACHE */
++
+ /*
+ ** Process a pragma statement.
+ **
+@@ -140497,6 +144490,13 @@ SQLITE_PRIVATE void sqlite3Pragma(
+     goto pragma_out;
+   }
+ 
++#ifdef SQLITE_QUERY_CACHE
++  if(PragmaHotSql(db, pParse, zLeft, zRight)) {
++    /* PragmaHotSql executes internal */
++    goto pragma_out;
++  }
++#endif /* SQLITE_QUERY_CACHE */
++
+ #ifdef SQLITE_HAS_CODEC
+   if(sqlite3CodecPragma(db, iDb, pParse, zLeft, zRight)) {
+     /* sqlite3CodecPragma executes internal */
+@@ -143891,6 +147891,16 @@ static int sqlite3LockAndPrepare(
+   int rc;
+   int cnt = 0;
+ 
++#ifdef SQLITE_QUERY_CACHE
++#ifdef SQLITE_QUERY_CACHE_DEBUG
++  db->startTime.tv_sec = 0;
++  db->startTime.tv_nsec = 0;
++  if( sqlite3_strnicmp(zSql, "select", 6)==0 || sqlite3_strnicmp(zSql, "with", 4)==0 ){
++    clock_gettime(CLOCK_MONOTONIC, &db->startTime);
++  }
++#endif /* SQLITE_QUERY_CACHE_DEBUG */
++#endif /* SQLITE_QUERY_CACHE */
++
+ #ifdef SQLITE_ENABLE_API_ARMOR
+   if( ppStmt==0 ) return SQLITE_MISUSE_BKPT;
+ #endif
+@@ -181911,6 +185921,12 @@ static int sqlite3Close(sqlite3 *db, int forceZombie){
+     sqlite3_free(p);
+   }
+ 
++#ifdef SQLITE_QUERY_CACHE
++  if( sqlite3QCacheGetProcessEntry() ){
++    sqlite3QCacheCloseProcessEntry();
++  }
++#endif /* SQLITE_QUERY_CACHE */
++
+   /* Convert the connection into a zombie and then close it.
+   */
+   db->eOpenState = SQLITE_STATE_ZOMBIE;
+-- 
+2.43.0
+
