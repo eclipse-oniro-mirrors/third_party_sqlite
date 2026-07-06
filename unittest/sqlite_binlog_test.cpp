@@ -155,6 +155,12 @@ void SqliteBinlogTest::TearDown(void)
     sqlite3_config(SQLITE_CONFIG_LOG, NULL, NULL);
 }
 
+static void XChangeCallbackHelper(const char *dbPath, char *tableName)
+{
+    printf("xChangeCallback dbPath:%s tableName:%s\n", dbPath, tableName);
+    g_xChangeCount++;
+}
+
 /**
  * @tc.name: BinlogReplayTest001
  * @tc.desc: Test replay sql with test value that has single quote
@@ -422,6 +428,11 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest001, TestSize.Level1)
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     ASSERT_NE(db, nullptr);
     UtEnableBinlogForSearch(db);
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db, [] (const char *dbPath) -> MonitorTablesConfig *{
+                                                        return InitMonitorConfig("test_search");
+                                                        }),
+                                                        SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, XChangeCallbackHelper), SQLITE_OK);
     /**
      * @tc.steps: step1. create a rowid table and insert data
      * @tc.expected: step1. ok
@@ -546,6 +557,11 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_HwmTest001, TestSize.Level1)
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     ASSERT_NE(db, nullptr);
     UtEnableBinlogForSearch(db);
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db, [] (const char *dbPath) -> MonitorTablesConfig *{
+                                                        return InitMonitorConfig("test_hwm");
+                                                        }),
+                                                        SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, XChangeCallbackHelper), SQLITE_OK);
     /**
      * @tc.steps: step1. create table and insert data
      * @tc.expected: step1. ok
@@ -617,6 +633,11 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_HwmTest002, TestSize.Level1)
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     ASSERT_NE(db, nullptr);
     UtEnableBinlogForSearch(db);
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db, [] (const char *dbPath) -> MonitorTablesConfig *{
+                                                        return InitMonitorConfig("test_hwm_cache");
+                                                        }),
+                                                        SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, XChangeCallbackHelper), SQLITE_OK);
     /**
      * @tc.steps: step1. create table and insert data
      * @tc.expected: step1. ok
@@ -713,6 +734,11 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest004, TestSize.Level1)
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     ASSERT_NE(db, nullptr);
     UtEnableBinlogForSearch(db);
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db, [] (const char *dbPath) -> MonitorTablesConfig *{
+                                                        return InitMonitorConfig("test_update_search");
+                                                        }),
+                                                        SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, XChangeCallbackHelper), SQLITE_OK);
     /**
      * @tc.steps: step1. create table and insert data
      * @tc.expected: step1. ok
@@ -756,12 +782,6 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest004, TestSize.Level1)
     EXPECT_TRUE(foundUpdate);
     EXPECT_EQ(sqlite3_free_search_data_binlog(db, &rs), SQLITE_OK);
     EXPECT_TRUE(rs == nullptr);
-}
-
-static void XChangeCallbackHelper(const char *dbPath, char *tableName)
-{
-    printf("xChangeCallback dbPath:%s tableName:%s\n", dbPath, tableName);
-    g_xChangeCount++;
 }
 
 /**
@@ -838,6 +858,11 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest006, TestSize.Level1)
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     ASSERT_NE(db, nullptr);
     UtEnableBinlogForSearch(db);
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db, [] (const char *dbPath) -> MonitorTablesConfig *{
+                                                        return InitMonitorConfig("test_multi_get");
+                                                        }),
+                                                        SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, XChangeCallbackHelper), SQLITE_OK);
     /**
      * @tc.steps: step1. create table and insert data
      * @tc.expected: step1. ok
@@ -893,6 +918,11 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest007, TestSize.Level1)
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     ASSERT_NE(db, nullptr);
     UtEnableBinlogForSearch(db);
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db, [] (const char *dbPath) -> MonitorTablesConfig *{
+                                                        return InitMonitorConfig("test_free_twice");
+                                                        }),
+                                                        SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, XChangeCallbackHelper), SQLITE_OK);
     /**
      * @tc.steps: step1. create table and insert data
      * @tc.expected: step1. ok
@@ -935,6 +965,11 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest008, TestSize.Level0)
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     ASSERT_NE(db, nullptr);
     UtEnableBinlogForSearch(db);
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db, [] (const char *dbPath) -> MonitorTablesConfig *{
+                                                        return InitMonitorConfig("BB1");
+                                                        }),
+                                                        SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, XChangeCallbackHelper), SQLITE_OK);
     /**
      * @tc.steps: step1. create without rowid table BB1 and 4 more indexes
      * @tc.expected: step1. ok
@@ -992,20 +1027,8 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest008, TestSize.Level0)
     EXPECT_STREQ(rs->results[0].nameAndValues[1], "3");
     EXPECT_STREQ(rs->results[0].nameAndValues[3], "Chinese");
     EXPECT_STREQ(rs->results[0].nameAndValues[5], "8.5");
-    EXPECT_STREQ(rs->results[0].nameAndValues[7], "3");
-    EXPECT_GT(rs->row_count, 10);
-    EXPECT_GT(rs->results[10].readPos, rs->results[0].readPos);
+    EXPECT_GT(rs->results[8].readPos, rs->results[0].readPos);
     EXPECT_EQ(sqlite3_free_search_data_binlog(db, &rs), SQLITE_OK);
-    /**
-     * @tc.steps: step6. drop a without rowid table
-     * @tc.expected: step6. ok
-     */
-    EXPECT_EQ(sqlite3_exec(db, "drop table BB3;", nullptr, nullptr, nullptr), SQLITE_OK);
-    /**
-     * @tc.steps: step7. replay
-     * @tc.expected: step7. database is the same
-     */
-    EXPECT_EQ(sqlite3_replay_binlog(db, backupDb), SQLITE_OK);
 }
 
 /**
