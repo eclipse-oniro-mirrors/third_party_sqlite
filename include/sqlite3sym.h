@@ -55,6 +55,7 @@ typedef struct BinlogSearchResult {
   int fileIndex;
   sqlite3_uint64 readPos;
   char **nameAndValues; // pointer to the row data in record format
+  int *colTypes;
 } BinlogSearchResult;
 
 typedef struct BinlogSearchResultSet{
@@ -119,6 +120,7 @@ struct sqlite3_api_routines_extra {
   int (*set_monitor_config)(sqlite3*, MonitorTablesConfig*);
   int (*set_xChange_callback)(sqlite3*, void (*xChangeCallback)(const char *dbPath, char *tableName));
   int (*set_json_parse_callback)(sqlite3*, MonitorTablesConfig*(*jsonParseCallback)(const char *dbPath));
+  int (*free_json_parse_callback)(sqlite3*, int(*freeJsonParseCallback)(MonitorTablesConfig *config));
   int (*get_search_data)(sqlite3*, sqlite3*, BinlogSearchResultSet**);
   int (*free_search_data)(sqlite3*, BinlogSearchResultSet**);
   int (*set_search_hwm)(sqlite3*, BinlogSearchHwmT*, BinlogHwmSetModeE);
@@ -140,6 +142,7 @@ extern const struct sqlite3_api_routines_extra *sqlite3_export_extra_symbols;
 #define sqlite3_set_monitor_config_binlog  sqlite3_export_extra_symbols->set_monitor_config
 #define sqlite3_set_xChange_callback_binlog  sqlite3_export_extra_symbols->set_xChange_callback
 #define sqlite3_set_json_parse_callback_binlog  sqlite3_export_extra_symbols->set_json_parse_callback
+#define sqlite3_free_json_parse_callback_binlog  sqlite3_export_extra_symbols->free_json_parse_callback
 #define sqlite3_get_search_data_binlog  sqlite3_export_extra_symbols->get_search_data
 #define sqlite3_free_search_data_binlog sqlite3_export_extra_symbols->free_search_data
 #define sqlite3_set_search_hwm_binlog   sqlite3_export_extra_symbols->set_search_hwm
