@@ -34,8 +34,9 @@ typedef enum BinlogFileCleanMode {
 } BinlogFileCleanModeE;
 
 typedef enum {
-  ROW = 0,
-  ROW_FOR_SEARCH = 2
+  ROW = 1,
+  ROW_FOR_SEARCH = 2,
+  READ_FOR_SEARCH = 3
 } Sqlite3BinlogMode;
 
 typedef struct Sqlite3BinlogConfig {
