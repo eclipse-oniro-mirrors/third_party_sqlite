@@ -1,13 +1,13 @@
-From 7108a95a00062eb180993e1b11498b734ebd448f Mon Sep 17 00:00:00 2001
+From 54871540e3f705d6ab8dd9cdcbf7c6dcb3e437f7 Mon Sep 17 00:00:00 2001
 From: chenwei_1994 <1606056289@qq.com>
-Date: Sun, 12 Jul 2026 14:43:02 +0800
+Date: Thu, 16 Jul 2026 20:29:21 +0800
 Subject: [PATCH] Bugfix on current version
 
 ---
  ext/misc/cksumvfs.c |  11 +-
  src/compressvfs.c   | 514 +++++++++++++++++++++---------
- src/sqlite3.c       | 752 ++++++++++++++++++++++++++++++++++----------
- 3 files changed, 953 insertions(+), 324 deletions(-)
+ src/sqlite3.c       | 756 ++++++++++++++++++++++++++++++++++----------
+ 3 files changed, 956 insertions(+), 325 deletions(-)
 
 diff --git a/ext/misc/cksumvfs.c b/ext/misc/cksumvfs.c
 index 27b1028..e89edcd 100644
@@ -858,7 +858,7 @@ index 8f2e908..53b9967 100644
  }
  
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 394e6bd..f220899 100644
+index 394e6bd..cd4a533 100644
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -3661,6 +3661,12 @@ SQLITE_API int sqlite3_set_authorizer(
@@ -1487,7 +1487,18 @@ index 394e6bd..f220899 100644
    /* Loop through the table columns, appending offset information to
    ** string-buffer res for each column.
    */
-@@ -243644,7 +243858,7 @@ static void fts5DataRelease(Fts5Data *pData){
+@@ -227794,7 +228008,9 @@ static int sessionVarintLen(int iVal){
+ ** bytes read.
+ */
+ static int sessionVarintGet(const u8 *aBuf, int *piVal){
+-  return getVarint32(aBuf, *piVal);
++  int ret = getVarint32(aBuf, *piVal);
++  *piVal = (*piVal & 0x7FFFFFFF);
++  return ret;
+ }
+ 
+ /* Load an unaligned and unsigned 32-bit integer */
+@@ -243644,7 +243860,7 @@ static void fts5DataRelease(Fts5Data *pData){
  static Fts5Data *fts5LeafRead(Fts5Index *p, i64 iRowid){
    Fts5Data *pRet = fts5DataRead(p, iRowid);
    if( pRet ){
@@ -1496,7 +1507,7 @@ index 394e6bd..f220899 100644
        p->rc = FTS5_CORRUPT;
        fts5DataRelease(pRet);
        pRet = 0;
-@@ -250163,9 +250377,13 @@ static void fts5IndexIntegrityCheckSegment(
+@@ -250163,9 +250379,13 @@ static void fts5IndexIntegrityCheckSegment(
          p->rc = FTS5_CORRUPT;
        }else{
          iOff += fts5GetVarint32(&pLeaf->p[iOff], nTerm);
@@ -1513,7 +1524,7 @@ index 394e6bd..f220899 100644
        }
  
        fts5IntegrityCheckPgidx(p, pLeaf);
-@@ -259128,6 +259346,21 @@ SQLITE_API int sqlite3_stmt_init(
+@@ -259128,6 +259348,21 @@ SQLITE_API int sqlite3_stmt_init(
  SQLITE_API const char *sqlite3_sourceid(void){ return SQLITE_SOURCE_ID; }
  /************************** End of sqlite3.c ******************************/
  
@@ -1535,7 +1546,7 @@ index 394e6bd..f220899 100644
  #ifdef SQLITE_CKSUMVFS_STATIC
  extern sqlite3_file *cksmvfsGetOrigFile(sqlite3_file *file);
  #else
-@@ -261762,7 +261995,12 @@ typedef struct MetaDwrHdr {
+@@ -261762,7 +261997,12 @@ typedef struct MetaDwrHdr {
    u32 pageSz;
    u32 pageCnt;
    u64 dbFileInode;
@@ -1549,7 +1560,7 @@ index 394e6bd..f220899 100644
    u32 checkSum;
    u8 *zones;
    Pgno *pages;
-@@ -262117,6 +262355,88 @@ static inline u64 CaculateMetaDwrWriteOffset(int pageSz, u32 idx, u8 zone) {
+@@ -262117,6 +262357,88 @@ static inline u64 CaculateMetaDwrWriteOffset(int pageSz, u32 idx, u8 zone) {
    return META_DWR_HEADER_PAGE_SIZE + pageSz * (idx * 2 + zone);
  }
  
@@ -1638,7 +1649,7 @@ index 394e6bd..f220899 100644
  static void MetaDwrUpdateHeaderDbInfo(BtShared *pBt) {
    MetaDwrHdr *hdr = pBt->pPager->metaHdr;
    // 28 offset: dbSize, freelist pageNo, freelist pages count, schema cookie
-@@ -262272,7 +262592,10 @@ static int MetaDwrRestoreAllPages(Btree *pBt, const ScanPages *metaPages, MetaDw
+@@ -262272,7 +262594,10 @@ static int MetaDwrRestoreAllPages(Btree *pBt, const ScanPages *metaPages, MetaDw
        return rc;
      }
    }
@@ -1650,7 +1661,7 @@ index 394e6bd..f220899 100644
    MetaDwrUpdateHeaderDbInfo(pBt->pBt);
    return rc;
  }
-@@ -262337,11 +262660,12 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
+@@ -262337,11 +262662,12 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
    if (pPager->metaMapPage == NULL) {
      sqlite3_int64 sz = META_DWR_HEADER_PAGE_SIZE;
      sqlite3OsFileControlHint(metaFd, SQLITE_FCNTL_CHUNK_SIZE, &sz);
@@ -1668,7 +1679,7 @@ index 394e6bd..f220899 100644
      }
    }
  #endif /* SQLITE_OS_UNIX */
-@@ -262718,7 +263042,7 @@ CHK_RESTORE_OUT:
+@@ -262718,7 +263044,7 @@ CHK_RESTORE_OUT:
  static int MetaDwrOpenAndCheck(Btree *pBt)
  {
    Pager *pPager = pBt->pBt->pPager;
@@ -1677,7 +1688,7 @@ index 394e6bd..f220899 100644
      return SQLITE_OK;
    }
  #ifdef SQLITE_HAS_CODEC
-@@ -262763,7 +263087,7 @@ DWR_OPEN_OUT:
+@@ -262763,7 +263089,7 @@ DWR_OPEN_OUT:
  static void MetaDwrDisable(Btree *pBt)
  {
    Pager *pPager = pBt->pBt->pPager;
@@ -1686,7 +1697,7 @@ index 394e6bd..f220899 100644
      return;
    }
  #ifdef SQLITE_HAS_CODEC
-@@ -262789,19 +263113,6 @@ static void MetaDwrDisable(Btree *pBt)
+@@ -262789,19 +263115,6 @@ static void MetaDwrDisable(Btree *pBt)
  #endif /* SQLITE_META_DWR */
  
  #if SQLITE_OS_UNIX
@@ -1706,7 +1717,7 @@ index 394e6bd..f220899 100644
  static u8 IsOnlyOneConnection(Pager *pPager)
  {
  #if SQLITE_OS_UNIX
-@@ -262931,8 +263242,13 @@ static inline const char *FlockToName(int l_type)
+@@ -262931,8 +263244,13 @@ static inline const char *FlockToName(int l_type)
  
  static int DumpProcessLocks(int fd, struct flock *lock, const char *lockName, char *dumpBuf, int bufLen)
  {
@@ -1721,7 +1732,7 @@ index 394e6bd..f220899 100644
      sqlite3_log(SQLITE_ERROR, "[SQLite]Get wal file lock ofs %u failed, errno: %d", lock->l_start, errno);
      return 0;
    }
-@@ -263106,6 +263422,35 @@ SQLITE_PRIVATE int sqlite3BinlogInitApi(sqlite3 *db)
+@@ -263106,6 +263424,35 @@ SQLITE_PRIVATE int sqlite3BinlogInitApi(sqlite3 *db)
    return SQLITE_OK;
  }
  
@@ -1757,7 +1768,7 @@ index 394e6bd..f220899 100644
  SQLITE_PRIVATE int sqlite3SetMonitorConfig(sqlite3 *db, MonitorTablesConfig *src)
  {
    if (src == NULL) {
-@@ -263127,7 +263472,10 @@ SQLITE_PRIVATE int sqlite3SetMonitorConfig(sqlite3 *db, MonitorTablesConfig *src
+@@ -263127,7 +263474,10 @@ SQLITE_PRIVATE int sqlite3SetMonitorConfig(sqlite3 *db, MonitorTablesConfig *src
          int len = strlen(srcTable->tableName);
          dstTable->tableName = sqlite3DbMallocZero(db, len + 1);
          if (dstTable->tableName) {
@@ -1769,7 +1780,7 @@ index 394e6bd..f220899 100644
          }
        }
  
-@@ -263137,17 +263485,19 @@ SQLITE_PRIVATE int sqlite3SetMonitorConfig(sqlite3 *db, MonitorTablesConfig *src
+@@ -263137,17 +263487,19 @@ SQLITE_PRIVATE int sqlite3SetMonitorConfig(sqlite3 *db, MonitorTablesConfig *src
            if (dstTable->tableName) {
              sqlite3DbFree(db, (void *)dstTable->tableName);
            }
@@ -1793,7 +1804,7 @@ index 394e6bd..f220899 100644
              }
            }
            dstTable->colCount++;
-@@ -263160,30 +263510,6 @@ SQLITE_PRIVATE int sqlite3SetMonitorConfig(sqlite3 *db, MonitorTablesConfig *src
+@@ -263160,30 +263512,6 @@ SQLITE_PRIVATE int sqlite3SetMonitorConfig(sqlite3 *db, MonitorTablesConfig *src
    return SQLITE_OK;
  }
  
@@ -1824,7 +1835,7 @@ index 394e6bd..f220899 100644
  SQLITE_PRIVATE int sqlite3SetBinLogConfig(sqlite3 *db, Sqlite3BinlogConfig *bConfig)
  {
    if (db == NULL) {
-@@ -263245,6 +263571,7 @@ SQLITE_PRIVATE void sqlite3BinlogFreeOldColumns(sqlite3 *db, BinlogSearchResult
+@@ -263245,6 +263573,7 @@ SQLITE_PRIVATE void sqlite3BinlogFreeOldColumns(sqlite3 *db, BinlogSearchResult
  {
    if (oldCounts<=0) {
      sqlite3DbFree(db, res->nameAndValues);
@@ -1832,7 +1843,7 @@ index 394e6bd..f220899 100644
    }
    for (int i=0; i<oldCounts*2; i++) {
      if (res->nameAndValues != NULL && res->nameAndValues[i] != NULL) {
-@@ -263260,13 +263587,18 @@ SQLITE_PRIVATE int sqlite3BinlogGetSearchFieldDataForSearch(sqlite3 *db, Table *
+@@ -263260,13 +263589,18 @@ SQLITE_PRIVATE int sqlite3BinlogGetSearchFieldDataForSearch(sqlite3 *db, Table *
    if (res->nameAndValues == NULL) {
        return SQLITE_ERROR;
    }
@@ -1852,7 +1863,7 @@ index 394e6bd..f220899 100644
      if (fieldValue == NULL) {
        sqlite3DbFree(db, fieldName);
        sqlite3BinlogFreeOldColumns(db, res, i-1);
-@@ -263292,18 +263624,23 @@ SQLITE_PRIVATE int sqlite3BinlogGetSearchFieldDataNoRowidForSearch(
+@@ -263292,18 +263626,23 @@ SQLITE_PRIVATE int sqlite3BinlogGetSearchFieldDataNoRowidForSearch(
    if (res->nameAndValues == NULL) {
        return SQLITE_ERROR;
    }
@@ -1878,7 +1889,7 @@ index 394e6bd..f220899 100644
          idx++;
      }
    }
-@@ -263621,7 +263958,7 @@ no_mem:
+@@ -263621,7 +263960,7 @@ no_mem:
  }
  
  /* Return an insert sql based on the binlog row data, the returned value needs free by caller */
@@ -1887,7 +1898,7 @@ index 394e6bd..f220899 100644
    char *fieldNames = NULL;
    char *fieldValues = NULL;
  
-@@ -263654,24 +263991,6 @@ SQLITE_PRIVATE char *sqlite3BinlogRowInsert(sqlite3 *db, Table *pTab, const Binl
+@@ -263654,24 +263993,6 @@ SQLITE_PRIVATE char *sqlite3BinlogRowInsert(sqlite3 *db, Table *pTab, const Binl
    return result;
  }
  
@@ -1912,7 +1923,7 @@ index 394e6bd..f220899 100644
  /* Return the sql statement corresponds to a binlog row data, NULL is returned if error occurs */
  SQLITE_PRIVATE char *sqlite3GetBinlogRowStmt(sqlite3 *db, const BinlogRow *pRow, Table *pTab){
    assert( db!=NULL );
-@@ -263682,9 +264001,8 @@ SQLITE_PRIVATE char *sqlite3GetBinlogRowStmt(sqlite3 *db, const BinlogRow *pRow,
+@@ -263682,9 +264003,8 @@ SQLITE_PRIVATE char *sqlite3GetBinlogRowStmt(sqlite3 *db, const BinlogRow *pRow,
      case SQLITE_DELETE:
        return HasRowid(pTab) ? sqlite3BinlogRowDelete(pTab, pRow->rowid) : sqlite3BinlogRowDeleteNoRowid(db, pTab, pRow);
      case SQLITE_INSERT:
@@ -1923,7 +1934,7 @@ index 394e6bd..f220899 100644
      default:
        return NULL;
    }
-@@ -263730,49 +264048,85 @@ SQLITE_PRIVATE Table *sqlite3BinlogFindTable(BtCursor *pC){
+@@ -263730,49 +264050,85 @@ SQLITE_PRIVATE Table *sqlite3BinlogFindTable(BtCursor *pC){
    return pTab;
  }
  
@@ -1980,7 +1991,7 @@ index 394e6bd..f220899 100644
 +      MonitorTablesConfig *monitorConfig = db->xBinlogHandle.jsonParseCallback(zFile);
 +      if (monitorConfig == NULL) {
 +        return 0;
-       }
++      }
 +      int rc = sqlite3SetMonitorConfig(db, monitorConfig);
 +      if (db->xBinlogHandle.freeJsonParseCallback != NULL) {
 +        db->xBinlogHandle.freeJsonParseCallback(monitorConfig);
@@ -1988,7 +1999,7 @@ index 394e6bd..f220899 100644
 +      if (rc != SQLITE_OK) {
 +        sqlite3_log(SQLITE_ERROR, "setmonitorConfig fail in jsonPaarseMonitorConfig");
 +        return 0;
-+      }
+       }
 +    }
    }
    if (db->xBinlogHandle.monitorConfig == NULL) {
@@ -2039,7 +2050,7 @@ index 394e6bd..f220899 100644
  }
  
  SQLITE_PRIVATE int sqlite3BinlogWriteTable(Vdbe *p, Table *pTable){
-@@ -263823,12 +264177,28 @@ SQLITE_PRIVATE int sqlite3BinlogDecodeRowBuffer(char *buffer, u32 nBuffer, u8 *o
+@@ -263823,12 +264179,28 @@ SQLITE_PRIVATE int sqlite3BinlogDecodeRowBuffer(char *buffer, u32 nBuffer, u8 *o
    return SQLITE_OK;
  }
  
@@ -2070,7 +2081,7 @@ index 394e6bd..f220899 100644
    sqlite3_int64 rowid = pRow->rowid;
    sqlite3_uint64 nData = pRow->nData;
    int nZero = pRow->nZero;
-@@ -263882,7 +264252,7 @@ error_when_memcpy_binlog_row:
+@@ -263882,7 +264254,7 @@ error_when_memcpy_binlog_row:
    return SQLITE_ERROR;
  }
  
@@ -2079,7 +2090,7 @@ index 394e6bd..f220899 100644
    assert( p!=NULL && pRow!=NULL );
    if ((pRow->nData == 0 || pRow->pData == NULL) && pRow->op != SQLITE_DELETE) {
      sqlite3_log(SQLITE_ERROR, "binlog row data empty, %llu", pRow->nData);
-@@ -263891,7 +264261,7 @@ SQLITE_PRIVATE int sqlite3BinlogWriteRowData(Vdbe *p, const BinlogRow *pRow){
+@@ -263891,7 +264263,7 @@ SQLITE_PRIVATE int sqlite3BinlogWriteRowData(Vdbe *p, const BinlogRow *pRow){
  
    u64 nRowBuffer = 0;
    char *pRowBuffer = NULL;
@@ -2088,7 +2099,7 @@ index 394e6bd..f220899 100644
    if (rc != SQLITE_OK) {
      return rc;
    }
-@@ -263905,7 +264275,8 @@ SQLITE_PRIVATE int sqlite3BinlogWriteRowData(Vdbe *p, const BinlogRow *pRow){
+@@ -263905,7 +264277,8 @@ SQLITE_PRIVATE int sqlite3BinlogWriteRowData(Vdbe *p, const BinlogRow *pRow){
  ** This is the function called in sqlite3VdbeExec to write a row-based binlog statement.
  ** If an error occured, then the row data is cleared and the state will be logged in statement mode
  **/
@@ -2098,7 +2109,7 @@ index 394e6bd..f220899 100644
    assert( p!=NULL && pCursor!=NULL && pRow!=NULL );
    assert( p->db!=NULL );
    assert( sqlite3IsRowBasedBinlog(p) );
-@@ -263962,8 +264333,15 @@ SQLITE_PRIVATE void sqlite3StoreBinlogRowData(Vdbe *p, BtCursor *pCursor, const
+@@ -263962,8 +264335,15 @@ SQLITE_PRIVATE void sqlite3StoreBinlogRowData(Vdbe *p, BtCursor *pCursor, const
      dataContainer->pTable = pTab;
    }
  
@@ -2116,7 +2127,7 @@ index 394e6bd..f220899 100644
      return;
    }
  
-@@ -264103,10 +264481,11 @@ SQLITE_PRIVATE char *sqlite3BinlogGetNthCol(sqlite3 *db, const Table *pTab, cons
+@@ -264103,10 +264483,11 @@ SQLITE_PRIVATE char *sqlite3BinlogGetNthCol(sqlite3 *db, const Table *pTab, cons
  }
  
  /* Get the Nth column value for search - returns raw value without SQL quotes */
@@ -2129,7 +2140,7 @@ index 394e6bd..f220899 100644
        return sqlite3_mprintf("%lld", pRow->rowid);
    }
  
-@@ -264130,6 +264509,7 @@ SQLITE_PRIVATE char *sqlite3BinlogGetNthColForSearch(sqlite3 *db, const Table *p
+@@ -264130,6 +264511,7 @@ SQLITE_PRIVATE char *sqlite3BinlogGetNthColForSearch(sqlite3 *db, const Table *p
      return NULL;
    }
    int type = sqlite3_value_type(tempVal);
@@ -2137,7 +2148,7 @@ index 394e6bd..f220899 100644
    const unsigned char *temp = sqlite3_value_text(tempVal);
  
    char *res = NULL;
-@@ -264157,7 +264537,8 @@ SQLITE_PRIVATE int sqlite3IsSkipWriteBinlog(Vdbe *p) {
+@@ -264157,7 +264539,8 @@ SQLITE_PRIVATE int sqlite3IsSkipWriteBinlog(Vdbe *p) {
      || !isBinlogEnabled
      || p->db->nVdbeExec > 1
      || (p->readOnly && p->stmtType != STMT_TYPE_BEGIN_TRANSACTION && p->stmtType != STMT_TYPE_SAVEPOINT &&
@@ -2147,7 +2158,7 @@ index 394e6bd..f220899 100644
  }
  
  SQLITE_PRIVATE void sqlite3BinlogWrite(Vdbe *p)
-@@ -264265,6 +264646,7 @@ SQLITE_PRIVATE void sqlite3BinlogReset(sqlite3 *db)
+@@ -264265,6 +264648,7 @@ SQLITE_PRIVATE void sqlite3BinlogReset(sqlite3 *db)
      sqlite3_log(SQLITE_ERROR, "binlog reset parameter is null");
      return;
    }
@@ -2155,7 +2166,7 @@ index 394e6bd..f220899 100644
    db->xBinlogHandle.flags = 0;
    (void)memset_s(db->xBinlogHandle.xTid, SQLITE_UUID_BLOB_LENGTH, 0, SQLITE_UUID_BLOB_LENGTH);
    db->xBinlogHandle.xErrorCallback = NULL;
-@@ -264290,7 +264672,8 @@ SQLITE_PRIVATE void sqlite3BinlogReset(sqlite3 *db)
+@@ -264290,7 +264674,8 @@ SQLITE_PRIVATE void sqlite3BinlogReset(sqlite3 *db)
  SQLITE_PRIVATE int sqlite3BinlogResetHwm(sqlite3 *db)
  {
    if (db == NULL || db->xBinlogHandle.binlogApi.binlogResetSearchHwmApi == NULL) {
@@ -2165,7 +2176,7 @@ index 394e6bd..f220899 100644
      return SQLITE_ERROR;
    }
    int rc = sqlite3TransferBinlogErrno(db->xBinlogHandle.binlogApi.binlogResetSearchHwmApi(db->xBinlogHandle.binlogConn));
-@@ -264360,6 +264743,17 @@ SQLITE_PRIVATE char *sqlite3BinlogGetRowSql(sqlite3 *db, Table* pTable, char *bu
+@@ -264360,6 +264745,17 @@ SQLITE_PRIVATE char *sqlite3BinlogGetRowSql(sqlite3 *db, Table* pTable, char *bu
  
    BinlogRow pRow;
    pRow.op = op;
@@ -2183,7 +2194,7 @@ index 394e6bd..f220899 100644
    pRow.nData = nData;
    pRow.nZero = nZero;
    pRow.pData = pData;
-@@ -264449,7 +264843,13 @@ SQLITE_PRIVATE int checkIfMonitorTable(sqlite3 *db, char *tableName)
+@@ -264449,7 +264845,13 @@ SQLITE_PRIVATE int checkIfMonitorTable(sqlite3 *db, char *tableName)
    if (config == NULL) {
        return 1;
    }
@@ -2197,7 +2208,7 @@ index 394e6bd..f220899 100644
      if (strcmp(tableName, config->tables[i].tableName) == 0) {
        return 1;
      }
-@@ -264481,15 +264881,20 @@ SQLITE_PRIVATE int sqlite3BinlogGetSearchData(sqlite3 *db, Sqlite3BinlogStmt *bS
+@@ -264481,15 +264883,20 @@ SQLITE_PRIVATE int sqlite3BinlogGetSearchData(sqlite3 *db, Sqlite3BinlogStmt *bS
          rc = SQLITE_ERROR;
          sqlite3_log(SQLITE_WARNING, "search binlog find no table, rc=%d", rc);
        } else {
@@ -2221,7 +2232,7 @@ index 394e6bd..f220899 100644
        }
        if (!checkIfMonitorTable(db, (*pOutTable)->zName)) {
            return SQLITE_ROW;
-@@ -264510,6 +264915,19 @@ SQLITE_PRIVATE int sqlite3BinlogGetSearchData(sqlite3 *db, Sqlite3BinlogStmt *bS
+@@ -264510,6 +264917,19 @@ SQLITE_PRIVATE int sqlite3BinlogGetSearchData(sqlite3 *db, Sqlite3BinlogStmt *bS
  
        BinlogRow pRow;
        pRow.op = op;
@@ -2241,7 +2252,7 @@ index 394e6bd..f220899 100644
        pRow.nData = nData;
        pRow.nZero = nZero;
        pRow.pData = pData;
-@@ -264688,6 +265106,11 @@ SQLITE_PRIVATE void BinlogSearchResultFree(sqlite3 *srcDb, BinlogSearchResult *r
+@@ -264688,6 +265108,11 @@ SQLITE_PRIVATE void BinlogSearchResultFree(sqlite3 *srcDb, BinlogSearchResult *r
          sqlite3DbFree(srcDb, row->nameAndValues);
          row->nameAndValues = NULL;
      }
@@ -2253,7 +2264,7 @@ index 394e6bd..f220899 100644
  }
  
  /**
-@@ -264708,7 +265131,7 @@ SQLITE_PRIVATE void BinlogSearchResultSetDestroy(sqlite3 *srcDb, BinlogSearchRes
+@@ -264708,7 +265133,7 @@ SQLITE_PRIVATE void BinlogSearchResultSetDestroy(sqlite3 *srcDb, BinlogSearchRes
  SQLITE_PRIVATE int sqlite3BinlogSearchDataGet(sqlite3 *srcDb, sqlite3 *destDb, BinlogSearchResultSet **rs)
  {
    if ((srcDb->xBinlogHandle.flags & BINLOG_FLAG_ENABLE) == 0) {
@@ -2262,7 +2273,7 @@ index 394e6bd..f220899 100644
      return SQLITE_ERROR;
    }
    const char *srcFile = sqlite3_db_filename(srcDb, 0);
-@@ -264822,12 +265245,13 @@ struct sqlite3_api_routines_extra {
+@@ -264822,12 +265247,13 @@ struct sqlite3_api_routines_extra {
  #else
    void *dymmyRekeyV3Func;
  #endif
@@ -2277,7 +2288,7 @@ index 394e6bd..f220899 100644
    int (*get_search_data_binlog)(sqlite3*, sqlite3*, BinlogSearchResultSet**);
    int (*free_search_data_binlog)(sqlite3*, BinlogSearchResultSet**);
    int (*set_search_hwm_binlog)(sqlite3*, BinlogSearchHwmT*, BinlogHwmSetModeE);
-@@ -264841,6 +265265,8 @@ struct sqlite3_api_routines_extra {
+@@ -264841,6 +265267,8 @@ struct sqlite3_api_routines_extra {
    void *dymmyFunc5;
    void *dymmyFunc6;
    void *dymmyFunc7;
@@ -2286,7 +2297,7 @@ index 394e6bd..f220899 100644
  #endif 
  #ifdef SQLITE_ENABLE_PAGE_COMPRESS
    int (*compressdb_backup)(sqlite3*, const char*);
-@@ -264872,6 +265298,7 @@ static const sqlite3_api_routines_extra sqlite3ExtraApis = {
+@@ -264872,6 +265300,7 @@ static const sqlite3_api_routines_extra sqlite3ExtraApis = {
    sqlite3_set_monitor_config_binlog,
    sqlite3_set_xChange_callback_binlog,
    sqlite3_set_json_parse_callback_binlog,
@@ -2294,7 +2305,7 @@ index 394e6bd..f220899 100644
    sqlite3_get_search_data_binlog,
    sqlite3_free_search_data_binlog,
    sqlite3_set_search_hwm_binlog,
-@@ -264888,6 +265315,7 @@ static const sqlite3_api_routines_extra sqlite3ExtraApis = {
+@@ -264888,6 +265317,7 @@ static const sqlite3_api_routines_extra sqlite3ExtraApis = {
    0,
    0,
    0,
