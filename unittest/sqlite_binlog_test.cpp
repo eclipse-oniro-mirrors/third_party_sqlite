@@ -32,7 +32,8 @@ using namespace UnitTest::SQLiteTest;
 #define TEST_DATA_COUNT 1000
 #define TEST_DATA_REAL 16.1
 static int g_xChangeCount = 0;
-
+sqlite3 *db_search_write;
+sqlite3 *db_search_read;
 namespace BinlogTest {
 static void UtSqliteLogPrint(const void *data, int err, const char *msg)
 {
@@ -76,8 +77,10 @@ static void UtEnableBinlog(sqlite3 *db)
     EXPECT_EQ(sqlite3_db_config(db, SQLITE_DBCONFIG_ENABLE_BINLOG, &cfg), SQLITE_OK);
 }
 
-static void UtEnableBinlogForSearch(sqlite3 *db)
+static void UtEnableBinlogForSearch()
 {
+    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db_search_write,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     Sqlite3BinlogConfig cfg = {
         .mode = Sqlite3BinlogMode::ROW_FOR_SEARCH,
         .fullCallbackThreshold = 2,
@@ -87,6 +90,19 @@ static void UtEnableBinlogForSearch(sqlite3 *db)
         .callbackCtx = nullptr,
     };
     EXPECT_EQ(sqlite3_db_config(db, SQLITE_DBCONFIG_ENABLE_BINLOG, &cfg), SQLITE_OK);
+    ASSERT_NE(db, nullptr);
+    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db_search_read,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
+    Sqlite3BinlogConfig cfg = {
+        .mode = Sqlite3BinlogMode::READ_FOR_SEARCH,
+        .fullCallbackThreshold = 2,
+        .maxFileSize = 1024 * 1024 * 4,
+        .xErrorCallback = nullptr,
+        .xLogFullCallback = nullptr,
+        .callbackCtx = nullptr,
+    };
+    EXPECT_EQ(sqlite3_db_config(db_search, SQLITE_DBCONFIG_ENABLE_BINLOG, &cfg), SQLITE_OK);
+    ASSERT_NE(db, nullptr);
 }
 
 static int UtQueryResult(void *data, int argc, char **argv, char **azColName)
@@ -423,23 +439,19 @@ HWTEST_F(SqliteBinlogTest, BinlogInterfaceTest002, TestSize.Level0)
  */
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest001, TestSize.Level1)
 {
-    sqlite3 *db = NULL;
-    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
-    ASSERT_NE(db, nullptr);
-    UtEnableBinlogForSearch(db);
-    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db, [] (const char *dbPath) -> MonitorTablesConfig *{
+    UtEnableBinlogForSearch();
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write, [] (const char *dbPath) -> MonitorTablesConfig *{
                                                         return InitMonitorConfig("test_search");
                                                         }),
                                                         SQLITE_OK);
-    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, XChangeCallbackHelper), SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db_search_write, XChangeCallbackHelper), SQLITE_OK);
     /**
      * @tc.steps: step1. create a rowid table and insert data
      * @tc.expected: step1. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "create table test_search (id int primary key, name text, value real);",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "create table test_search (id int primary key, name text, value real);",
         nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "insert into test_search values (1, 'Alice', 100.5),"
+    EXPECT_EQ(sqlite3_exec(db_search_write, "insert into test_search values (1, 'Alice', 100.5),"
         "(2, 'Bob', 200.5), (3, 'Charlie', 300.5);", nullptr, nullptr, nullptr), SQLITE_OK);
 
     /**
@@ -451,7 +463,7 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest001, TestSize.Level1)
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     ASSERT_NE(backupDb, nullptr);
     BinlogSearchResultSet *rs = nullptr;
-    EXPECT_EQ(sqlite3_get_search_data_binlog(db, backupDb, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_get_search_data_binlog(db_search_read, backupDb, &rs), SQLITE_OK);
     ASSERT_FALSE(rs == nullptr);
     EXPECT_EQ(rs->row_count, 3);
 
@@ -469,7 +481,7 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest001, TestSize.Level1)
      * @tc.steps: step4. free search data and verify rs is null
      * @tc.expected: step4. return ok and rs is null
      */
-    EXPECT_EQ(sqlite3_free_search_data_binlog(db, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_free_search_data_binlog(db_search_read, &rs), SQLITE_OK);
     EXPECT_TRUE(rs == nullptr);
 }
 
@@ -480,16 +492,12 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest001, TestSize.Level1)
  */
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest002, TestSize.Level1)
 {
-    sqlite3 *db = NULL;
-    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
-    ASSERT_NE(db, nullptr);
-    UtEnableBinlogForSearch(db);
+    UtEnableBinlogForSearch();
     /**
      * @tc.steps: step1. create table without any data
      * @tc.expected: step1. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "create table test_search_empty (id int primary key, name text);",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "create table test_search_empty (id int primary key, name text);",
         nullptr, nullptr, nullptr), SQLITE_OK);
 
     /**
@@ -501,7 +509,7 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest002, TestSize.Level1)
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     ASSERT_NE(backupDb, nullptr);
     BinlogSearchResultSet *rs = nullptr;
-    int ret = sqlite3_get_search_data_binlog(db, backupDb, &rs);
+    int ret = sqlite3_get_search_data_binlog(db_search_read, backupDb, &rs);
     EXPECT_TRUE(ret == SQLITE_OK || rs == nullptr);
 }
 
@@ -512,18 +520,14 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest002, TestSize.Level1)
  */
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest003, TestSize.Level1)
 {
-    sqlite3 *db = NULL;
-    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
-    ASSERT_NE(db, nullptr);
-    UtEnableBinlogForSearch(db);
+    UtEnableBinlogForSearch();
     /**
      * @tc.steps: step1. create table and insert data
      * @tc.expected: step1. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "create table test_search_null (id int primary key);",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "create table test_search_null (id int primary key);",
         nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "insert into test_search_null values (1);", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db_search_write, "insert into test_search_null values (1);", nullptr, nullptr, nullptr), SQLITE_OK);
 
     /**
      * @tc.steps: step2. test with NULL db parameter
@@ -535,7 +539,7 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest003, TestSize.Level1)
     ASSERT_NE(backupDb, nullptr);
     BinlogSearchResultSet *rs = nullptr;
     EXPECT_EQ(sqlite3_get_search_data_binlog(nullptr, backupDb, &rs), SQLITE_ERROR);
-    EXPECT_EQ(sqlite3_get_search_data_binlog(db, nullptr, &rs), SQLITE_ERROR);
+    EXPECT_EQ(sqlite3_get_search_data_binlog(db_search_read, nullptr, &rs), SQLITE_ERROR);
 
     /**
      * @tc.steps: step3. test free with NULL db parameter
@@ -552,23 +556,19 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest003, TestSize.Level1)
  */
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_HwmTest001, TestSize.Level1)
 {
-    sqlite3 *db = NULL;
-    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
-    ASSERT_NE(db, nullptr);
-    UtEnableBinlogForSearch(db);
-    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db, [] (const char *dbPath) -> MonitorTablesConfig *{
+    UtEnableBinlogForSearch();
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write, [] (const char *dbPath) -> MonitorTablesConfig *{
                                                         return InitMonitorConfig("test_hwm");
                                                         }),
                                                         SQLITE_OK);
-    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, XChangeCallbackHelper), SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db_search_write, XChangeCallbackHelper), SQLITE_OK);
     /**
      * @tc.steps: step1. create table and insert data
      * @tc.expected: step1. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "create table test_hwm (id int primary key, name text);",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "create table test_hwm (id int primary key, name text);",
         nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "insert into test_hwm values (1, 'First'), (2, 'Second'), (3, 'Third');",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "insert into test_hwm values (1, 'First'), (2, 'Second'), (3, 'Third');",
         nullptr, nullptr, nullptr), SQLITE_OK);
 
     /**
@@ -580,7 +580,7 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_HwmTest001, TestSize.Level1)
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     ASSERT_NE(backupDb, nullptr);
     BinlogSearchResultSet *rs = nullptr;
-    EXPECT_EQ(sqlite3_get_search_data_binlog(db, backupDb, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_get_search_data_binlog(db_search_read, backupDb, &rs), SQLITE_OK);
     ASSERT_FALSE(rs == nullptr);
 
     /**
@@ -591,33 +591,33 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_HwmTest001, TestSize.Level1)
         .readFileIndex = rs->results[1].fileIndex,  // position at second record
         .readPos = rs->results[rs->row_count - 1].readPos
     };
-    EXPECT_EQ(sqlite3_free_search_data_binlog(db, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_free_search_data_binlog(db_search_read, &rs), SQLITE_OK);
     EXPECT_TRUE(rs == nullptr);
-    EXPECT_EQ(sqlite3_set_search_hwm_binlog(db, &hwm, BINLOG_CACHE_MODE), SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_search_hwm_binlog(db_search_read, &hwm, BINLOG_CACHE_MODE), SQLITE_OK);
 
     /**
      * @tc.steps: step4. get search data after setting hwm
      * @tc.expected: step4. should get less data or empty
      */
-    EXPECT_EQ(sqlite3_get_search_data_binlog(db, backupDb, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_get_search_data_binlog(db_search_read, backupDb, &rs), SQLITE_OK);
     // After setting hwm, should not get the data already above hwm
-    EXPECT_EQ(sqlite3_free_search_data_binlog(db, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_free_search_data_binlog(db_search_read, &rs), SQLITE_OK);
     EXPECT_TRUE(rs == nullptr);
 
     /**
      * @tc.steps: step5. reset search hwm
      * @tc.expected: step5. return ok
      */
-    EXPECT_EQ(sqlite3_reset_search_hwm_binlog(db), SQLITE_OK);
+    EXPECT_EQ(sqlite3_reset_search_hwm_binlog(db_search_read), SQLITE_OK);
 
     /**
      * @tc.steps: step6. get search data after reset hwm
      * @tc.expected: step6. should get all data again
      */
-    EXPECT_EQ(sqlite3_get_search_data_binlog(db, backupDb, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_get_search_data_binlog(db_search_read, backupDb, &rs), SQLITE_OK);
     ASSERT_FALSE(rs == nullptr);
     EXPECT_EQ(rs->row_count, 3); // Should get all 3 records again after reset
-    EXPECT_EQ(sqlite3_free_search_data_binlog(db, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_free_search_data_binlog(db_search_read, &rs), SQLITE_OK);
     EXPECT_TRUE(rs == nullptr);
 }
 
@@ -628,23 +628,19 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_HwmTest001, TestSize.Level1)
  */
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_HwmTest002, TestSize.Level1)
 {
-    sqlite3 *db = NULL;
-    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
-    ASSERT_NE(db, nullptr);
-    UtEnableBinlogForSearch(db);
-    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db, [] (const char *dbPath) -> MonitorTablesConfig *{
+    UtEnableBinlogForSearch();
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write, [] (const char *dbPath) -> MonitorTablesConfig *{
                                                         return InitMonitorConfig("test_hwm_cache");
                                                         }),
                                                         SQLITE_OK);
-    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, XChangeCallbackHelper), SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db_search_write, XChangeCallbackHelper), SQLITE_OK);
     /**
      * @tc.steps: step1. create table and insert data
      * @tc.expected: step1. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "create table test_hwm_cache (id int primary key);",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "create table test_hwm_cache (id int primary key);",
         nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "insert into test_hwm_cache values (1), (2), (3);",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "insert into test_hwm_cache values (1), (2), (3);",
         nullptr, nullptr, nullptr), SQLITE_OK);
 
     /**
@@ -656,7 +652,7 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_HwmTest002, TestSize.Level1)
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     ASSERT_NE(backupDb, nullptr);
     BinlogSearchResultSet *rs = nullptr;
-    EXPECT_EQ(sqlite3_get_search_data_binlog(db, backupDb, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_get_search_data_binlog(db_search_read, backupDb, &rs), SQLITE_OK);
     ASSERT_FALSE(rs == nullptr);
 
     /**
@@ -667,19 +663,19 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_HwmTest002, TestSize.Level1)
         .readFileIndex = rs->results[1].fileIndex,
         .readPos = rs->results[1].readPos
     };
-    EXPECT_EQ(sqlite3_free_search_data_binlog(db, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_free_search_data_binlog(db_search_read, &rs), SQLITE_OK);
     EXPECT_TRUE(rs == nullptr);
-    EXPECT_EQ(sqlite3_set_search_hwm_binlog(db, &hwm, BINLOG_CACHE_MODE), SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_search_hwm_binlog(db_search_read, &hwm, BINLOG_CACHE_MODE), SQLITE_OK);
 
     /**
      * @tc.steps: step4. reset hwm
      * @tc.expected: step4. return ok
      */
-    EXPECT_EQ(sqlite3_reset_search_hwm_binlog(db), SQLITE_OK);
-    EXPECT_EQ(sqlite3_get_search_data_binlog(db, backupDb, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_reset_search_hwm_binlog(db_search_read), SQLITE_OK);
+    EXPECT_EQ(sqlite3_get_search_data_binlog(db_search_read, backupDb, &rs), SQLITE_OK);
     ASSERT_FALSE(rs == nullptr);
     EXPECT_EQ(rs->row_count, 3);
-    EXPECT_EQ(sqlite3_free_search_data_binlog(db, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_free_search_data_binlog(db_search_read, &rs), SQLITE_OK);
     EXPECT_TRUE(rs == nullptr);
 }
 
@@ -690,18 +686,14 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_HwmTest002, TestSize.Level1)
  */
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_CleanBinlogTest001, TestSize.Level1)
 {
-    sqlite3 *db = NULL;
-    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
-    ASSERT_NE(db, nullptr);
-    UtEnableBinlogForSearch(db);
+    UtEnableBinlogForSearch();
     /**
      * @tc.steps: step1. create table and insert data, then replay
      * @tc.expected: step1. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "create table test_clean (id int primary key, name text);",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "create table test_clean (id int primary key, name text);",
         nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "insert into test_clean values (1, 'Test1'), (2, 'Test2');",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "insert into test_clean values (1, 'Test1'), (2, 'Test2');",
         nullptr, nullptr, nullptr), SQLITE_OK);
     sqlite3 *backupDb = NULL;
     EXPECT_EQ(sqlite3_open_v2(TEST_BACKUP_DB, &backupDb,
@@ -729,30 +721,26 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_CleanBinlogTest001, TestSize.Level1)
  */
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest004, TestSize.Level1)
 {
-    sqlite3 *db = NULL;
-    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
-    ASSERT_NE(db, nullptr);
-    UtEnableBinlogForSearch(db);
-    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db, [] (const char *dbPath) -> MonitorTablesConfig *{
+    UtEnableBinlogForSearch();
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write, [] (const char *dbPath) -> MonitorTablesConfig *{
                                                         return InitMonitorConfig("test_update_search");
                                                         }),
                                                         SQLITE_OK);
-    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, XChangeCallbackHelper), SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db_search_write, XChangeCallbackHelper), SQLITE_OK);
     /**
      * @tc.steps: step1. create table and insert data
      * @tc.expected: step1. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "create table test_update_search (id int primary key, value int);",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "create table test_update_search (id int primary key, value int);",
         nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "insert into test_update_search values (1, 100), (2, 200);",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "insert into test_update_search values (1, 100), (2, 200);",
         nullptr, nullptr, nullptr), SQLITE_OK);
 
     /**
      * @tc.steps: step2. update data
      * @tc.expected: step2. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "update test_update_search set value = 150 where id = 1;",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "update test_update_search set value = 150 where id = 1;",
         nullptr, nullptr, nullptr), SQLITE_OK);
 
     /**
@@ -764,7 +752,7 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest004, TestSize.Level1)
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     ASSERT_NE(backupDb, nullptr);
     BinlogSearchResultSet *rs = nullptr;
-    EXPECT_EQ(sqlite3_get_search_data_binlog(db, backupDb, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_get_search_data_binlog(db_search_read, backupDb, &rs), SQLITE_OK);
     ASSERT_FALSE(rs == nullptr);
 
     /**
@@ -780,7 +768,7 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest004, TestSize.Level1)
         }
     }
     EXPECT_TRUE(foundUpdate);
-    EXPECT_EQ(sqlite3_free_search_data_binlog(db, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_free_search_data_binlog(db_search_read, &rs), SQLITE_OK);
     EXPECT_TRUE(rs == nullptr);
 }
 
@@ -791,29 +779,25 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest004, TestSize.Level1)
  */
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest005, TestSize.Level1)
 {
-    sqlite3 *db = NULL;
-    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
-    ASSERT_NE(db, nullptr);
-    UtEnableBinlogForSearch(db);
+    UtEnableBinlogForSearch();
     std::string table = "test_delete_search";
     EXPECT_EQ(sqlite3_set_monitor_config_binlog(db, InitMonitorConfig(table.c_str())), SQLITE_OK);
     g_xChangeCount = 0;
-    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, XChangeCallbackHelper), SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db_search_write, XChangeCallbackHelper), SQLITE_OK);
     /**
      * @tc.steps: step1. create table and insert data
      * @tc.expected: step1. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "create table test_delete_search (id int primary key, name text);",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "create table test_delete_search (id int primary key, name text);",
         nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "insert into test_delete_search values (1, 'DeleteMe'), (2, 'KeepMe');",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "insert into test_delete_search values (1, 'DeleteMe'), (2, 'KeepMe');",
         nullptr, nullptr, nullptr), SQLITE_OK);
 
     /**
      * @tc.steps: step2. delete data
      * @tc.expected: step2. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "delete from test_delete_search where id = 1;",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "delete from test_delete_search where id = 1;",
         nullptr, nullptr, nullptr), SQLITE_OK);
 
     /**
@@ -825,7 +809,7 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest005, TestSize.Level1)
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     ASSERT_NE(backupDb, nullptr);
     BinlogSearchResultSet *rs = nullptr;
-    EXPECT_EQ(sqlite3_get_search_data_binlog(db, backupDb, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_get_search_data_binlog(db_search_read, backupDb, &rs), SQLITE_OK);
     ASSERT_FALSE(rs == nullptr);
     EXPECT_EQ(g_xChangeCount, 3);
     /**
@@ -842,7 +826,7 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest005, TestSize.Level1)
     }
     EXPECT_EQ(rs->row_count, 3);
     EXPECT_TRUE(foundDelete);
-    EXPECT_EQ(sqlite3_free_search_data_binlog(db, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_free_search_data_binlog(db_search_read, &rs), SQLITE_OK);
     EXPECT_TRUE(rs == nullptr);
 }
 
@@ -853,23 +837,19 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest005, TestSize.Level1)
  */
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest006, TestSize.Level1)
 {
-    sqlite3 *db = NULL;
-    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
-    ASSERT_NE(db, nullptr);
-    UtEnableBinlogForSearch(db);
-    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db, [] (const char *dbPath) -> MonitorTablesConfig *{
+    UtEnableBinlogForSearch();
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write, [] (const char *dbPath) -> MonitorTablesConfig *{
                                                         return InitMonitorConfig("test_multi_get");
                                                         }),
                                                         SQLITE_OK);
-    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, XChangeCallbackHelper), SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db_search_write, XChangeCallbackHelper), SQLITE_OK);
     /**
      * @tc.steps: step1. create table and insert data
      * @tc.expected: step1. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "create table test_multi_get (id int primary key);",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "create table test_multi_get (id int primary key);",
         nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "insert into test_multi_get values (1), (2);",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "insert into test_multi_get values (1), (2);",
         nullptr, nullptr, nullptr), SQLITE_OK);
 
     /**
@@ -881,16 +861,16 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest006, TestSize.Level1)
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     ASSERT_NE(backupDb, nullptr);
     BinlogSearchResultSet *rs1 = nullptr;
-    EXPECT_EQ(sqlite3_get_search_data_binlog(db, backupDb, &rs1), SQLITE_OK);
+    EXPECT_EQ(sqlite3_get_search_data_binlog(db_search_read, backupDb, &rs1), SQLITE_OK);
     ASSERT_FALSE(rs1 == nullptr);
-    EXPECT_EQ(sqlite3_free_search_data_binlog(db, &rs1), SQLITE_OK);
+    EXPECT_EQ(sqlite3_free_search_data_binlog(db_search_read, &rs1), SQLITE_OK);
     EXPECT_TRUE(rs1 == nullptr);
 
     /**
      * @tc.steps: step3. insert more data
      * @tc.expected: step3. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "insert into test_multi_get values (3), (4);",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "insert into test_multi_get values (3), (4);",
         nullptr, nullptr, nullptr), SQLITE_OK);
 
     /**
@@ -898,11 +878,11 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest006, TestSize.Level1)
      * @tc.expected: step4. ok
      */
     BinlogSearchResultSet *rs2 = nullptr;
-    EXPECT_EQ(sqlite3_get_search_data_binlog(db, backupDb, &rs2), SQLITE_OK);
+    EXPECT_EQ(sqlite3_get_search_data_binlog(db_search_read, backupDb, &rs2), SQLITE_OK);
     ASSERT_FALSE(rs2 == nullptr);
     // Should get the 2 new records
     EXPECT_EQ(rs2->row_count, 2);
-    EXPECT_EQ(sqlite3_free_search_data_binlog(db, &rs2), SQLITE_OK);
+    EXPECT_EQ(sqlite3_free_search_data_binlog(db_search_read, &rs2), SQLITE_OK);
     EXPECT_TRUE(rs2 == nullptr);
 }
 
@@ -913,23 +893,19 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest006, TestSize.Level1)
  */
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest007, TestSize.Level1)
 {
-    sqlite3 *db = NULL;
-    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
-    ASSERT_NE(db, nullptr);
-    UtEnableBinlogForSearch(db);
-    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db, [] (const char *dbPath) -> MonitorTablesConfig *{
+    UtEnableBinlogForSearch();
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write, [] (const char *dbPath) -> MonitorTablesConfig *{
                                                         return InitMonitorConfig("test_free_twice");
                                                         }),
                                                         SQLITE_OK);
-    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, XChangeCallbackHelper), SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db_search_write, XChangeCallbackHelper), SQLITE_OK);
     /**
      * @tc.steps: step1. create table and insert data
      * @tc.expected: step1. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "create table test_free_twice (id int primary key);",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "create table test_free_twice (id int primary key);",
         nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "insert into test_free_twice values (1);",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "insert into test_free_twice values (1);",
         nullptr, nullptr, nullptr), SQLITE_OK);
 
     /**
@@ -941,16 +917,16 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest007, TestSize.Level1)
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     ASSERT_NE(backupDb, nullptr);
     BinlogSearchResultSet *rs = nullptr;
-    EXPECT_EQ(sqlite3_get_search_data_binlog(db, backupDb, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_get_search_data_binlog(db_search_read, backupDb, &rs), SQLITE_OK);
     ASSERT_FALSE(rs == nullptr);
-    EXPECT_EQ(sqlite3_free_search_data_binlog(db, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_free_search_data_binlog(db_search_read, &rs), SQLITE_OK);
     EXPECT_TRUE(rs == nullptr);
 
     /**
      * @tc.steps: step3. try to free again with NULL pointer
      * @tc.expected: step3. should return error (already freed)
      */
-    EXPECT_EQ(sqlite3_free_search_data_binlog(db, &rs), SQLITE_ERROR);
+    EXPECT_EQ(sqlite3_free_search_data_binlog(db_search_read, &rs), SQLITE_ERROR);
 }
 
 /**
@@ -960,59 +936,55 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest007, TestSize.Level1)
  */
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest008, TestSize.Level0)
 {
-    sqlite3 *db = NULL;
-    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
-    ASSERT_NE(db, nullptr);
-    UtEnableBinlogForSearch(db);
-    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db, [] (const char *dbPath) -> MonitorTablesConfig *{
+    UtEnableBinlogForSearch();
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write, [] (const char *dbPath) -> MonitorTablesConfig *{
                                                         return InitMonitorConfig("BB1");
                                                         }),
                                                         SQLITE_OK);
-    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, XChangeCallbackHelper), SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db_search_write, XChangeCallbackHelper), SQLITE_OK);
     /**
      * @tc.steps: step1. create without rowid table BB1 and 4 more indexes
      * @tc.expected: step1. ok
      */
-    EXPECT_EQ(sqlite3_exec(db,
+    EXPECT_EQ(sqlite3_exec(db_search_write,
         "create table BB1 (id INTEGER PRIMARY KEY, name TEXT, length REAL, count INTEGER) without rowid;",
         nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "create index index_bb1 on BB1 (id);", nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "create index index_bb2 on BB1 (name);", nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "create index index_bb3 on BB1 (id, name);", nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "create index index_bb4 on BB1 (id, name, length, count);",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "create index index_bb1 on BB1 (id);", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db_search_write, "create index index_bb2 on BB1 (name);", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db_search_write, "create index index_bb3 on BB1 (id, name);", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db_search_write, "create index index_bb4 on BB1 (id, name, length, count);",
         nullptr, nullptr, nullptr), SQLITE_OK);
     /**
      * @tc.steps: step2. insert, update, delete into BB1 with auto commit
      * @tc.expected: step2. ok
      */
-    EXPECT_EQ(sqlite3_exec(db,
+    EXPECT_EQ(sqlite3_exec(db_search_write,
         "insert into BB1 (id, name, length, count ) values (3, 'Chinese', 8.5, 3),"
         "(100, 'Hahahaha', 7.5, 100), (5000, 'yolo', 6.5, 5000);", nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "update BB1 set (id, name, length, count ) = "
+    EXPECT_EQ(sqlite3_exec(db_search_write, "update BB1 set (id, name, length, count ) = "
         "(200, 'Hahahaha', 7.5, 200) where id = 3;", nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "delete from BB1 where id = 5000;", nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "update BB1 set (id, name, length, count ) = "
+    EXPECT_EQ(sqlite3_exec(db_search_write, "delete from BB1 where id = 5000;", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db_search_write, "update BB1 set (id, name, length, count ) = "
         "(100, 'Hahahaha', 7.5, 300) where id = 100;", nullptr, nullptr, nullptr), SQLITE_OK);
     /**
      * @tc.steps: step3. insert into BB1 with failed actions inside a transaction
      * @tc.expected: step3. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "begin;", nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "insert into BB1 (id, name, length, count ) values (3, 'Chinese', 8.5, 3),"
+    EXPECT_EQ(sqlite3_exec(db_search_write, "begin;", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db_search_write, "insert into BB1 (id, name, length, count ) values (3, 'Chinese', 8.5, 3),"
         "(100, 'Hahahaha', 7.5, 100);", nullptr, nullptr, nullptr), SQLITE_CONSTRAINT);
-    EXPECT_EQ(sqlite3_exec(db, "commit;", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db_search_write, "commit;", nullptr, nullptr, nullptr), SQLITE_OK);
     /**
      * @tc.steps: step4. create without rowid table with combined primary keys and do CRUD operations
      * @tc.expected: step4. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "create table BB3 (id INTEGER, name TEXT, length REAL,"
+    EXPECT_EQ(sqlite3_exec(db_search_write, "create table BB3 (id INTEGER, name TEXT, length REAL,"
         "count INTEGER, primary key (count, name)) without rowid;", nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "insert into BB3 (id, name, length, count ) values (3, 'Chinese', 8.5, 3),"
+    EXPECT_EQ(sqlite3_exec(db_search_write, "insert into BB3 (id, name, length, count ) values (3, 'Chinese', 8.5, 3),"
         "(100, 'Hahahaha', 7.5, 100);", nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "update BB3 set (id, name, length, count ) = "
+    EXPECT_EQ(sqlite3_exec(db_search_write, "update BB3 set (id, name, length, count ) = "
         "(200, 'yolo', 7.5, 200) where id = 3;", nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "select * from BB3;", nullptr, nullptr, nullptr), SQLITE_OK);
+    EXPECT_EQ(sqlite3_exec(db_search_write, "select * from BB3;", nullptr, nullptr, nullptr), SQLITE_OK);
     /**
      * @tc.steps: step5. getData
      * @tc.expected: step5. return ok
@@ -1022,13 +994,13 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest008, TestSize.Level0)
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     ASSERT_NE(backupDb, nullptr);
     BinlogSearchResultSet *rs = nullptr;
-    EXPECT_EQ(sqlite3_get_search_data_binlog(db, backupDb, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_get_search_data_binlog(db_search_read, backupDb, &rs), SQLITE_OK);
     ASSERT_FALSE(rs == nullptr);
     EXPECT_STREQ(rs->results[0].nameAndValues[1], "3");
     EXPECT_STREQ(rs->results[0].nameAndValues[3], "Chinese");
     EXPECT_STREQ(rs->results[0].nameAndValues[5], "8.5");
     EXPECT_GT(rs->results[8].readPos, rs->results[0].readPos);
-    EXPECT_EQ(sqlite3_free_search_data_binlog(db, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_free_search_data_binlog(db_search_read, &rs), SQLITE_OK);
 }
 
 /**
@@ -1038,29 +1010,25 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest008, TestSize.Level0)
  */
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest009, TestSize.Level1)
 {
-    sqlite3 *db = NULL;
-    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
-    ASSERT_NE(db, nullptr);
-    UtEnableBinlogForSearch(db);
+    UtEnableBinlogForSearch();
     std::string tableName = "test_delete_search";
-    EXPECT_EQ(sqlite3_set_monitor_config_binlog(db, InitMonitorConfig(tableName.c_str())), SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_monitor_config_binlog(db_search_write, InitMonitorConfig(tableName.c_str())), SQLITE_OK);
     g_xChangeCount = 0;
-    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, XChangeCallbackHelper), SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db_search_write, XChangeCallbackHelper), SQLITE_OK);
     /**
      * @tc.steps: step1. create table and insert data
      * @tc.expected: step1. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "create table test_delete_search (id int primary key, name text);",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "create table test_delete_search (id int primary key, name text);",
         nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "insert into test_delete_search values (1, 'DeleteMe'), (2, 'KeepMe');",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "insert into test_delete_search values (1, 'DeleteMe'), (2, 'KeepMe');",
         nullptr, nullptr, nullptr), SQLITE_OK);
 
     /**
      * @tc.steps: step2. delete data
      * @tc.expected: step2. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "delete from test_delete_search where id = 1;",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "delete from test_delete_search where id = 1;",
         nullptr, nullptr, nullptr), SQLITE_OK);
 
     /**
@@ -1072,7 +1040,7 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest009, TestSize.Level1)
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     ASSERT_NE(backupDb, nullptr);
     BinlogSearchResultSet *rs = nullptr;
-    EXPECT_EQ(sqlite3_get_search_data_binlog(db, backupDb, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_get_search_data_binlog(db_search_read, backupDb, &rs), SQLITE_OK);
     ASSERT_FALSE(rs == nullptr);
     EXPECT_EQ(g_xChangeCount, 3);
     /**
@@ -1088,7 +1056,7 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest009, TestSize.Level1)
         }
     }
     EXPECT_TRUE(foundDelete);
-    EXPECT_EQ(sqlite3_free_search_data_binlog(db, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_free_search_data_binlog(db_search_read, &rs), SQLITE_OK);
     EXPECT_TRUE(rs == nullptr);
 }
 
@@ -1099,11 +1067,7 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest009, TestSize.Level1)
  */
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest010, TestSize.Level1)
 {
-    sqlite3 *db = NULL;
-    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
-    ASSERT_NE(db, nullptr);
-    UtEnableBinlogForSearch(db);
+
     std::string table = "test_delete_search";
     MonitorTablesConfig* (*callback)(const char *dbPath) = [](const char *dbPath) -> MonitorTablesConfig* {
         MonitorTablesConfig *config = new MonitorTablesConfig();
@@ -1111,23 +1075,23 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest010, TestSize.Level1)
         config->tables = nullptr;
         return config;
     };
-    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db, callback), SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write, callback), SQLITE_OK);
     g_xChangeCount = 0;
-    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, XChangeCallbackHelper), SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db_search_write, XChangeCallbackHelper), SQLITE_OK);
     /**
      * @tc.steps: step1. create table and insert data
      * @tc.expected: step1. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "create table test_delete_search (id int primary key, name text);",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "create table test_delete_search (id int primary key, name text);",
         nullptr, nullptr, nullptr), SQLITE_OK);
-    EXPECT_EQ(sqlite3_exec(db, "insert into test_delete_search values (1, 'DeleteMe'), (2, 'KeepMe');",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "insert into test_delete_search values (1, 'DeleteMe'), (2, 'KeepMe');",
         nullptr, nullptr, nullptr), SQLITE_OK);
 
     /**
      * @tc.steps: step2. delete data
      * @tc.expected: step2. ok
      */
-    EXPECT_EQ(sqlite3_exec(db, "delete from test_delete_search where id = 1;",
+    EXPECT_EQ(sqlite3_exec(db_search_write, "delete from test_delete_search where id = 1;",
         nullptr, nullptr, nullptr), SQLITE_OK);
 
     /**
@@ -1139,7 +1103,7 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest010, TestSize.Level1)
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
     ASSERT_NE(backupDb, nullptr);
     BinlogSearchResultSet *rs = nullptr;
-    EXPECT_EQ(sqlite3_get_search_data_binlog(db, backupDb, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_get_search_data_binlog(db_search_read, backupDb, &rs), SQLITE_OK);
     ASSERT_FALSE(rs == nullptr);
     EXPECT_EQ(g_xChangeCount, 3);
     /**
@@ -1155,7 +1119,7 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest010, TestSize.Level1)
         }
     }
     EXPECT_TRUE(foundDelete);
-    EXPECT_EQ(sqlite3_free_search_data_binlog(db, &rs), SQLITE_OK);
+    EXPECT_EQ(sqlite3_free_search_data_binlog(db_search_read, &rs), SQLITE_OK);
     EXPECT_TRUE(rs == nullptr);
 }
 }  // namespace BinlogTest
