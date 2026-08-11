@@ -30,8 +30,15 @@
 typedef enum BinlogFileCleanMode {
   BINLOG_FILE_CLEAN_ALL_MODE = 0,
   BINLOG_FILE_CLEAN_READ_MODE = 1,
+  BINLOG_FILE_CLEAN_DONATED_MODE = 2,
   BINLOG_FILE_CLEAN_MODE_MAX,
 } BinlogFileCleanModeE;
+
+typedef enum BinlogReadMode {
+  BINLOG_REPLAY_MODE = 0,
+  BINLOG_SEARCH_MODE = 1,
+  BINLOG_READ_MODE_MAX,
+} BinlogReadModeE;
 
 typedef enum {
   ROW = 1,
@@ -56,7 +63,7 @@ typedef struct BinlogSearchResult {
   int fileIndex;
   sqlite3_uint64 readPos;
   char **nameAndValues; // pointer to the row data in record format
-  int *colTypes;
+  int *colTypes;        // array of SQL column types for each column
 } BinlogSearchResult;
 
 typedef struct BinlogSearchResultSet{
@@ -125,7 +132,7 @@ struct sqlite3_api_routines_extra {
   int (*get_search_data)(sqlite3*, sqlite3*, BinlogSearchResultSet**);
   int (*free_search_data)(sqlite3*, BinlogSearchResultSet**);
   int (*set_search_hwm)(sqlite3*, BinlogSearchHwmT*, BinlogHwmSetModeE);
-  int (*reset_search_hwm)(sqlite3*);
+  int (*reset_hwm)(sqlite3*, BinlogReadModeE);
   int (*clean_binlog)(sqlite3*, BinlogFileCleanModeE);
   int (*compressdb_backup)(sqlite3*, const char*);
 };
@@ -147,7 +154,7 @@ extern const struct sqlite3_api_routines_extra *sqlite3_export_extra_symbols;
 #define sqlite3_get_search_data_binlog  sqlite3_export_extra_symbols->get_search_data
 #define sqlite3_free_search_data_binlog sqlite3_export_extra_symbols->free_search_data
 #define sqlite3_set_search_hwm_binlog   sqlite3_export_extra_symbols->set_search_hwm
-#define sqlite3_reset_search_hwm_binlog sqlite3_export_extra_symbols->reset_search_hwm
+#define sqlite3_reset_hwm_binlog sqlite3_export_extra_symbols->reset_hwm
 #define sqlite3_clean_binlog        sqlite3_export_extra_symbols->clean_binlog
 #define sqlite3_compressdb_backup   sqlite3_export_extra_symbols->compressdb_backup
 
