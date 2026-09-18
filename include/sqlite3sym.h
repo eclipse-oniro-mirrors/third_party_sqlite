@@ -53,6 +53,7 @@ typedef struct Sqlite3BinlogConfig {
     void (*xErrorCallback)(void *pCtx, int errNo, char *errMsg, const char *dbPath);
     void (*xLogFullCallback)(void *pCtx, unsigned short currentCount, const char *dbPath);
     void *callbackCtx;
+    const char *binlogDirPath; /* custom binlog parent dir path, NULL or empty means use default location */
 } Sqlite3BinlogConfig;
 
 typedef struct BinlogSearchResult {
@@ -93,6 +94,11 @@ typedef struct MonitorTablesConfig {
   MonitorTableCol *tables;  // tableCols
   int tableCount;           // tableCount
 } MonitorTablesConfig;
+
+typedef struct BinlogJsonStatus {
+  sqlite3_uint64 mtime;
+} BinlogJsonStatus;
+
 /*
 ** END OF BINLOG CONFIG
 *************************************************************************/
@@ -127,7 +133,10 @@ struct sqlite3_api_routines_extra {
   int (*replay_binlog)(sqlite3*, sqlite3*);
   int (*set_monitor_config)(sqlite3*, MonitorTablesConfig*);
   int (*set_xChange_callback)(sqlite3*, void (*xChangeCallback)(const char *dbPath, char *tableName));
-  int (*set_json_parse_callback)(sqlite3*, MonitorTablesConfig*(*jsonParseCallback)(const char *dbPath));
+  int (*set_json_status_callback)(sqlite3*, BinlogJsonStatus(*jsonStatusCallback)(const char *dbPath,
+      const char *binlogDirPath));
+  int (*set_json_parse_callback)(sqlite3*, MonitorTablesConfig*(*jsonParseCallback)(const char *dbPath,
+      const char *binlogDirPath));
   int (*free_json_parse_callback)(sqlite3*, int(*freeJsonParseCallback)(MonitorTablesConfig *config));
   int (*get_search_data)(sqlite3*, sqlite3*, BinlogSearchResultSet**);
   int (*free_search_data)(sqlite3*, BinlogSearchResultSet**);
@@ -149,6 +158,7 @@ extern const struct sqlite3_api_routines_extra *sqlite3_export_extra_symbols;
 #define sqlite3_replay_binlog       sqlite3_export_extra_symbols->replay_binlog
 #define sqlite3_set_monitor_config_binlog  sqlite3_export_extra_symbols->set_monitor_config
 #define sqlite3_set_xChange_callback_binlog  sqlite3_export_extra_symbols->set_xChange_callback
+#define sqlite3_set_json_status_callback_binlog  sqlite3_export_extra_symbols->set_json_status_callback
 #define sqlite3_set_json_parse_callback_binlog  sqlite3_export_extra_symbols->set_json_parse_callback
 #define sqlite3_free_json_parse_callback_binlog  sqlite3_export_extra_symbols->free_json_parse_callback
 #define sqlite3_get_search_data_binlog  sqlite3_export_extra_symbols->get_search_data

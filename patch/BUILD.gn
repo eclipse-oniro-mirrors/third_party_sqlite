@@ -36,6 +36,8 @@ action("apply_patch") {
     "./0013-Support-Binlog-Search.patch",
     "./0014-Support-hotsql-cache.patch",
     "./0015-Bugfix-on-current-version.patch",
+    "./0016-Support-Binlog-Search-filter-unchanged-update.patch",
+    "./0017-support-config-binlog-dir-path.patch",
   ]
   outputs = [
     "$sqlite_dst_dir/ext/misc/cksumvfs.c",

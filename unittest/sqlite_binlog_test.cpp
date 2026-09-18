@@ -73,6 +73,7 @@ static void UtEnableBinlog(sqlite3 *db)
         .xErrorCallback = nullptr,
         .xLogFullCallback = nullptr,
         .callbackCtx = nullptr,
+        .binlogDirPath = nullptr,
     };
     EXPECT_EQ(sqlite3_db_config(db, SQLITE_DBCONFIG_ENABLE_BINLOG, &cfg), SQLITE_OK);
 }
@@ -88,6 +89,7 @@ static void UtEnableBinlogForSearch()
         .xErrorCallback = nullptr,
         .xLogFullCallback = nullptr,
         .callbackCtx = nullptr,
+        .binlogDirPath = nullptr,
     };
     EXPECT_EQ(sqlite3_db_config(db, SQLITE_DBCONFIG_ENABLE_BINLOG, &cfg), SQLITE_OK);
     ASSERT_NE(db, nullptr);
@@ -100,6 +102,7 @@ static void UtEnableBinlogForSearch()
         .xErrorCallback = nullptr,
         .xLogFullCallback = nullptr,
         .callbackCtx = nullptr,
+        .binlogDirPath = nullptr,
     };
     EXPECT_EQ(sqlite3_db_config(db_search, SQLITE_DBCONFIG_ENABLE_BINLOG, &cfg), SQLITE_OK);
     ASSERT_NE(db, nullptr);
@@ -440,7 +443,8 @@ HWTEST_F(SqliteBinlogTest, BinlogInterfaceTest002, TestSize.Level0)
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest001, TestSize.Level1)
 {
     UtEnableBinlogForSearch();
-    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write, [] (const char *dbPath) -> MonitorTablesConfig *{
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write,
+        [] (const char *dbPath, const char *binlogDirPath) -> MonitorTablesConfig *{
                                                         return InitMonitorConfig("test_search");
                                                         }),
                                                         SQLITE_OK);
@@ -557,7 +561,8 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest003, TestSize.Level1)
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_HwmTest001, TestSize.Level1)
 {
     UtEnableBinlogForSearch();
-    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write, [] (const char *dbPath) -> MonitorTablesConfig *{
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write,
+        [] (const char *dbPath, const char *binlogDirPath) -> MonitorTablesConfig *{
                                                         return InitMonitorConfig("test_hwm");
                                                         }),
                                                         SQLITE_OK);
@@ -629,7 +634,8 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_HwmTest001, TestSize.Level1)
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_HwmTest002, TestSize.Level1)
 {
     UtEnableBinlogForSearch();
-    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write, [] (const char *dbPath) -> MonitorTablesConfig *{
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write,
+        [] (const char *dbPath, const char *binlogDirPath) -> MonitorTablesConfig *{
                                                         return InitMonitorConfig("test_hwm_cache");
                                                         }),
                                                         SQLITE_OK);
@@ -722,7 +728,8 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_CleanBinlogTest001, TestSize.Level1)
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest004, TestSize.Level1)
 {
     UtEnableBinlogForSearch();
-    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write, [] (const char *dbPath) -> MonitorTablesConfig *{
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write,
+        [] (const char *dbPath, const char *binlogDirPath) -> MonitorTablesConfig *{
                                                         return InitMonitorConfig("test_update_search");
                                                         }),
                                                         SQLITE_OK);
@@ -838,7 +845,8 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest005, TestSize.Level1)
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest006, TestSize.Level1)
 {
     UtEnableBinlogForSearch();
-    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write, [] (const char *dbPath) -> MonitorTablesConfig *{
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write,
+        [] (const char *dbPath, const char *binlogDirPath) -> MonitorTablesConfig *{
                                                         return InitMonitorConfig("test_multi_get");
                                                         }),
                                                         SQLITE_OK);
@@ -894,7 +902,8 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest006, TestSize.Level1)
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest007, TestSize.Level1)
 {
     UtEnableBinlogForSearch();
-    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write, [] (const char *dbPath) -> MonitorTablesConfig *{
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write,
+        [] (const char *dbPath, const char *binlogDirPath) -> MonitorTablesConfig *{
                                                         return InitMonitorConfig("test_free_twice");
                                                         }),
                                                         SQLITE_OK);
@@ -937,10 +946,8 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest007, TestSize.Level1)
 HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest008, TestSize.Level0)
 {
     UtEnableBinlogForSearch();
-    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write, [] (const char *dbPath) -> MonitorTablesConfig *{
-                                                        return InitMonitorConfig("BB1");
-                                                        }),
-                                                        SQLITE_OK);
+    EXPECT_EQ(sqlite3_set_json_parse_callback_binlog(db_search_write, [] (const char *dbPath,
+        const char *binlogDirPath) -> MonitorTablesConfig *{ return InitMonitorConfig("BB1"); }), SQLITE_OK);
     EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db_search_write, XChangeCallbackHelper), SQLITE_OK);
     /**
      * @tc.steps: step1. create without rowid table BB1 and 4 more indexes
@@ -1069,7 +1076,8 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest010, TestSize.Level1)
 {
 
     std::string table = "test_delete_search";
-    MonitorTablesConfig* (*callback)(const char *dbPath) = [](const char *dbPath) -> MonitorTablesConfig* {
+    MonitorTablesConfig* (*callback)(const char *dbPath, const char *binlogDirPath) =
+        [](const char *dbPath, const char *binlogDirPath) -> MonitorTablesConfig* {
         MonitorTablesConfig *config = new MonitorTablesConfig();
         config->tableCount = 0;
         config->tables = nullptr;
