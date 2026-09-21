@@ -1,0 +1,156 @@
+From c9667452e0b58ba0fd272f7df56c54beb480c1d3 Mon Sep 17 00:00:00 2001
+From: lobty <butaoyu@h-partners.com>
+Date: Fri, 18 Sep 2026 17:33:16 +0800
+Subject: [PATCH] support config binlog dir path
+
+Signed-off-by: lobty <butaoyu@h-partners.com>
+Change-Id: I4b0eeb2c94906dba59d48bf642b2ecb27a991d15
+---
+ src/sqlite3.c | 40 ++++++++++++++++++++++++++++------------
+ 1 file changed, 28 insertions(+), 12 deletions(-)
+
+diff --git a/src/sqlite3.c b/src/sqlite3.c
+index c949b70..66e04bb 100644
+--- a/src/sqlite3.c
++++ b/src/sqlite3.c
+@@ -5428,9 +5428,9 @@ SQLITE_API int sqlite3_set_xChange_callback_binlog(sqlite3 *srcDb, void (*xChang
+   char *tableName));
+ 
+ SQLITE_API int sqlite3_set_json_parse_callback_binlog(sqlite3 *srcDb,
+-  MonitorTablesConfig*(*jsonParseCallback)(const char *dbPath));
++  MonitorTablesConfig*(*jsonParseCallback)(const char *dbPath, const char *binlogDirPath));
+ SQLITE_API int sqlite3_set_json_status_callback_binlog(sqlite3 *srcDb,
+-  BinlogJsonStatus(*jsonStatusCallback)(const char *dbPath));
++  BinlogJsonStatus(*jsonStatusCallback)(const char *dbPath, const char *binlogDirPath));
+ SQLITE_API int sqlite3_free_json_parse_callback_binlog(sqlite3 *srcDb,
+   int(*freeJsonParseCallback)(MonitorTablesConfig *config));
+ // get data from binlog file
+@@ -17765,6 +17765,7 @@ typedef struct BinlogConfig {
+   void *callbackCtx;
+   u32 readHwmdelay;
+   BinlogOnErrnoTransFuncT onErrnoTrans;
++  char *binlogDirPath; /* custom binlog parent dir path, NULL means not configured */
+ } BinlogConfigT;
+  
+ typedef enum BinlogEventType {
+@@ -17835,10 +17836,11 @@ typedef struct Sqlite3BinlogConfig {
+   void (*xErrorCallback)(void *pCtx, int errNo, char *errMsg, const char *dbPath);
+   void (*xLogFullCallback)(void *pCtx, u16 currentCount, const char *dbPath);
+   void *callbackCtx;
++  const char *binlogDirPath; /* custom binlog parent dir path, NULL or empty means use default location */
+ } Sqlite3BinlogConfig;
+ 
+ void (*xChangeCallback)(const char *dbPath, char *tableName);
+-MonitorTablesConfig*(*jsonParseCallback)(const char *dbPath);
++MonitorTablesConfig*(*jsonParseCallback)(const char *dbPath, const char *binlogDirPath);
+ int(*freeJsonParseCallback)(MonitorTablesConfig *config);
+ 
+ typedef struct BinlogRow {
+@@ -17875,14 +17877,15 @@ typedef struct BinlogApi {
+ typedef struct Sqlite3BinlogHandle {
+   Sqlite3BinlogMode mode;
+   void *callbackCtx;
++  char *binlogDirPath; /* dup of the configured binlog parent dir path, NULL if not configured */
+   u64 flags;
+   u8 xTid[SQLITE_UUID_BLOB_LENGTH];
+   MonitorTablesConfig *monitorConfig;
+   void (*xErrorCallback)(void *pCtx, int errNo, char *errMsg, const char *dbPath);
+   void (*xLogFullCallback)(void *pCtx, u16 currentCount, const char *dbPath);
+   void (*xChangeCallback)(const char *dbPath, char *tabelName);
+-  BinlogJsonStatus (*jsonStatusCallback)(const char *dbPath);
+-  MonitorTablesConfig* (*jsonParseCallback)(const char *dbPath);
++  BinlogJsonStatus (*jsonStatusCallback)(const char *dbPath, const char *binlogDirPath);
++  MonitorTablesConfig* (*jsonParseCallback)(const char *dbPath, const char *binlogDirPath);
+   int (*freeJsonParseCallback)(MonitorTablesConfig *config);
+   Table* pTable;
+   BinlogInstanceT *binlogConn;
+@@ -96387,7 +96390,7 @@ SQLITE_API int sqlite3_set_monitor_config_binlog(sqlite3 *srcDb, MonitorTablesCo
+ }
+ 
+ SQLITE_API int sqlite3_set_json_status_callback_binlog(sqlite3 *srcDb,
+-  BinlogJsonStatus(*jsonStatusCallback)(const char *dbPath))
++  BinlogJsonStatus(*jsonStatusCallback)(const char *dbPath, const char *binlogDirPath))
+ {
+   if (srcDb == NULL) {
+     sqlite3_log(SQLITE_ERROR, "set json status binlog parameter is null");
+@@ -96425,7 +96428,7 @@ SQLITE_API int sqlite3_set_xChange_callback_binlog(sqlite3 *srcDb,
+ }
+ 
+ SQLITE_API int sqlite3_set_json_parse_callback_binlog(sqlite3 *srcDb,
+-  MonitorTablesConfig*(*jsonParseCallback)(const char *dbPath))
++  MonitorTablesConfig*(*jsonParseCallback)(const char *dbPath, const char *binlogDirPath))
+ {
+   if (srcDb == NULL) {
+     sqlite3_log(SQLITE_ERROR, "set json parse binlog parameter is null");
+@@ -263673,10 +263676,19 @@ SQLITE_PRIVATE int sqlite3SetBinLogConfig(sqlite3 *db, Sqlite3BinlogConfig *bCon
+     sqlite3_log(SQLITE_ERROR, "set binlog config zFile is null or binlog is already enabled");
+     return SQLITE_ERROR;
+   }
+- 
++
++  if (bConfig->binlogDirPath != NULL && bConfig->binlogDirPath[0] != '\0') {
++    db->xBinlogHandle.binlogDirPath = sqlite3DbStrDup(db, bConfig->binlogDirPath);
++    if (db->xBinlogHandle.binlogDirPath == NULL) {
++      sqlite3_log(SQLITE_NOMEM, "set binlog config dup binlogDirPath failed");
++      return SQLITE_NOMEM;
++    }
++  }
++
+   void *handle = sqlite3OsDlOpen(db->pVfs, "libarkdata_db_core.z.so");
+   if (handle == NULL) {
+       sqlite3_log(SQLITE_ERROR, "dlopen binlog err:%d", errno);
++      sqlite3BinlogReset(db);
+       return SQLITE_ERROR;
+   }
+   db->xBinlogHandle.binlogApi.binlogLib = handle;
+@@ -263696,6 +263708,7 @@ SQLITE_PRIVATE int sqlite3SetBinLogConfig(sqlite3 *db, Sqlite3BinlogConfig *bCon
+   conf.onLogFull = bConfig->xLogFullCallback;
+   conf.onErrnoTrans = sqlite3TransferBinlogErrno;
+   conf.callbackCtx = bConfig->callbackCtx;
++  conf.binlogDirPath = db->xBinlogHandle.binlogDirPath; /* NULL if not configured */
+  
+   BinlogInstanceT *inst = NULL;
+   rc = sqlite3TransferBinlogErrno(db->xBinlogHandle.binlogApi.binlogOpenApi(&conf, &inst));
+@@ -264305,8 +264318,9 @@ static MonitorTableCol *FindMonitorTableConfig(Vdbe *p, const char *tableName){
+     return NULL;
+   }
+   sqlite_int64 changedMtime = 0;
++  const char *zBinlogDir = db->xBinlogHandle.binlogDirPath;
+   if (db->xBinlogHandle.jsonStatusCallback != NULL) {
+-    BinlogJsonStatus status = db->xBinlogHandle.jsonStatusCallback(zFile);
++    BinlogJsonStatus status = db->xBinlogHandle.jsonStatusCallback(zFile, zBinlogDir);
+     if (status.mtime != db->xBinlogHandle.mtime) {
+       changedMtime = status.mtime;
+     }
+@@ -264317,7 +264331,7 @@ static MonitorTableCol *FindMonitorTableConfig(Vdbe *p, const char *tableName){
+         sqlite3FreeMonitorTablesConfig(db, db->xBinlogHandle.monitorConfig);
+         db->xBinlogHandle.monitorConfig = NULL;
+       }
+-      MonitorTablesConfig *monitorConfig = db->xBinlogHandle.jsonParseCallback(zFile);
++      MonitorTablesConfig *monitorConfig = db->xBinlogHandle.jsonParseCallback(zFile, zBinlogDir);
+       if (monitorConfig == NULL) {
+         sqlite3_log(SQLITE_ERROR, "jsonParseMonitorConfig get null");
+         return NULL;
+@@ -265093,6 +265107,8 @@ SQLITE_PRIVATE void sqlite3BinlogReset(sqlite3 *db)
+   db->xBinlogHandle.binlogApi.binlogLockReadApi = NULL;
+   db->xBinlogHandle.binlogApi.binlogUnlockReadApi = NULL;
+   db->xBinlogHandle.callbackCtx = NULL;
++  sqlite3DbFree(db, db->xBinlogHandle.binlogDirPath);
++  db->xBinlogHandle.binlogDirPath = NULL;
+   db->xBinlogHandle.binlogConn = NULL;
+   if (db->xBinlogHandle.binlogApi.binlogLib) {
+     sqlite3OsDlClose(db->pVfs, db->xBinlogHandle.binlogApi.binlogLib);
+@@ -265692,8 +265708,8 @@ struct sqlite3_api_routines_extra {
+   int (*replay_binlog)(sqlite3*, sqlite3*);
+   int (*set_monitor_config)(sqlite3*, MonitorTablesConfig*);
+   int (*set_xChange_callback)(sqlite3*, void (*xChangeCallback)(const char *dbPath, char *tableName));
+-  int (*set_json_status_callback)(sqlite3 *, BinlogJsonStatus(*jsonStatusCallback)(const char *dbPath));
+-  int (*set_json_parse_callback)(sqlite3*, MonitorTablesConfig*(*jsonParseCallback)(const char *dbPath));
++  int (*set_json_status_callback)(sqlite3 *, BinlogJsonStatus(*jsonStatusCallback)(const char *dbPath, const char *binlogDirPath));
++  int (*set_json_parse_callback)(sqlite3*, MonitorTablesConfig*(*jsonParseCallback)(const char *dbPath, const char *binlogDirPath));
+   int (*free_json_parse_callback)(sqlite3*, int(*freeJsonParseCallback)(MonitorTablesConfig *config));
+   int (*get_search_data_binlog)(sqlite3*, sqlite3*, BinlogSearchResultSet**);
+   int (*free_search_data_binlog)(sqlite3*, BinlogSearchResultSet**);
+-- 
+2.34.1
+

@@ -1,0 +1,505 @@
+From 1c1ff49c16f770af8d4d267871db5d3125112fcc Mon Sep 17 00:00:00 2001
+From: lobty <butaoyu@h-partners.com>
+Date: Fri, 18 Sep 2026 17:10:11 +0800
+Subject: [PATCH] Support Binlog Search filter unchanged update
+
+Signed-off-by: lobty <butaoyu@h-partners.com>
+Change-Id: I180ee7256562427f29e9e51ea39c5a5791c91e75
+---
+ src/sqlite3.c | 377 +++++++++++++++++++++++++++++++++++++++++---------
+ 1 file changed, 311 insertions(+), 66 deletions(-)
+
+diff --git a/src/sqlite3.c b/src/sqlite3.c
+index c0697e2..c949b70 100644
+--- a/src/sqlite3.c
++++ b/src/sqlite3.c
+@@ -17955,6 +17955,34 @@ SQLITE_PRIVATE char *sqlite3BinlogGetNthColWithBuffer(sqlite3 *db, const Table *
+   char *pSharedBuffer, sqlite3_uint64 nSharedBuffer);
+ SQLITE_PRIVATE char *sqlite3BinlogGetNthColForSearchWithBuffer(sqlite3 *db, const Table *pTab, const BinlogRow *pRow,
+   int iCol, int *pColType, char *pSharedBuffer, sqlite3_uint64 nSharedBuffer);
++SQLITE_PRIVATE int sqlite3BinlogStat4Column(sqlite3 *db, const void *pRec, int nRec, int iCol, sqlite3_value **ppVal); 
++SQLITE_PRIVATE int CheckNeedNotifyForUpdate(Vdbe *p, Table *pTab, BtCursor *pCursor, const BinlogRow *pRow);
++static int BinlogColInChangedCols(char **azCol, int nCol, const char *zCol);
++
++/*
++** Per-table union of SET-column names of all UPDATE statements coded into
++** one prepared statement (the main statement plus any trigger steps or FK
++** actions).  Built at codegen time on the TOP-LEVEL Vdbe, consumed at
++** runtime by CheckNeedNotify()/CheckNeedNotifyForUpdate() to decide whether
++** a row event must raise a data-change notification.
++**
++** One entry per table.  When several statements in the same program update
++** the same table, their SET lists are UNION-merged, so the entry is always
++** a superset of the SET list of whichever statement is executing.  The
++** exact old-vs-new value comparison in CheckNeedNotifyForUpdate() remains
++** the final arbiter, so a superset never loses nor fakes a notification.
++*/
++typedef struct BinlogTabChangedCols BinlogTabChangedCols;
++struct BinlogTabChangedCols {
++  Table *pTab;      /* key: schema Table object (pointer identity) */
++  char **azCol;     /* union of SET column names (sqlite3DbStrDup'd) */
++  int nCol;         /* used slots in azCol[] */
++  int nAlloc;       /* allocated slots in azCol[] */
++};
++SQLITE_PRIVATE void sqlite3BinlogAddChangedCols(Parse *pParse, Table *pTab,
++                                                const int *aXRef);
++SQLITE_PRIVATE void sqlite3FreeTabChangedCols(Vdbe *p);
++SQLITE_PRIVATE void sqlite3ClearBinlogRuntimeState(Vdbe *p);
+ /************** Binlog typedef in sqlite3 END ************************************/
+ #endif
+ 
+@@ -24021,8 +24049,8 @@ struct Vdbe {
+ /* begin of binlog related field */
+   StmtType stmtType;              /* Type of binlog statement */
+   BinlogDMLData *pBinlogDMLData;  /* Data for binlog row-based DML statement */
+-  char **changedCols;             /* Changed columns for binlog search */
+-  int changedColsCount;           /* Count of changed of columns */
++  BinlogTabChangedCols *aTabChangedCols; /* Codegen-time SET cols, per table */
++  int nTabChangedCols;            /* Number of entries in aTabChangedCols[] */
+   int isInsertOrDelete;           /* Flag for insert or delete operation */
+   const char *pDataTmp;           /* Temporary binlog data for op_notfound */
+   sqlite3_uint64 nDataTmp;        /* Size of pDataTmp */
+@@ -93253,19 +93281,100 @@ static void vdbeInvokeSqllog(Vdbe *v){
+ #endif
+ 
+ #ifdef SQLITE_ENABLE_BINLOG
+-SQLITE_PRIVATE void FreeChangedCols(Vdbe *p){
+-  sqlite3 *db = p->db;
+-  p->isInsertOrDelete = 0;
+-  if (p->changedCols==NULL) {
+-    return;
++/*
++** Record the SET-column list of the UPDATE currently being coded into the
++** top-level Vdbe, keyed by pTab.  Called from sqlite3Update() for both the
++** main statement (pParse is the top-level parse) and trigger steps / FK
++** actions (pParse is a sub-parse; sqlite3ParseToplevel() reaches the
++** top-level parse).  In both cases the entry lands on the one Vdbe that
++** actually executes the program.
++**
++** Existing entries for the same table are UNION-merged (column names
++** de-duplicated).  OOM: sqlite3DbRealloc/sqlite3DbStrDup failure sets
++** db->mallocFailed, the prepare fails, and the partially built Vdbe and
++** map are discarded by sqlite3VdbeClearObject() - a partially filled
++** entry therefore never executes.
++*/
++SQLITE_PRIVATE void sqlite3BinlogAddChangedCols(
++  Parse *pParse,          /* parse of the UPDATE being coded */
++  Table *pTab,            /* table being updated */
++  const int *aXRef        /* aXRef[i]>=0 -> column i is in the SET clause */
++){
++  sqlite3 *db = pParse->db;
++  Vdbe *pTopV = sqlite3ParseToplevel(pParse)->pVdbe;
++  BinlogTabChangedCols *pEnt = 0;
++  int i;
++
++  if( pTopV==0 ) return;
++
++  for(i=0; i<pTopV->nTabChangedCols; i++){
++    if( pTopV->aTabChangedCols[i].pTab==pTab ){
++      pEnt = &pTopV->aTabChangedCols[i];
++      break;
++    }
++  }
++  if( pEnt==0 ){
++    BinlogTabChangedCols *aNew = (BinlogTabChangedCols*)sqlite3DbRealloc(
++        db, pTopV->aTabChangedCols,
++        (pTopV->nTabChangedCols+1)*sizeof(BinlogTabChangedCols)
++    );
++    if( aNew==0 ) return;                  /* OOM: prepare will fail */
++    pTopV->aTabChangedCols = aNew;
++    pEnt = &aNew[pTopV->nTabChangedCols];
++    memset(pEnt, 0, sizeof(*pEnt));
++    pEnt->pTab = pTab;
++    pTopV->nTabChangedCols++;
++  }
++
++  for(i=0; i<pTab->nCol; i++){
++    const char *zCn;
++    if( aXRef[i]<0 ) continue;   /* includes generated cols (aXRef==99999) */
++    zCn = pTab->aCol[i].zCnName;
++    if( BinlogColInChangedCols(pEnt->azCol, pEnt->nCol, zCn) ) continue;
++    if( pEnt->nCol>=pEnt->nAlloc ){
++      char **azNew = (char**)sqlite3DbRealloc(db, pEnt->azCol,
++          (pEnt->nAlloc+4)*sizeof(char*));
++      if( azNew==0 ) return;                /* OOM: prepare will fail */
++      pEnt->azCol = azNew;
++      pEnt->nAlloc += 4;
++    }
++    pEnt->azCol[pEnt->nCol] = sqlite3DbStrDup(db, zCn);
++    if( pEnt->azCol[pEnt->nCol]==0 ) return;/* OOM: prepare will fail */
++    pEnt->nCol++;
+   }
+-  for (int i=0; i<p->changedColsCount; i++) {
+-    sqlite3DbFree(db, p->changedCols[i]);
+-    p->changedCols[i] = NULL;
++}
++
++/*
++** Reset per-EXECUTION binlog runtime state.  Called from
++** sqlite3VdbeReset(), i.e. after every run of the statement.  Must NOT
++** touch aTabChangedCols: that map is codegen data required by every
++** (re-)execution of the prepared statement.
++*/
++SQLITE_PRIVATE void sqlite3ClearBinlogRuntimeState(Vdbe *p){
++  p->isInsertOrDelete = 0;
++}
++
++/*
++** Free the codegen-time per-table changed-columns map.  Called only from
++** sqlite3VdbeClearObject(), i.e. when the statement is finalized or
++** deleted.  (Historical note: the old FreeChangedCols() was also called
++** from sqlite3VdbeReset(), which destroyed the codegen-time changedCols
++** after the first execution - a re-executed prepared UPDATE silently
++** stopped notifying.  This split fixes that.)
++*/
++SQLITE_PRIVATE void sqlite3FreeTabChangedCols(Vdbe *p){
++  sqlite3 *db = p->db;
++  int i, j;
++  for(i=0; i<p->nTabChangedCols; i++){
++    BinlogTabChangedCols *pEnt = &p->aTabChangedCols[i];
++    for(j=0; j<pEnt->nCol; j++){
++      sqlite3DbFree(db, pEnt->azCol[j]);
++    }
++    sqlite3DbFree(db, pEnt->azCol);
+   }
+-  sqlite3DbFree(db, p->changedCols);
+-  p->changedCols = NULL;
+-  p->changedColsCount = 0;
++  sqlite3DbFree(db, p->aTabChangedCols);
++  p->aTabChangedCols = 0;
++  p->nTabChangedCols = 0;
+ }
+ #endif
+ 
+@@ -93365,7 +93474,7 @@ SQLITE_PRIVATE int sqlite3VdbeReset(Vdbe *p){
+   }
+ #endif
+ #ifdef SQLITE_ENABLE_BINLOG
+-  FreeChangedCols(p);
++  sqlite3ClearBinlogRuntimeState(p);
+   sqlite3FreeBinlogRowData(p);
+ #endif
+   return p->rc & db->errMask;
+@@ -93472,7 +93581,8 @@ static void sqlite3VdbeClearObject(sqlite3 *db, Vdbe *p){
+   }
+ #endif
+ #ifdef SQLITE_ENABLE_BINLOG
+-  FreeChangedCols(p);
++  sqlite3ClearBinlogRuntimeState(p);
++  sqlite3FreeTabChangedCols(p);
+   sqlite3FreeBinlogRowData(p);
+ #endif
+ }
+@@ -96268,8 +96378,12 @@ SQLITE_API int sqlite3_set_monitor_config_binlog(sqlite3 *srcDb, MonitorTablesCo
+   int rc = sqlite3SetMonitorConfig(srcDb, monitorConfig);
+   if (rc != SQLITE_OK) {
+     sqlite3_log(rc, "get monitor config with not expect way");
++    return rc;
+   }
+-  return rc;
++  if (srcDb->xBinlogHandle.freeJsonParseCallback != NULL) {
++    srcDb->xBinlogHandle.freeJsonParseCallback(monitorConfig);
++  }
++  return SQLITE_OK;
+ }
+ 
+ SQLITE_API int sqlite3_set_json_status_callback_binlog(sqlite3 *srcDb,
+@@ -159237,24 +159351,13 @@ SQLITE_PRIVATE void sqlite3Update(
+   if( pParse->nested==0 ) sqlite3VdbeCountChanges(v);
+   sqlite3BeginWriteOperation(pParse, pTrigger || hasFK, iDb);
+   #ifdef SQLITE_ENABLE_BINLOG
++    /* Record the SET-column list for binlog row-based notification on the
++    ** TOP-LEVEL Vdbe (not on v: for trigger steps v is a temporary Vdbe
++    ** whose fields are discarded after codegen).  Multiple UPDATEs on the
++    ** same table within one program are UNION-merged, see
++    ** BinlogTabChangedCols. */
+     if (db->xBinlogHandle.mode == ROW_FOR_SEARCH) {
+-      FreeChangedCols(v);
+-      int changedColsCount = 0;
+-      for (int l = 0; l<pTab->nCol; l++) {
+-        if ( aXRef[l]>=0) changedColsCount++;
+-      }
+-      if (changedColsCount > 0) {
+-        v->changedCols = sqlite3DbMallocZero(db, sizeof(char*) * changedColsCount);
+-        if (v->changedCols) {
+-          int colIndex = 0;
+-          for (int l=0; l<pTab->nCol; l++) {
+-            if (aXRef[l]>=0) {
+-                v->changedCols[colIndex++] = sqlite3DbStrDup(db, pTab->aCol[l].zCnName);
+-            }
+-          }
+-          v->changedColsCount = changedColsCount;
+-        }
+-      }
++      sqlite3BinlogAddChangedCols(pParse, pTab, (const int*)aXRef);
+     }
+   #endif
+   /* Allocate required registers. */
+@@ -264184,24 +264287,22 @@ static void FlushPendingNotifications(sqlite3 *db){
+   ClearPendingNotifications(db);
+ }
+ 
+-SQLITE_PRIVATE int CheckNeedNotify(Vdbe *p, char *tableName){
++/* Find the monitor config entry for the given table name. Returns NULL when
++** binlog search mode is disabled, no change callback is registered, or the
++** table is not monitored. Loads the monitor config lazily through
++** jsonParseCallback when it has not been set yet. */
++static MonitorTableCol *FindMonitorTableConfig(Vdbe *p, const char *tableName){
+   sqlite3 *db = p->db;
+   if (tableName == NULL) {
+-      return 0;
+-  }
+-  char **changedCols = p->changedCols;
+-  int changedColsCount = p->changedColsCount;
+-  if (changedCols == NULL && changedColsCount > 0) {
+-    sqlite3_log(SQLITE_WARNING, "CheckAndNotify: cahngedCiks ss NULL but count > 0");
+-    return 0;
++    return NULL;
+   }
+   if (db->xBinlogHandle.mode != ROW_FOR_SEARCH || (db->xBinlogHandle.flags & BINLOG_FLAG_ENABLE) == 0) {
+-    return 0;
++    return NULL;
+   }
+   const char *zFile = sqlite3_db_filename(db, 0);
+   if (zFile == NULL) {
+     sqlite3_log(SQLITE_ERROR, "binlog db has no file path");
+-    return 0;
++    return NULL;
+   }
+   sqlite_int64 changedMtime = 0;
+   if (db->xBinlogHandle.jsonStatusCallback != NULL) {
+@@ -264219,7 +264320,7 @@ SQLITE_PRIVATE int CheckNeedNotify(Vdbe *p, char *tableName){
+       MonitorTablesConfig *monitorConfig = db->xBinlogHandle.jsonParseCallback(zFile);
+       if (monitorConfig == NULL) {
+         sqlite3_log(SQLITE_ERROR, "jsonParseMonitorConfig get null");
+-        return 0;
++        return NULL;
+       }
+       int rc = sqlite3SetMonitorConfig(db, monitorConfig);
+       if (db->xBinlogHandle.freeJsonParseCallback != NULL) {
+@@ -264227,7 +264328,7 @@ SQLITE_PRIVATE int CheckNeedNotify(Vdbe *p, char *tableName){
+       }
+       if (rc != SQLITE_OK) {
+         sqlite3_log(SQLITE_ERROR, "setmonitorConfig fail in jsonParseMonitorConfig");
+-        return 0;
++        return NULL;
+       }
+       if (changedMtime != 0) {
+         db->xBinlogHandle.mtime = changedMtime;
+@@ -264235,40 +264336,178 @@ SQLITE_PRIVATE int CheckNeedNotify(Vdbe *p, char *tableName){
+     }
+   }
+   if (db->xBinlogHandle.monitorConfig == NULL) {
+-      return 0;
++    return NULL;
+   }
+   MonitorTablesConfig *config = db->xBinlogHandle.monitorConfig;
+   if (db->xBinlogHandle.xChangeCallback == NULL) {
+-    return 0;
++    return NULL;
+   }
+   for (int i = 0; i < config->tableCount; i++) {
+-    if (strcmp(tableName, config->tables[i].tableName) != 0) {
+-      continue;
++    if (strcmp(tableName, config->tables[i].tableName) == 0) {
++      return &config->tables[i];
+     }
+-    if (p->isInsertOrDelete) {
++  }
++  return NULL;
++}
++
++static int BinlogColInChangedCols(char **changedCols, int changedColsCount, const char *zCol){
++  for (int j = 0; j < changedColsCount; j++){
++    if( strcmp(changedCols[j], zCol)==0 ) {
+       return 1;
+     }
+-    int isFound = 0;
+-    MonitorTableCol tableConfig = config->tables[i];
+-    for (int j = 0; j < changedColsCount; j++) {
+-      for (int k = 0; k < tableConfig.colCount; k++) {
+-        if (strcmp(changedCols[j], tableConfig.cols[k]) == 0) {
+-          isFound = 1;
+-          break;
+-        }
+-      }
+-      if (isFound) {
+-          break;
++  }
++  return 0;
++}
++
++/* Return 1 if any changed column is also a monitored column */
++static int BinlogColsIntersect(char **changedCols, int changedColsCount,
++  const MonitorTableCol *tableConfig){
++  for (int j = 0; j < changedColsCount; j++) {
++    for (int k = 0; k < tableConfig->colCount; k++) {
++      if (strcmp(changedCols[j], tableConfig->cols[k]) == 0) {
++        return 1;
+       }
+     }
+-    if(!isFound){
+-      return 0;
+-    }
+-    return 1;
+   }
+   return 0;
+ }
+ 
++/* Set-columns recorded at codegen time for pTab in this program, or NULL
++** when unknown (table not UPDATEd by this program, statement coded before
++** ROW_FOR_SEARCH was enabled, upsert DO UPDATE path, ...). */
++static BinlogTabChangedCols *FindTabChangedCols(Vdbe *p, const Table *pTab){
++  int i;
++  for(i=0; i<p->nTabChangedCols; i++){
++    if( p->aTabChangedCols[i].pTab==pTab ) return &p->aTabChangedCols[i];
++  }
++  return NULL;
++}
++
++SQLITE_PRIVATE int CheckNeedNotify(Vdbe *p, Table *pTab){
++  if (pTab==NULL || pTab->zName==NULL) {
++    return 0;
++  }
++  MonitorTableCol *tableConfig = FindMonitorTableConfig(p, pTab->zName);
++  if (tableConfig == NULL) {
++    return 0;
++  }
++  if (p->isInsertOrDelete) {
++    return 1;
++  }
++  BinlogTabChangedCols *pCh = FindTabChangedCols(p, pTab);
++  if (pCh == NULL) {
++    /* SET columns unknown: conservative notify (exact value comparison is
++    ** not possible on this fallback path). */
++    return 1;
++  }
++  return BinlogColsIntersect(pCh->azCol, pCh->nCol, tableConfig);
++}
++
++/* Type + byte-exact comparison: any difference (including storage type
++** change, e.g. int 1 -> real 1.0) counts as "changed" (conservative). */
++static int BinlogValueEqual(sqlite3_value *pOld, sqlite3_value *pNew){
++  int t = sqlite3_value_type(pOld);
++  if( t!=sqlite3_value_type(pNew) ) return 0;
++  if( t==SQLITE_NULL ) return 1;
++  if( t==SQLITE_INTEGER ) return sqlite3_value_int64(pOld)==sqlite3_value_int64(pNew);
++  if( t==SQLITE_FLOAT ) return sqlite3_value_double(pOld)==sqlite3_value_double(pNew);
++  if( sqlite3_value_bytes(pOld)!=sqlite3_value_bytes(pNew) ) return 0;
++  return sqlite3_value_bytes(pOld)==0
++    || memcmp(sqlite3_value_blob(pOld), sqlite3_value_blob(pNew),
++              sqlite3_value_bytes(pOld))==0;
++}
++
++/* Check whether an UPDATE row needs the notify flag, by comparing the old
++** and new values of the monitored columns. The value comparison only runs
++** on the main update path of rowid tables: the cursor must still point at
++** the old row. In chngKey / FK forced delete+insert cases OP_Delete already
++** removed the old row, so the guard falls back to CheckNeedNotify (which
++** notifies conservatively). */
++SQLITE_PRIVATE int CheckNeedNotifyForUpdate(Vdbe *p, Table *pTab,
++  BtCursor *pCursor, const BinlogRow *pRow){
++  sqlite3 *db = p->db;
++  MonitorTableCol *tc = FindMonitorTableConfig(p, pTab->zName);
++  if( tc==NULL ) return 0;
++
++  /* SET columns of the UPDATE that produced this row event.  NULL means
++  ** "unknown" (statement coded before ROW_FOR_SEARCH was enabled, upsert
++  ** DO UPDATE path, OOM during codegen, ...): skip both filters below and
++  ** let the exact old-vs-new value comparison decide. */
++  BinlogTabChangedCols *pCh = FindTabChangedCols(p, pTab);
++
++  /* Fast path: SET columns known and disjoint from the monitored columns
++  ** -> no monitored value can change -> no notify, skip the old-row read. */
++  if( pCh!=NULL
++   && !BinlogColsIntersect(pCh->azCol, pCh->nCol, tc) ) return 0;
++
++  /* Guard: cursor must still point at the OLD row being updated.
++  ** In chngKey/hasFK>1 cases OP_Delete already removed the old row and the
++  ** cursor moved elsewhere (or is invalid) -> fall back to legacy logic. */
++  if( !sqlite3BtreeCursorIsValidNN(pCursor)
++   || sqlite3BtreeIntegerKey(pCursor)!=pRow->rowid ){
++    return CheckNeedNotify(p, pTab);
++  }
++
++  /* Read the old record from the b-tree (same pattern as OP_Delete binlog
++  ** block). OOM or empty payload -> legacy fallback. */
++  u32 nOld = sqlite3BtreePayloadSize(pCursor);
++  char *pOld = nOld>0 ? sqlite3DbMallocRaw(db, nOld) : NULL;
++  if( pOld==NULL ) return CheckNeedNotify(p, pTab);
++  sqlite3BtreePayload(pCursor, 0, nOld, pOld);
++
++  /* New record: if it has a zero-filled tail (MEM_Zero), build a padded
++  ** buffer like sqlite3BinlogGetNthCol does; else use pData directly. */
++  const char *pNew = pRow->pData;
++  char *pNewBuf = NULL;
++  u64 nNew = pRow->nData + (u64)pRow->nZero;
++  if( pNew==NULL ){
++    sqlite3DbFree(db, pOld);
++    return CheckNeedNotify(p, pTab);
++  }
++  if( pRow->nZero>0 ){
++    pNewBuf = sqlite3MallocZero(nNew);
++    if( pNewBuf==NULL ){
++      sqlite3DbFree(db, pOld);
++      return CheckNeedNotify(p, pTab);
++    }
++    errno_t errNo = memcpy_s(pNewBuf, (size_t)nNew, pNew, (size_t)pRow->nData);
++    if( errNo!=EOK ){
++      sqlite3_free(pNewBuf);
++      sqlite3DbFree(db, pOld);
++      return CheckNeedNotify(p, pTab);
++    }
++    pNew = pNewBuf;
++  }
++
++  int needNotify = 0;
++  for(int k=0; k<tc->colCount && !needNotify; k++){
++    /* Column filter applies only when the SET list is known; with unknown
++    ** SET compare every monitored column. */
++    if( pCh!=NULL
++     && !BinlogColInChangedCols(pCh->azCol, pCh->nCol, tc->cols[k]) ){
++      continue;
++    }
++    int iCol = sqlite3ColumnIndex(pTab, tc->cols[k]);
++    if( iCol<0 ) continue;                          /* stale config col */
++    if( HasRowid(pTab) && iCol==pTab->iPKey ) continue; /* rowid alias: unchanged
++                                                      ** (guaranteed by guard above) */
++    sqlite3_value *pOldVal = NULL;
++    sqlite3_value *pNewVal = NULL;
++    int rcOld = sqlite3BinlogStat4Column(db, pOld, (int)nOld, iCol, &pOldVal);
++    int rcNew = sqlite3BinlogStat4Column(db, pNew, (int)nNew, iCol, &pNewVal);
++    if( rcOld!=SQLITE_OK || rcNew!=SQLITE_OK
++     || !BinlogValueEqual(pOldVal, pNewVal) ){
++      needNotify = 1;   /* decode failure (old row pre-ALTER / virtual
++                        ** generated col etc.) -> conservative notify */
++    }
++    sqlite3ValueFree(pOldVal);
++    sqlite3ValueFree(pNewVal);
++  }
++  sqlite3DbFree(db, pOld);
++  sqlite3_free(pNewBuf);
++  return needNotify;
++}
++
+ SQLITE_PRIVATE int sqlite3BinlogWriteTable(Vdbe *p, Table *pTable){
+   assert( p!=NULL );
+   assert( pTable!=NULL );
+@@ -264477,7 +264716,13 @@ SQLITE_PRIVATE void sqlite3StoreBinlogRowData(Vdbe *p, BtCursor *pCursor, const
+   if (db->xBinlogHandle.mode == ROW_FOR_SEARCH && (pRow->op == SQLITE_INSERT || pRow->op == SQLITE_DELETE)) {
+       p->isInsertOrDelete = 1;
+   }
+-  u8 isNeedNotify = CheckNeedNotify(p, pTab->zName);
++  u8 isNeedNotify;
++  if (pRow->op == SQLITE_UPDATE) {
++    /* For UPDATE rows, notify only when a monitored column really changed */
++    isNeedNotify = (u8)CheckNeedNotifyForUpdate(p, pTab, pCursor, pRow);
++  } else {
++    isNeedNotify = (u8)CheckNeedNotify(p, pTab);
++  }
+   if (sqlite3BinlogWriteRowData(p, pRow, isNeedNotify) == SQLITE_OK) {
+     if (isNeedNotify) {
+       if (db->autoCommit == 0) {
+-- 
+2.34.1
+
