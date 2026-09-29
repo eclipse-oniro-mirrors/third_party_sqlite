@@ -1,0 +1,69 @@
+From 9dac7184513e6e64a4668e8cf53fee0a8c35a97d Mon Sep 17 00:00:00 2001
+From: Zerg_Wang <Zerg_Wang@noreply.gitcode.com>
+Date: Tue, 29 Sep 2026 16:37:13 +0800
+Subject: [PATCH] Fix binlog search dangling pointer
+
+---
+ src/sqlite3.c | 25 ++++++++++++++++++++++---
+ 1 file changed, 22 insertions(+), 3 deletions(-)
+
+diff --git a/src/sqlite3.c b/src/sqlite3.c
+index 66e04bb..6c6c7d4 100644
+--- a/src/sqlite3.c
++++ b/src/sqlite3.c
+@@ -17893,6 +17893,7 @@ typedef struct Sqlite3BinlogHandle {
+   u8 isSkipTrigger;
+   Hash *pendingNotifications;  // Hash table for dedup notifications in explict transactions
+   sqlite_int64 mtime;
++  char *cachedTableName;
+ } Sqlite3BinlogHandle;
+  
+ typedef enum {
+@@ -265095,6 +265096,10 @@ SQLITE_PRIVATE void sqlite3BinlogReset(sqlite3 *db)
+   }
+   db->xBinlogHandle.flags = 0;
+   (void)memset_s(db->xBinlogHandle.xTid, SQLITE_UUID_BLOB_LENGTH, 0, SQLITE_UUID_BLOB_LENGTH);
++  if (db->xBinlogHandle.cachedTableName != NULL) {
++    sqlite3DbFree(db, db->xBinlogHandle.cachedTableName);
++    db->xBinlogHandle.cachedTableName = NULL;
++  }
+   db->xBinlogHandle.xErrorCallback = NULL;
+   db->xBinlogHandle.binlogApi.binlogOpenApi = NULL;
+   db->xBinlogHandle.binlogApi.binlogCloseApi = NULL;
+@@ -265327,6 +265332,15 @@ SQLITE_PRIVATE int sqlite3BinlogGetSearchData(sqlite3 *db, Sqlite3BinlogStmt *bS
+   switch (event->head.eventType) {
+     case BINLOG_EVENT_TYPE_ROW_TABLE: {
+       char *pTableName = (char *)event->body;
++      if (db->xBinlogHandle.cachedTableName != NULL) {
++        sqlite3DbFree(db, db->xBinlogHandle.cachedTableName);
++      }
++      db->xBinlogHandle.cachedTableName = sqlite3DbStrDup(db, pTableName);
++      if (db->xBinlogHandle.cachedTableName == NULL) {
++        sqlite3_log(SQLITE_NOMEM, "binlog cached table name dup failed");
++        rc = SQLITE_NOMEM;
++        return rc;
++      }
+       *pOutTable = sqliteBinlogGetTable(db, pTableName, &rc);
+       if (*pOutTable == NULL) {
+         rc = SQLITE_ERROR;
+@@ -265338,9 +265352,14 @@ SQLITE_PRIVATE int sqlite3BinlogGetSearchData(sqlite3 *db, Sqlite3BinlogStmt *bS
+       return rc;
+     }
+     case BINLOG_EVENT_TYPE_ROW_FULL_DATA: {
+-      if (pOutTable == NULL || *pOutTable == NULL) {
+-        if (db->xBinlogHandle.pTable != NULL) {
+-            *pOutTable = db->xBinlogHandle.pTable;
++      if (*pOutTable == NULL) {
++        if (db->xBinlogHandle.cachedTableName != NULL) {
++          *pOutTable = sqliteBinlogGetTable(db, db->xBinlogHandle.cachedTableName, &rc);
++          if (*pOutTable == NULL) {
++            rc = SQLITE_ERROR;
++            sqlite3_log(SQLITE_ERROR, "failed to get the table based on table name");
++            return rc;
++          }
+         } else {
+           rc = SQLITE_ERROR;
+           sqlite3_log(SQLITE_ERROR, "binlog row has no table");
+-- 
+2.55.0.windows.5
+
