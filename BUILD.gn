@@ -17,6 +17,13 @@ import("//third_party/sqlite/sqlite.gni")
 is_cross_platform_build = defined(is_arkui_x) && is_arkui_x
 sqlite_patched_dir = root_out_dir + "/patched_sqlite"
 
+SQLITE_USE_OPENHITLS = false
+if (is_ohos && !is_cross_platform_build &&
+  defined(global_parts_info) &&
+  defined(global_parts_info.thirdparty_openhitls)) {
+  SQLITE_USE_OPENHITLS = global_parts_info.thirdparty_openhitls
+}
+
 # Lets callers do '#include <sqlite3.h>'
 config("sqlite_config") {
   include_dirs = [ "$sqlite_patched_dir/include" ]
@@ -126,6 +133,7 @@ ohos_shared_library("sqlitecompressvfs") {
 
 ohos_shared_library("sqlite") {
   branch_protector_ret = "pac_ret"
+  # libsqlite.so uses the openHiTLS crypto backend.
   sources = [
     "$sqlite_patched_dir/src/sqlite3.c",
     "$sqlite_patched_dir/ext/misc/cksumvfs.c",
@@ -161,7 +169,6 @@ ohos_shared_library("sqlite") {
     "SQLITE_SHARED_BLOCK_OPTIMIZATION",
     "SQLITE_CODEC_ATTACH_CHANGED",
     "SQLITE_ENABLE_DROPTABLE_CALLBACK",
-    "OPENSSL_SUPPRESS_DEPRECATED",
     "LOG_DUMP",
     "OS_FEATURE",
     "SQLITE_HDR_CHECK",
@@ -171,6 +178,11 @@ ohos_shared_library("sqlite") {
     "SQLITE_CKSUMVFS_STATIC",
     "SQLITE_ENABLE_PAGE_COMPRESS",
   ]
+  if (SQLITE_USE_OPENHITLS) {
+    defines += [ "SQLITE_USE_OPENHITLS" ]
+  } else {
+    defines += [ "OPENSSL_SUPPRESS_DEPRECATED" ]
+  }
   if (sqlite_enable_fdsan) {
     defines += [ "FDSAN_ENABLE" ]
   }
@@ -204,10 +216,15 @@ ohos_shared_library("sqlite") {
       external_deps = [ "c_utils:utils" ]
     }
   } else {
-    external_deps = [
-      "c_utils:utils",
-      "openssl:libcrypto_shared",
-    ]
+    external_deps = [ "c_utils:utils" ]
+    if (SQLITE_USE_OPENHITLS) {
+      external_deps += [
+        "openhitls:openhitls_crypto",
+        "openhitls:openhitls_bsl",
+      ]
+    } else {
+      external_deps += [ "openssl:libcrypto_shared" ]
+    }
   }
   if (is_ohos && is_clang && enhanced_opt &&
       (target_cpu == "arm" || target_cpu == "arm64")) {
