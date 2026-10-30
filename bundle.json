@@ -28,7 +28,8 @@
             "components": [
                 "c_utils",
                 "icu",
-                "openssl"
+                "openssl",
+                "openhitls"
             ]
         },
         "build": {

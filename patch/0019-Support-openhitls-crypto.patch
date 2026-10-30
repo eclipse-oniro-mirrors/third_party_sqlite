@@ -1,0 +1,378 @@
+From 0019001900190019001900190019001900190019 Mon Sep 17 00:00:00 2001
+From: zhujinlin <zhujinlin2@huawei.com>
+Date: Mon, 13 Oct 2026 14:00:00 +0800
+Subject: [PATCH] Support openHiTLS crypto backend with compile-time selection
+
+Add hw_codec_openhitls.h and hw_codec_openhitls.c sections, both
+wrapped in #ifdef SQLITE_USE_OPENHITLS. The existing OpenSSL backend
+(hw_codec_openssl.h and hw_codec_openssl.c) is wrapped in #ifndef
+SQLITE_USE_OPENHITLS so only one backend compiles at a time.
+
+A compile-time macro mapping block at the top of hw_codec.c remaps
+all openssl* function names to their openhitls* equivalents when
+SQLITE_USE_OPENHITLS is defined, so no call sites in hw_codec.c
+need to change.
+
+When SQLITE_USE_OPENHITLS is undefined, the OpenSSL backend compiles
+as-is and the openHiTLS sections are skipped.
+
+Signed-off-by: zhujinlin <zhujinlin2@huawei.com>
+---
+ src/sqlite3.c | 317 ++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 316 insertions(+), 1 deletion(-)
+
+diff --git a/src/sqlite3.c b/src/sqlite3.c
+--- a/src/sqlite3.c
++++ b/src/sqlite3.c
+@@ -259899,6 +259899,7 @@
+
+ #ifdef SQLITE_HAS_CODEC
+ /************** Begin file hw_codec_openssl.h *******************************/
++#ifndef SQLITE_USE_OPENHITLS
+ #ifndef EXPOSE_INTERNAL_FUNC
+ #define CODEC_STATIC static
+ #else
+@@ -259911,7 +259912,24 @@
+   unsigned char *buffer;
+   int bufferSize;
+ }Buffer;
++#endif /* !SQLITE_USE_OPENHITLS */
+ /************** End file hw_codec_openssl.h *********************************/
++/************** Begin file hw_codec_openhitls.h *******************************/
++#ifdef SQLITE_USE_OPENHITLS
++#ifndef EXPOSE_INTERNAL_FUNC
++#define CODEC_STATIC static
++#else
++#define CODEC_STATIC
++#endif
++
++#define DEFAULT_CIPHER "aes-256-gcm"
++
++typedef struct{
++  unsigned char *buffer;
++  int bufferSize;
++}Buffer;
++#endif  /* SQLITE_USE_OPENHITLS */
++/************** End file hw_codec_openhitls.h *********************************/
+ /************** Begin file hw_codec.h ***************************************/
+ #define DEFAULT_PAGE_SIZE 1024
+ #define DEFAULT_ITER 10000
+@@ -259963,6 +259981,7 @@
+
+ /************** End file hw_codec.h *****************************************/
+ /************** Begin file hw_codec_openssl.c *******************************/
++#ifndef SQLITE_USE_OPENHITLS
+ #include <openssl/rand.h>
+ #include <openssl/evp.h>
+ #include <openssl/hmac.h>
+@@ -260145,9 +260164,310 @@
+   }
+ }
+
++#endif /* !SQLITE_USE_OPENHITLS */
+ /************** End file hw_codec_openssl.c *********************************/
++/************** Begin file hw_codec_openhitls.c *******************************/
++#ifdef SQLITE_USE_OPENHITLS
++#include "crypt_eal_rand.h"
++#include "crypt_eal_cipher.h"
++#include "crypt_eal_mac.h"
++#include "crypt_eal_md.h"
++#include "crypt_eal_kdf.h"
++#include "crypt_eal_init.h"
++#include "crypt_algid.h"
++#include "crypt_errno.h"
++#include "crypt_types.h"
++#include "bsl_params.h"
++#include "crypt_params_key.h"
++
++#define CIPHER_HMAC_ALGORITHM_INVALID 0
++#define CIPHER_HMAC_ALGORITHM_SHA1 1
++#define CIPHER_HMAC_ALGORITHM_SHA256 2
++#define CIPHER_HMAC_ALGORITHM_SHA512 3
++
++#define DEFAULT_HMAC_ALGORITHM CIPHER_HMAC_ALGORITHM_SHA1
++
++#define CIPHER_KDF_ALGORITHM_INVALID 0
++#define CIPHER_KDF_ALGORITHM_SHA1 1
++#define CIPHER_KDF_ALGORITHM_SHA256 2
++#define CIPHER_KDF_ALGORITHM_SHA512 3
++
++#define DEFAULT_KDF_ALGORITHM CIPHER_KDF_ALGORITHM_SHA1
++
++#define CIPHER_HMAC_ALGORITHM_NAME_SHA1 "SHA1"
++#define CIPHER_HMAC_ALGORITHM_NAME_SHA256 "SHA256"
++#define CIPHER_HMAC_ALGORITHM_NAME_SHA512 "SHA512"
++
++#define CIPHER_KDF_ALGORITHM_NAME_SHA1 "KDF_SHA1"
++#define CIPHER_KDF_ALGORITHM_NAME_SHA256 "KDF_SHA256"
++#define CIPHER_KDF_ALGORITHM_NAME_SHA512 "KDF_SHA512"
++
++/* opaque pointer <-> algorithm ID conversion macros */
++#define CIPHER_PTR_TO_ID(ptr)  ((CRYPT_CIPHER_AlgId)(uintptr_t)(ptr))
++#define CIPHER_ID_TO_PTR(id)   ((void *)(uintptr_t)(id))
++
++/* name <-> enum mapping helpers */
++static CRYPT_CIPHER_AlgId CipherNameToAlgId(const char *name){
++  if(sqlite3_stricmp(name, "aes-256-gcm")==0){
++    return CRYPT_CIPHER_AES256_GCM;
++  }
++  if(sqlite3_stricmp(name, "aes-256-cbc")==0){
++    return CRYPT_CIPHER_AES256_CBC;
++  }
++  return CRYPT_CIPHER_MAX;  /* invalid sentinel */
++}
++
++static const char *AlgIdToCipherName(CRYPT_CIPHER_AlgId id){
++  switch(id){
++    case CRYPT_CIPHER_AES256_GCM: return "aes-256-gcm";
++    case CRYPT_CIPHER_AES256_CBC: return "aes-256-cbc";
++    default: return NULL;
++  }
++}
++
++static CRYPT_MAC_AlgId HmacAlgoToMacId(int hmacAlgo){
++  switch(hmacAlgo){
++    case CIPHER_HMAC_ALGORITHM_SHA1:   return CRYPT_MAC_HMAC_SHA1;
++    case CIPHER_HMAC_ALGORITHM_SHA256: return CRYPT_MAC_HMAC_SHA256;
++    case CIPHER_HMAC_ALGORITHM_SHA512: return CRYPT_MAC_HMAC_SHA512;
++    default: return CRYPT_MAC_MAX;
++  }
++}
++
++static CRYPT_MAC_AlgId KdfAlgoToMacId(int kdfAlgo){
++  switch(kdfAlgo){
++    case CIPHER_KDF_ALGORITHM_SHA1:   return CRYPT_MAC_HMAC_SHA1;
++    case CIPHER_KDF_ALGORITHM_SHA256: return CRYPT_MAC_HMAC_SHA256;
++    case CIPHER_KDF_ALGORITHM_SHA512: return CRYPT_MAC_HMAC_SHA512;
++    default: return CRYPT_MAC_MAX;
++  }
++}
++
++unsigned int openhitls_init_count = 0;
++sqlite3_mutex *openhitls_random_mutex = NULL;
++
++CODEC_STATIC void openhitlsActive(){
++  sqlite3_mutex_enter(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++
++    CRYPT_EAL_Init(CRYPT_EAL_INIT_ALL);
++
++  if(openhitls_random_mutex == NULL){
++    openhitls_random_mutex = sqlite3_mutex_alloc(SQLITE_MUTEX_FAST);
++  }
++  openhitls_init_count++;
++
++  sqlite3_mutex_leave(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++  return;
++}
++
++CODEC_STATIC void openhitlsDeactive(){
++  sqlite3_mutex_enter(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++
++  openhitls_init_count--;
++
++  sqlite3_mutex_leave(sqlite3_mutex_alloc(SQLITE_MUTEX_STATIC_MASTER));
++  return;
++}
++
++CODEC_STATIC int openhitlsGetRandom(Buffer *buffer){
++  if(buffer==NULL || buffer->buffer==NULL || buffer->bufferSize<=0){
++    return SQLITE_ERROR;
++  }
++  sqlite3_mutex_enter(openhitls_random_mutex);
++  int32_t rc = CRYPT_EAL_Randbytes(buffer->buffer, (uint32_t)buffer->bufferSize);
++  sqlite3_mutex_leave(openhitls_random_mutex);
++  if(rc!=CRYPT_SUCCESS){
++    return SQLITE_ERROR;
++  }
++  return SQLITE_OK;
++}
++
++CODEC_STATIC void *openhitlsGetCipher(const char *cipherName){
++  CRYPT_CIPHER_AlgId id = CipherNameToAlgId(cipherName);
++  if(id==CRYPT_CIPHER_MAX){
++    return NULL;
++  }
++  return CIPHER_ID_TO_PTR(id);
++}
++
++CODEC_STATIC int openhitlsFreeCipher(void *cipher){
++  return SQLITE_OK;  /* no resource to free, cipher is just an enum cast */
++}
++
++CODEC_STATIC const char *openhitlsGetCipherName(void *cipher){
++  return AlgIdToCipherName(CIPHER_PTR_TO_ID(cipher));
++}
++
++CODEC_STATIC int openhitlsGetKeySize(void *cipher){
++  uint32_t val = 0;
++  int32_t rc = CRYPT_EAL_CipherGetInfo(CIPHER_PTR_TO_ID(cipher), CRYPT_INFO_KEY_LEN, &val);
++  if(rc!=CRYPT_SUCCESS) return 0;
++  return (int)val;
++}
++
++CODEC_STATIC int openhitlsGetInitVectorSize(void *cipher){
++  uint32_t val = 0;
++  int32_t rc = CRYPT_EAL_CipherGetInfo(CIPHER_PTR_TO_ID(cipher), CRYPT_INFO_IV_LEN, &val);
++  if(rc!=CRYPT_SUCCESS) return 0;
++  return (int)val;
++}
++
++CODEC_STATIC int openhitlsGetBlockSize(void *cipher){
++  uint32_t val = 0;
++  int32_t rc = CRYPT_EAL_CipherGetInfo(CIPHER_PTR_TO_ID(cipher), CRYPT_INFO_BLOCK_LEN, &val);
++  if(rc!=CRYPT_SUCCESS) return 0;
++  return (int)val;
++}
++
++CODEC_STATIC void *openhitlsGetCtx(void *cipher, int mode, unsigned char *key, unsigned char *initVector){
++  CRYPT_EAL_CipherCtx *ctx = CRYPT_EAL_CipherNewCtx(CIPHER_PTR_TO_ID(cipher));
++  if(ctx==NULL){
++    return NULL;
++  }
++
++  bool enc = (mode==CODEC_OPERATION_ENCRYPT) ? true : false;
++  int32_t rc = CRYPT_EAL_CipherInit(ctx, key, (uint32_t)openhitlsGetKeySize(cipher),
++                                     initVector, (uint32_t)openhitlsGetInitVectorSize(cipher), enc);
++  if(rc!=CRYPT_SUCCESS){
++    CRYPT_EAL_CipherFreeCtx(ctx);
++    return NULL;
++  }
++  return (void *)ctx;
++}
++
++CODEC_STATIC int openhitlsCipher(void *iCtx, Buffer *input, unsigned char *output){
++  uint32_t outputLen = 0;
++  uint32_t cipherLen = (uint32_t)input->bufferSize;
++  CRYPT_EAL_CipherCtx *ctx = (CRYPT_EAL_CipherCtx *)iCtx;
++  int32_t rc = CRYPT_EAL_CipherUpdate(ctx, input->buffer, (uint32_t)input->bufferSize,
++                                output, &cipherLen);
++  if(rc != CRYPT_SUCCESS){
++    return SQLITE_ERROR;
++  }
++  outputLen += cipherLen;
++  output += cipherLen;
++  cipherLen = (uint32_t)input->bufferSize;
++  (void)CRYPT_EAL_CipherFinal(ctx, output, &cipherLen);
++  outputLen += cipherLen;
++  if((int)outputLen != input->bufferSize){
++    return SQLITE_ERROR;
++  }
++  return SQLITE_OK;
++}
++
++CODEC_STATIC void openhitlsFreeCtx(void *ctx){
++  CRYPT_EAL_CipherFreeCtx((CRYPT_EAL_CipherCtx *)ctx);
++}
++
++CODEC_STATIC int GetHmacSize(int hmacAlgo){
++  if(hmacAlgo==CIPHER_HMAC_ALGORITHM_SHA1){
++    return (int)CRYPT_EAL_MdGetDigestSize(CRYPT_MD_SHA1);
++  }else if(hmacAlgo==CIPHER_HMAC_ALGORITHM_SHA256){
++    return (int)CRYPT_EAL_MdGetDigestSize(CRYPT_MD_SHA256);
++  }else if(hmacAlgo==CIPHER_HMAC_ALGORITHM_SHA512){
++    return (int)CRYPT_EAL_MdGetDigestSize(CRYPT_MD_SHA512);
++  }
++  return 0;
++}
++
++CODEC_STATIC int openhitlsGetHmacSize(KeyContext *keyCtx){
++  if(keyCtx==NULL){
++    return 0;
++  }
++  return GetHmacSize(keyCtx->codecConst.hmacAlgo);
++}
++
++CODEC_STATIC int openhitlsHmac(Buffer *key, Buffer *input1, Buffer *input2, Buffer *output, int hmacAlgo){
++  CRYPT_EAL_MacCtx *ctx = CRYPT_EAL_MacNewCtx(HmacAlgoToMacId(hmacAlgo));
++  if(ctx==NULL){
++    return SQLITE_ERROR;
++  }
++  (void)CRYPT_EAL_MacInit(ctx, key->buffer, (uint32_t)key->bufferSize);
++  (void)CRYPT_EAL_MacUpdate(ctx, input1->buffer, (uint32_t)input1->bufferSize);
++  (void)CRYPT_EAL_MacUpdate(ctx, input2->buffer, (uint32_t)input2->bufferSize);
++  output->bufferSize = GetHmacSize(hmacAlgo);
++  (void)CRYPT_EAL_MacFinal(ctx, output->buffer, (uint32_t *)&output->bufferSize);
++  CRYPT_EAL_MacFreeCtx(ctx);
++  return SQLITE_OK;
++}
++
++CODEC_STATIC void openhitlsKdf(Buffer *password, Buffer *salt, int workfactor, Buffer *key, int kdfAlgo){
++  if(kdfAlgo!=CIPHER_KDF_ALGORITHM_SHA1 && kdfAlgo!=CIPHER_KDF_ALGORITHM_SHA256 && kdfAlgo!=CIPHER_KDF_ALGORITHM_SHA512){
++    return;
++  }
++  CRYPT_EAL_KdfCtx *ctx = CRYPT_EAL_KdfNewCtx(CRYPT_KDF_PBKDF2);
++  if(ctx==NULL){
++    return;
++  }
++
++  BSL_Param params[5] = {};
++  int idx = 0;
++  CRYPT_MAC_AlgId macId = KdfAlgoToMacId(kdfAlgo);
++
++  params[idx].key = CRYPT_PARAM_KDF_MAC_ID;
++  params[idx].value = (uint8_t *)&macId;
++  params[idx].valueLen = sizeof(macId);
++  params[idx].valueType = BSL_PARAM_TYPE_UINT32;
++  idx++;
++
++  params[idx].key = CRYPT_PARAM_KDF_PASSWORD;
++  params[idx].value = password->buffer;
++  params[idx].valueLen = (uint32_t)password->bufferSize;
++  params[idx].valueType = BSL_PARAM_TYPE_OCTETS;
++  idx++;
++
++  params[idx].key = CRYPT_PARAM_KDF_SALT;
++  params[idx].value = salt->buffer;
++  params[idx].valueLen = (uint32_t)salt->bufferSize;
++  params[idx].valueType = BSL_PARAM_TYPE_OCTETS;
++  idx++;
++
++  if(workfactor <= 0){
++    CRYPT_EAL_KdfFreeCtx(ctx);
++    return;
++  }
++  uint32_t iter = (uint32_t)workfactor;
++  params[idx].key = CRYPT_PARAM_KDF_ITER;
++  params[idx].value = (uint8_t *)&iter;
++  params[idx].valueLen = sizeof(iter);
++  params[idx].valueType = BSL_PARAM_TYPE_UINT32;
++  idx++;
++
++  /* terminator */
++  params[idx].key = 0;
++  params[idx].value = NULL;
++  params[idx].valueLen = 0;
++  params[idx].valueType = 0;
++
++  (void)CRYPT_EAL_KdfSetParam(ctx, params);
++  (void)CRYPT_EAL_KdfDerive(ctx, key->buffer, (uint32_t)key->bufferSize);
++  CRYPT_EAL_KdfFreeCtx(ctx);
++}
++
++#endif  /* SQLITE_USE_OPENHITLS */
++/************** End file hw_codec_openhitls.c *******************************/
+ /************** Begin file hw_codec.c ***************************************/
+
++/* Compile-time backend selection: openHiTLS (when SQLITE_USE_OPENHITLS
++ * is defined) or OpenSSL (default). */
++#ifdef SQLITE_USE_OPENHITLS
++#define opensslActive             openhitlsActive
++#define opensslDeactive           openhitlsDeactive
++#define opensslGetRandom          openhitlsGetRandom
++#define opensslGetCipher          openhitlsGetCipher
++#define opensslFreeCipher         openhitlsFreeCipher
++#define opensslGetCipherName      openhitlsGetCipherName
++#define opensslGetKeySize         openhitlsGetKeySize
++#define opensslGetInitVectorSize  openhitlsGetInitVectorSize
++#define opensslGetBlockSize       openhitlsGetBlockSize
++#define opensslGetCtx             openhitlsGetCtx
++#define opensslCipher             openhitlsCipher
++#define opensslFreeCtx            openhitlsFreeCtx
++#define opensslGetHmacSize        openhitlsGetHmacSize
++#define opensslHmac               openhitlsHmac
++#define opensslKdf                openhitlsKdf
++#endif
++
+ #include "securec.h"
+
+ typedef enum{
