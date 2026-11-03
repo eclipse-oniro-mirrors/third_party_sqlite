@@ -23,8 +23,7 @@ set -e
 #
 # Stages:
 #   1. Copy src/, include/, ext/ to a temp dir.
-#   2. Apply patch/all_sqlite.patch to the temp dir (if present).
-#   3. Diff temp dir vs patched_sqlite/, regenerate all_sqlite.patch if needed.
+#   2. Diff temp dir vs patched_sqlite/, regenerate all_sqlite.patch if needed.
 # ============================================================================
 
 ORIGIN_DIR=$(pwd)
@@ -50,21 +49,9 @@ for sub in src include; do
 done
 
 # ---------------------------------------------------------------------------
-# Stage 2: Apply patch/all_sqlite.patch to the temp dir
+# Stage 2: Generate consolidated git patch via diff against patched_sqlite/
 # ---------------------------------------------------------------------------
-echo "========== Stage 2: Apply patch/all_sqlite.patch to temp dir =========="
-
-if [ -f "${OUTPUT_PATCH}" ]; then
-    echo "Applying ${OUTPUT_PATCH} to temp dir..."
-    (cd "${tmp_git_dir}" && patch -p1 < "${OUTPUT_PATCH}")
-else
-    echo "WARNING: ${OUTPUT_PATCH} not found, skipping patch application."
-fi
-
-# ---------------------------------------------------------------------------
-# Stage 3: Generate consolidated git patch via diff against patched_sqlite/
-# ---------------------------------------------------------------------------
-echo "========== Stage 3: Generate all_sqlite.patch =========="
+echo "========== Stage 2: Generate all_sqlite.patch =========="
 
 if [ ! -d "${REFERENCE_DIR}" ]; then
     echo "ERROR: reference directory not found: ${REFERENCE_DIR}"

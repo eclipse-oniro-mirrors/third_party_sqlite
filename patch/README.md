@@ -6,7 +6,7 @@
 
 2. 目前完整版sqlite源代码（已应用所有补丁）会被追踪，完整版源代码路径为"patch/patched_sqlite"。该目录在本文后续会被简称为“完整代码目录”。开发者可直接对完整代码目录下的源代码进行开发。
 
-3. 在完整代码目录下开发完毕后，开发者可以执行"patch/sqlite_patch_generator.sh"脚本，该脚本会基于原始sqlite代码，应用当前已有的patch文件（即旧版patch文件），再与开发者当前完整代码目录下的文件进行递归比对，生成最新版的patch文件，并将旧版的patch文件替换掉。当该脚本打印"sqlite_patch_generator.sh completed"时，意味着执行成功，有效的patch文件被生成，除此之外意味着执行失败，patch不可用，请解决相应问题后重新执行该脚本。该脚本并非生成patch的唯一方式。若脚本不可用，开发者可按重构前的方式手动生成patch。
+3. 在完整代码目录下开发完毕后，开发者可以执行"patch/sqlite_patch_generator.sh"脚本，该脚本会基于原始sqlite代码，与开发者当前完整代码目录下的文件进行递归比对，生成最新版的patch文件，并将旧版的patch文件替换掉。当该脚本打印"sqlite_patch_generator.sh completed"时，意味着执行成功，有效的patch文件被生成，除此之外意味着执行失败，patch不可用，请解决相应问题后重新执行该脚本。该脚本并非生成patch的唯一方式。若脚本不可用，开发者可按重构前的方式手动生成patch。
 
 4. 开发者在提交时，应追踪新生成的patch文件以及完整代码目录的修改。
 

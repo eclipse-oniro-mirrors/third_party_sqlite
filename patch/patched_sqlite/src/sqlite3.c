@@ -27073,6 +27073,7 @@ int qCacheReadRowFromBuf(Vdbe *v, CacheBuffer *pBuf, int *readPos)
 
         Mem *m = &aCol[i];
         memset(m, 0, sizeof(Mem));
+        m->db = v->db;
         m->flags = ch->type & MEM_TypeMask;
         if (ch->type == MEM_Int) {
             m->u.i = *(i64 *)rowPtr;
