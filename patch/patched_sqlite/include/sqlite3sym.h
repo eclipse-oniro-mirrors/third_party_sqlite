@@ -143,7 +143,7 @@ struct sqlite3_api_routines_extra {
   int (*set_search_hwm)(sqlite3*, BinlogSearchHwmT*, BinlogHwmSetModeE);
   int (*reset_hwm)(sqlite3*, BinlogReadModeE);
   int (*clean_binlog)(sqlite3*, BinlogFileCleanModeE);
-  int (*notify_data_change)(sqlite3*, const char**, int);
+  int (*notify_data_change)(sqlite3*, const char*);
   int (*compressdb_backup)(sqlite3*, const char*);
 };
 

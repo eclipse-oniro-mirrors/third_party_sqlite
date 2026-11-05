@@ -5427,7 +5427,7 @@ SQLITE_API int sqlite3_set_monitor_config_binlog(sqlite3 *srcDb, MonitorTablesCo
 SQLITE_API int sqlite3_set_xChange_callback_binlog(sqlite3 *srcDb, void (*xChangeCallback)(const char *dbPath, 
   char *tableName));
 
-SQLITE_API int sqlite3_notify_data_change_binlog(sqlite3 *srcDb, const char **tables, int tableNum);
+SQLITE_API int sqlite3_notify_data_change_binlog(sqlite3 *srcDb, const char *tableName);
 
 SQLITE_API int sqlite3_set_json_parse_callback_binlog(sqlite3 *srcDb,
   MonitorTablesConfig*(*jsonParseCallback)(const char *dbPath, const char *binlogDirPath));
@@ -96431,7 +96431,7 @@ SQLITE_API int sqlite3_set_xChange_callback_binlog(sqlite3 *srcDb,
   return SQLITE_OK;
 }
 
-SQLITE_API int sqlite3_notify_data_change_binlog(sqlite3 *srcDb, const char **tables, int tableNum)
+SQLITE_API int sqlite3_notify_data_change_binlog(sqlite3 *srcDb, const char *tableName)
 {
   if (srcDb == NULL) {
     sqlite3_log(SQLITE_ERROR, "notify data change binlog parameter is null");
@@ -96450,22 +96450,17 @@ SQLITE_API int sqlite3_notify_data_change_binlog(sqlite3 *srcDb, const char **ta
     sqlite3_log(SQLITE_ERROR, "notify data change binlog db has no file path");
     return SQLITE_ERROR;
   }
-  if (tables == NULL || tableNum <= 0) {
+  if (tableName == NULL) {
     /* tableName NULL means all tables changed */
     srcDb->xBinlogHandle.xChangeCallback(zFile, NULL);
     return SQLITE_OK;
   }
-  for (int i = 0; i < tableNum; i++) {
-    if (tables[i] == NULL) {
-      continue;
-    }
-    char *tableName = sqlite3_mprintf("%s", tables[i]);
-    if (tableName == NULL) {
-      return SQLITE_NOMEM;
-    }
-    srcDb->xBinlogHandle.xChangeCallback(zFile, tableName);
-    sqlite3_free(tableName);
+  char *name = sqlite3_mprintf("%s", tableName);
+  if (name == NULL) {
+    return SQLITE_NOMEM;
   }
+  srcDb->xBinlogHandle.xChangeCallback(zFile, name);
+  sqlite3_free(name);
   return SQLITE_OK;
 }
 
@@ -266096,7 +266091,7 @@ struct sqlite3_api_routines_extra {
   int (*set_search_hwm_binlog)(sqlite3*, BinlogSearchHwmT*, BinlogHwmSetModeE);
   int (*reset_hwm_binlog)(sqlite3*, BinlogReadModeE);
   int (*clean_binlog)(sqlite3*, BinlogFileCleanModeE);
-  int (*notify_data_change)(sqlite3*, const char**, int);
+  int (*notify_data_change)(sqlite3*, const char*);
 #else
   void *dymmyFunc;
   void *dymmyFunc2;
