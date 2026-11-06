@@ -1,6 +1,6 @@
-From b760dd66bbe0a5ad5e99827356865620de3cd4d3 Mon Sep 17 00:00:00 2001
+From d06db2b5ac0750b069a114d3176e9344491f9079 Mon Sep 17 00:00:00 2001
 From: tmp <tmp@tmp.com>
-Date: Thu, 5 Nov 2026 17:40:52 +0800
+Date: Fri, 6 Nov 2026 11:49:24 +0800
 Subject: [PATCH] new
 
 ---
@@ -10,10 +10,10 @@ Subject: [PATCH] new
  src/compressvfs.c        |   1246 +
  src/querycache.c         |      3 +
  src/shell.c              |     36 +
- src/sqlite3.c            | 410818 +++++++++++++++++++-----------------
+ src/sqlite3.c            | 410819 +++++++++++++++++++-----------------
  src/sqlite3.c.orig       | 265813 +++++++++++++++++++++++
  src/sqlite3icu.c         |    888 +
- 9 files changed, 482428 insertions(+), 198790 deletions(-)
+ 9 files changed, 482429 insertions(+), 198790 deletions(-)
  create mode 100755 ext/misc/cksumvfs.c
  create mode 100755 ext/misc/cksumvfs.c.orig
  create mode 100755 include/querycache.h
@@ -3793,7 +3793,7 @@ index 1e7abf1..e2fd74c 100755
    ** the name of the database file, the name of the initialization file,
    ** the size of the alternative malloc heap, options affecting commands
 diff --git a/src/sqlite3.c b/src/sqlite3.c
-index 744519f..6f6f214 100755
+index 744519f..bc3e579 100755
 --- a/src/sqlite3.c
 +++ b/src/sqlite3.c
 @@ -786,6 +786,7 @@ SQLITE_API int sqlite3_exec(
@@ -129812,7 +129812,7 @@ index 744519f..6f6f214 100755
  **
  ** The author disclaims copyright to this source code.  In place of
  ** a legal notice, here is a blessing:
-@@ -92305,22784 +89755,21781 @@ SQLITE_PRIVATE char *sqlite3VdbeExpandSql(
+@@ -92305,22784 +89755,21782 @@ SQLITE_PRIVATE char *sqlite3VdbeExpandSql(
  **    May you share freely, never taking more than you give.
  **
  *************************************************************************
@@ -143191,6 +143191,7 @@ index 744519f..6f6f214 100755
 +  }
 +  char *name = sqlite3_mprintf("%s", tableName);
 +  if (name == NULL) {
++    sqlite3_log(SQLITE_NOMEM, "notify data change binlog table name copy failed");
 +    return SQLITE_NOMEM;
 +  }
 +  srcDb->xBinlogHandle.xChangeCallback(zFile, name);
@@ -171616,7 +171617,7 @@ index 744519f..6f6f214 100755
  **
  ** The author disclaims copyright to this source code.  In place of
  ** a legal notice, here is a blessing:
-@@ -115092,11432 +111539,12294 @@ SQLITE_PRIVATE int sqlite3NoTempsInRange(Parse *pParse, int iFirst, int iLast){
+@@ -115092,11432 +111540,12294 @@ SQLITE_PRIVATE int sqlite3NoTempsInRange(Parse *pParse, int iFirst, int iLast){
  **    May you share freely, never taking more than you give.
  **
  *************************************************************************
@@ -193720,7 +193721,7 @@ index 744519f..6f6f214 100755
  **
  ** The author disclaims copyright to this source code.  In place of
  ** a legal notice, here is a blessing:
-@@ -126527,8440 +123836,9195 @@ SQLITE_PRIVATE Schema *sqlite3SchemaGet(sqlite3 *db, Btree *pBt){
+@@ -126527,8440 +123837,9195 @@ SQLITE_PRIVATE Schema *sqlite3SchemaGet(sqlite3 *db, Btree *pBt){
  **    May you share freely, never taking more than you give.
  **
  *************************************************************************
@@ -210223,7 +210224,7 @@ index 744519f..6f6f214 100755
  /*
  ** 2001 September 15
  **
-@@ -134972,25533 +133036,24241 @@ static int xferOptimization(
+@@ -134972,25533 +133037,24241 @@ static int xferOptimization(
  **    May you share freely, never taking more than you give.
  **
  *************************************************************************
@@ -257483,7 +257484,7 @@ index 744519f..6f6f214 100755
  **
  ** The author disclaims copyright to this source code.  In place of
  ** a legal notice, here is a blessing:
-@@ -160508,11589 +157280,21909 @@ SQLITE_PRIVATE void sqlite3WhereTabFuncArgs(
+@@ -160508,11589 +157281,21909 @@ SQLITE_PRIVATE void sqlite3WhereTabFuncArgs(
  **    May you share freely, never taking more than you give.
  **
  *************************************************************************
@@ -289789,7 +289790,7 @@ index 744519f..6f6f214 100755
    /*   28 */ "ACTION",
    /*   29 */ "AFTER",
    /*   30 */ "ANALYZE",
-@@ -172383,5312 +179475,8480 @@ static const char *const yyTokenName[] = {
+@@ -172383,5312 +179476,8480 @@ static const char *const yyTokenName[] = {
    /*  317 */ "frame_exclude_opt",
    /*  318 */ "frame_exclude",
  };
@@ -303277,7 +303278,7 @@ index 744519f..6f6f214 100755
  **
  ** The author disclaims copyright to this source code.  In place of
  ** a legal notice, here is a blessing:
-@@ -177700,13200 +187960,13421 @@ SQLITE_API int sqlite3_complete16(const void *zSql){
+@@ -177700,13200 +187961,13421 @@ SQLITE_API int sqlite3_complete16(const void *zSql){
  ******************************************************************************
  **
  ** This header file is used by programs that want to link against the
@@ -327883,7 +327884,7 @@ index 744519f..6f6f214 100755
  **
  ** The author disclaims copyright to this source code.  In place of
  ** a legal notice, here is a blessing:
-@@ -190904,11941 +201385,12751 @@ SQLITE_PRIVATE int sqlite3Fts3InitAux(sqlite3 *db){
+@@ -190904,11941 +201386,12751 @@ SQLITE_PRIVATE int sqlite3Fts3InitAux(sqlite3 *db){
  **
  ******************************************************************************
  **
@@ -350674,7 +350675,7 @@ index 744519f..6f6f214 100755
  **
  ** The author disclaims copyright to this source code.  In place of
  ** a legal notice, here is a blessing:
-@@ -202847,25473 +214138,23149 @@ SQLITE_PRIVATE int sqlite3FtsUnicodeFold(int c, int eRemoveDiacritic){
+@@ -202847,25473 +214139,23149 @@ SQLITE_PRIVATE int sqlite3FtsUnicodeFold(int c, int eRemoveDiacritic){
  **    May you find forgiveness for yourself and forgive others.
  **    May you share freely, never taking more than you give.
  **
@@ -395785,7 +395786,7 @@ index 744519f..6f6f214 100755
  
  /*
  ** 2014 May 31
-@@ -228326,4556 +237293,5319 @@ struct fts5_api {
+@@ -228326,4556 +237294,5319 @@ struct fts5_api {
  **    May you share freely, never taking more than you give.
  **
  ******************************************************************************
@@ -404865,7 +404866,7 @@ index 744519f..6f6f214 100755
  **
  ** The author disclaims copyright to this source code.  In place of
  ** a legal notice, here is a blessing:
-@@ -232891,12075 +242621,11993 @@ static int sqlite3Fts5ConfigLoad(Fts5Config *pConfig, int iCookie){
+@@ -232891,12075 +242622,11993 @@ static int sqlite3Fts5ConfigLoad(Fts5Config *pConfig, int iCookie){
  
  
  /* #include "fts5Int.h" */
@@ -426895,7 +426896,7 @@ index 744519f..6f6f214 100755
  **
  ** The author disclaims copyright to this source code.  In place of
  ** a legal notice, here is a blessing:
-@@ -244970,3048 +254618,3767 @@ static int sqlite3Fts5IndexReset(Fts5Index *p){
+@@ -244970,3048 +254619,3767 @@ static int sqlite3Fts5IndexReset(Fts5Index *p){
  **
  ******************************************************************************
  **
@@ -433181,7 +433182,7 @@ index 744519f..6f6f214 100755
  **
  ** The author disclaims copyright to this source code.  In place of
  ** a legal notice, here is a blessing:
-@@ -248022,4913 +258389,7784 @@ SQLITE_PRIVATE int sqlite3Fts5Init(sqlite3 *db){
+@@ -248022,4913 +258390,7784 @@ SQLITE_PRIVATE int sqlite3Fts5Init(sqlite3 *db){
  **
  ******************************************************************************
  **

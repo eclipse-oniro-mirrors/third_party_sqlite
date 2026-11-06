@@ -96457,6 +96457,7 @@ SQLITE_API int sqlite3_notify_data_change_binlog(sqlite3 *srcDb, const char *tab
   }
   char *name = sqlite3_mprintf("%s", tableName);
   if (name == NULL) {
+    sqlite3_log(SQLITE_NOMEM, "notify data change binlog table name copy failed");
     return SQLITE_NOMEM;
   }
   srcDb->xBinlogHandle.xChangeCallback(zFile, name);
