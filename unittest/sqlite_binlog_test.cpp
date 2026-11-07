@@ -1067,6 +1067,106 @@ HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_SearchDataTest009, TestSize.Level1)
     EXPECT_TRUE(rs == nullptr);
 }
 
+static int g_notifyNullTableCount = 0;
+static std::string g_notifyLastTableName;
+
+static void NotifyDataChangeCallbackHelper(const char *dbPath, char *tableName)
+{
+    if (tableName == nullptr) {
+        g_notifyNullTableCount++;
+    } else {
+        g_notifyLastTableName = tableName;
+    }
+    g_xChangeCount++;
+}
+
+/**
+ * @tc.name: Sqlite_Binlog_NotifyDataChangeTest001
+ * @tc.desc: notify all tables with null tableName
+ */
+HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_NotifyDataChangeTest001, TestSize.Level1)
+{
+    /**
+     * @tc.steps: step1. open db, enable binlog and set xChange callback
+     * @tc.expected: step1. ok
+     */
+    sqlite3 *db = NULL;
+    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
+    ASSERT_NE(db, nullptr);
+    UtEnableBinlog(db);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, NotifyDataChangeCallbackHelper), SQLITE_OK);
+    /**
+     * @tc.steps: step2. notify with null tableName
+     * @tc.expected: step2. return ok and callback with null tableName
+     */
+    g_xChangeCount = 0;
+    g_notifyNullTableCount = 0;
+    EXPECT_EQ(sqlite3_notify_data_change_binlog(db, nullptr), SQLITE_OK);
+    EXPECT_EQ(g_xChangeCount, 1);
+    EXPECT_EQ(g_notifyNullTableCount, 1);
+    sqlite3_close_v2(db);
+}
+
+/**
+ * @tc.name: Sqlite_Binlog_NotifyDataChangeTest002
+ * @tc.desc: notify with a specific table name
+ */
+HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_NotifyDataChangeTest002, TestSize.Level1)
+{
+    /**
+     * @tc.steps: step1. open db, enable binlog and set xChange callback
+     * @tc.expected: step1. ok
+     */
+    sqlite3 *db = NULL;
+    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
+    ASSERT_NE(db, nullptr);
+    UtEnableBinlog(db);
+    EXPECT_EQ(sqlite3_set_xChange_callback_binlog(db, NotifyDataChangeCallbackHelper), SQLITE_OK);
+    /**
+     * @tc.steps: step2. notify with a specific table name
+     * @tc.expected: step2. return ok and callback once with table name
+     */
+    g_xChangeCount = 0;
+    g_notifyNullTableCount = 0;
+    g_notifyLastTableName = "";
+    EXPECT_EQ(sqlite3_notify_data_change_binlog(db, "salary"), SQLITE_OK);
+    EXPECT_EQ(g_xChangeCount, 1);
+    EXPECT_EQ(g_notifyNullTableCount, 0);
+    EXPECT_EQ(g_notifyLastTableName, "salary");
+    sqlite3_close_v2(db);
+}
+
+/**
+ * @tc.name: Sqlite_Binlog_NotifyDataChangeTest003
+ * @tc.desc: notify with invalid parameters or binlog not enabled
+ */
+HWTEST_F(SqliteBinlogTest, Sqlite_Binlog_NotifyDataChangeTest003, TestSize.Level1)
+{
+    /**
+     * @tc.steps: step1. notify with null db
+     * @tc.expected: step1. Return SQLITE_ERROR
+     */
+    EXPECT_EQ(sqlite3_notify_data_change_binlog(nullptr, nullptr), SQLITE_ERROR);
+    /**
+     * @tc.steps: step2. notify on db without binlog enabled
+     * @tc.expected: step2. Return SQLITE_ERROR
+     */
+    sqlite3 *db = NULL;
+    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr), SQLITE_OK);
+    ASSERT_NE(db, nullptr);
+    EXPECT_EQ(sqlite3_notify_data_change_binlog(db, nullptr), SQLITE_ERROR);
+    /**
+     * @tc.steps: step3. notify on binlog db without xChange callback
+     * @tc.expected: step3. Return SQLITE_ERROR
+     */
+    UtEnableBinlog(db);
+    EXPECT_EQ(sqlite3_notify_data_change_binlog(db, nullptr), SQLITE_ERROR);
+    sqlite3_close_v2(db);
+}
+
 /**
  * @tc.name: Sqlite_Binlog_SearchDataTest01
  * @tc.desc: test config and callback

@@ -143,6 +143,7 @@ struct sqlite3_api_routines_extra {
   int (*set_search_hwm)(sqlite3*, BinlogSearchHwmT*, BinlogHwmSetModeE);
   int (*reset_hwm)(sqlite3*, BinlogReadModeE);
   int (*clean_binlog)(sqlite3*, BinlogFileCleanModeE);
+  int (*notify_data_change)(sqlite3*, const char*);
   int (*compressdb_backup)(sqlite3*, const char*);
 };
 
@@ -166,6 +167,7 @@ extern const struct sqlite3_api_routines_extra *sqlite3_export_extra_symbols;
 #define sqlite3_set_search_hwm_binlog   sqlite3_export_extra_symbols->set_search_hwm
 #define sqlite3_reset_hwm_binlog sqlite3_export_extra_symbols->reset_hwm
 #define sqlite3_clean_binlog        sqlite3_export_extra_symbols->clean_binlog
+#define sqlite3_notify_data_change_binlog  sqlite3_export_extra_symbols->notify_data_change
 #define sqlite3_compressdb_backup   sqlite3_export_extra_symbols->compressdb_backup
 
 struct sqlite3_api_routines_cksumvfs {

@@ -5427,6 +5427,8 @@ SQLITE_API int sqlite3_set_monitor_config_binlog(sqlite3 *srcDb, MonitorTablesCo
 SQLITE_API int sqlite3_set_xChange_callback_binlog(sqlite3 *srcDb, void (*xChangeCallback)(const char *dbPath, 
   char *tableName));
 
+SQLITE_API int sqlite3_notify_data_change_binlog(sqlite3 *srcDb, const char *tableName);
+
 SQLITE_API int sqlite3_set_json_parse_callback_binlog(sqlite3 *srcDb,
   MonitorTablesConfig*(*jsonParseCallback)(const char *dbPath, const char *binlogDirPath));
 SQLITE_API int sqlite3_set_json_status_callback_binlog(sqlite3 *srcDb,
@@ -96426,6 +96428,40 @@ SQLITE_API int sqlite3_set_xChange_callback_binlog(sqlite3 *srcDb,
     return SQLITE_ERROR;
   }
   srcDb->xBinlogHandle.xChangeCallback = xChangeCallback;
+  return SQLITE_OK;
+}
+
+SQLITE_API int sqlite3_notify_data_change_binlog(sqlite3 *srcDb, const char *tableName)
+{
+  if (srcDb == NULL) {
+    sqlite3_log(SQLITE_ERROR, "notify data change binlog parameter is null");
+    return SQLITE_ERROR;
+  }
+  if (!sqlite3SafetyCheckOk(srcDb)) {
+    sqlite3_log(SQLITE_WARNING, "notify data change binlog parameter is not valid db");
+    return SQLITE_MISUSE_BKPT;
+  }
+  if ((srcDb->xBinlogHandle.flags & BINLOG_FLAG_ENABLE) == 0 || srcDb->xBinlogHandle.xChangeCallback == NULL) {
+    sqlite3_log(SQLITE_ERROR, "notify data change binlog is not enabled or callback is not set");
+    return SQLITE_ERROR;
+  }
+  const char *zFile = sqlite3_db_filename(srcDb, 0);
+  if (zFile == NULL) {
+    sqlite3_log(SQLITE_ERROR, "notify data change binlog db has no file path");
+    return SQLITE_ERROR;
+  }
+  if (tableName == NULL) {
+    /* tableName NULL means all tables changed */
+    srcDb->xBinlogHandle.xChangeCallback(zFile, NULL);
+    return SQLITE_OK;
+  }
+  char *name = sqlite3_mprintf("%s", tableName);
+  if (name == NULL) {
+    sqlite3_log(SQLITE_NOMEM, "notify data change binlog table name copy failed");
+    return SQLITE_NOMEM;
+  }
+  srcDb->xBinlogHandle.xChangeCallback(zFile, name);
+  sqlite3_free(name);
   return SQLITE_OK;
 }
 
@@ -266056,6 +266092,7 @@ struct sqlite3_api_routines_extra {
   int (*set_search_hwm_binlog)(sqlite3*, BinlogSearchHwmT*, BinlogHwmSetModeE);
   int (*reset_hwm_binlog)(sqlite3*, BinlogReadModeE);
   int (*clean_binlog)(sqlite3*, BinlogFileCleanModeE);
+  int (*notify_data_change)(sqlite3*, const char*);
 #else
   void *dymmyFunc;
   void *dymmyFunc2;
@@ -266069,6 +266106,7 @@ struct sqlite3_api_routines_extra {
   void *dymmyFunc10;
   void *dymmyFunc11;
   void *dymmyFunc12;
+  void *dymmyFunc13;
 #endif 
 #ifdef SQLITE_ENABLE_PAGE_COMPRESS
   int (*compressdb_backup)(sqlite3*, const char*);
@@ -266107,7 +266145,9 @@ static const sqlite3_api_routines_extra sqlite3ExtraApis = {
   sqlite3_set_search_hwm_binlog,
   sqlite3_reset_hwm_binlog,
   sqlite3_clean_binlog,
+  sqlite3_notify_data_change_binlog,
 #else
+  0,
   0,
   0,
   0,
