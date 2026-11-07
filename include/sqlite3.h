@@ -2192,6 +2192,7 @@ struct sqlite3_mem_methods {
 #define SQLITE_CONFIG_ROWID_IN_VIEW       30  /* int* */
 #define SQLITE_CONFIG_CORRUPTION          40  /* xCorruption */
 #define SQLITE_CONFIG_ENABLE_ICU          41  /* boolean */
+#define SQLITE_CONFIG_IO_GUARD            42
 
 /*
 ** CAPI3REF: Database Connection Configuration Options

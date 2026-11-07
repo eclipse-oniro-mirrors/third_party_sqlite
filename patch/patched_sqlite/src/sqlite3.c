@@ -185635,7 +185635,10 @@ SQLITE_API int sqlite3_config(int op, ...){
           "plain IO remains in effect");
     }
     if( g_ioGuardActive ){
-      if( io_guard_set_error_level(IO_GUARD_BLOCK) != 0 ){
+      errno = 0;
+      enum io_guard_error_level previous = io_guard_set_error_level(IO_GUARD_BLOCK);
+      (void)previous;
+      if (errno != 0) {
         g_ioGuardActive = 0;
         return SQLITE_ERROR;
       }
