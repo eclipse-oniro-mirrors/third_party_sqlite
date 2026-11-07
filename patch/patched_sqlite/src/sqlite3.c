@@ -2530,6 +2530,7 @@ struct sqlite3_mem_methods {
 #define SQLITE_CONFIG_ROWID_IN_VIEW       30  /* int* */
 #define SQLITE_CONFIG_CORRUPTION          40  /* xCorruption */
 #define SQLITE_CONFIG_ENABLE_ICU          41  /* boolean */
+#define SQLITE_CONFIG_IO_GUARD            42  /* int */
 
 /*
 ** CAPI3REF: Database Connection Configuration Options
@@ -26185,10 +26186,11 @@ int qHashTableDumpSQL(QHashTable *hTable)
 }
 
 // ================================================================================================================//
+static int sqliteFtruncate(int fd, sqlite3_int64 nBytes);
 
 int qCacheImageCreate(QCacheEntry *entry)
 {
-    int ret = ftruncate(entry->fd, entry->cacheFileSize);
+    int ret = sqliteFtruncate(entry->fd, entry->cacheFileSize);
     if (ret != 0) {
         sqlite3_log(SQLITE_IOERR, "qCacheImageCreate(): truncate failed, %s", strerror(errno));
         return SQLITE_IOERR;
@@ -26254,7 +26256,7 @@ int qCacheImageExpand(QCacheEntry *entry)
     }
 
     if (oldFileSize < entry->cacheFileSize) {
-        ret = ftruncate(entry->fd, entry->cacheFileSize);
+        ret = sqliteFtruncate(entry->fd, entry->cacheFileSize);
         if (ret != 0) {
             sqlite3_log(SQLITE_IOERR, "qCacheImageExpand(): ftruncate failed, %s", strerror(errno));
             return SQLITE_IOERR;
@@ -42518,6 +42520,100 @@ static void enableDbFileDelMonitor(int32_t fd)
 
 #endif /* OS_FEATURE */
 
+#ifdef SQLITE_ENABLE_IO_GUARD
+#include <sys/syscall.h>
+/* Fixed process token: ASCII "SQLIOGRD", never 0 nor UINT64_MAX (INV-5). */
+#define IOGUARD_TOKEN_FIXED 0x53514C494F475244ULL
+
+/* Inner API: token is an operation marker, not a security credential.
+ * 0 denotes unowned; UINT64_MAX is reserved. The caller must synchronize
+ * writes, token transfer, close and fd reuse. No check pins the kernel fd.
+ * Ordinary fd-output paths (including stdio flushes and socket sends) expect
+ * token 0. Buffered stdio is checked when bytes are written, not buffered.
+ * Only exchange mutates tokens during normal operation. In particular, a
+ * WARN/DISABLED close leaves its token behind: release BEFORE close.
+ * A stale token may be released with the exact old token after a bypassing
+ * close, but only while exclusively controlling that fd number's lifetime.
+ * fork children start DISABLED but retain inherited tokens; enabling checking
+ * again uses those tokens. vfork must not mutate state.
+ */
+enum io_guard_error_level {
+    IO_GUARD_DISABLED = 0,
+    IO_GUARD_WARN = 1,
+    IO_GUARD_BLOCK = 2,
+    IO_GUARD_FATAL = 3
+};
+
+/* Weak-linked musl libc io_guard inner APIs.  On a libc that does not
+** provide these symbols the references resolve to NULL and SQLite degrades
+** to plain IO (AC-4 / INV-4).  Token type is sqlite3_uint64, not uint64_t. */
+__attribute__((weak)) int io_guard_set_error_level(int level);
+__attribute__((weak)) int io_guard_exchange_token(int fd, sqlite3_uint64 old_token, sqlite3_uint64 new_token);
+__attribute__((weak)) ssize_t io_guard_write(int fd, const void *buf, size_t count, sqlite3_uint64 token);
+__attribute__((weak)) ssize_t io_guard_pwrite(int fd, const void *buf, size_t count, off_t offset, sqlite3_uint64 token);
+__attribute__((weak)) void *io_guard_mmap(void *addr, size_t length, int prot, int flags,
+                                int fd, off_t offset, sqlite3_uint64 token);
+
+/* Compile-time fixed token validity check (INV-5): token must never be 0
+** or UINT64_MAX (both are reserved by the io_guard implementation). */
+#if IOGUARD_TOKEN_FIXED == 0 || IOGUARD_TOKEN_FIXED == 0xFFFFFFFFFFFFFFFFULL
+#error "IOGUARD_TOKEN_FIXED must not be 0 or UINT64_MAX"
+#endif
+
+/*
+** Process-wide guard state.  These must be independent `static volatile`robust_open
+** globals (not members of sqlite3GlobalConfig, which is thread-local under
+** WSD/THREADSAFE builds) so the decision is visible to every thread.
+**
+**   g_ioGuardActive  - combined result: process switch enabled AND libc
+**                      provides the inner API (INV-3 / INV-4)
+**   g_ioGuardLatched - set once any descriptor has been successfully opened;
+**                      afterwards config is rejected (INV-2)
+**   g_ioGuardOpening - number of opens currently in flight.  posixOpen bumps
+**                      it before sampling g_ioGuardActive and drops it again
+**                      on every return path, so sqlite3_config can refuse to
+**                      flip the switch while an open may still be about to
+**                      register (or decline to register) its token.  Without
+**                      this, an open that samples the old decision could
+**                      return an unguarded descriptor after config has
+**                      already claimed the process is fully guarded.
+*/
+static _Atomic int g_ioGuardActive  = 0;
+static _Atomic int g_ioGuardLatched = 0;
+/* Plain int, not _Atomic: the atomic helpers below expand to __atomic_*
+** builtins, which reject a pointer to _Atomic(int).  The builtins themselves
+** provide the atomic access. */
+static int g_ioGuardOpening = 0;
+/* The counter update must be a genuine read-modify-write.  Two concurrent
+** opens doing load/add/store could overwrite each other and let the count
+** drop back to zero while an open is still in flight, which would reopen
+** exactly the config-versus-open window this counter exists to close. */
+#if SQLITE_ATOMIC_INTRINSICS
+# define IO_GUARD_OPENING_ADD(P,N) __atomic_fetch_add((P),(N),__ATOMIC_RELAXED)
+#else
+# define IO_GUARD_OPENING_ADD(P,N) (*(P)+=(N))
+#endif
+
+/*
+** Return whether io_guard is active.  A single volatile read: the libc probe
+** and switch decision are folded into g_ioGuardActive at config time, so the
+** hot path (open/close/write/mmap) stays lock-free (INV-6).
+*/
+static int ioGuardEnabled(void){
+  return g_ioGuardActive;
+}
+#endif /* SQLITE_ENABLE_IO_GUARD */
+
+#if defined(USE_PREAD) || defined(USE_PREAD64)
+static ssize_t sqlitePwrite(int fd, const void *pBuf, size_t nBuf, off_t iOff);
+#endif
+#if !defined(USE_PREAD) && !defined(USE_PREAD64)
+static ssize_t sqliteWrite(int fd, const void *pBuf, size_t nBuf);
+#endif
+static void *sqliteMmap(void *addr, size_t nMap, int prot, int flags, int fd,
+                        off_t off);
+static int sqliteFtruncate(int fd, sqlite3_int64 nByte);
+
 /*
 ** Different Unix systems declare open() in different ways.  Same use
 ** open(const char*,int,mode_t).  Others use open(const char*,int,...).
@@ -42527,6 +42623,55 @@ static void enableDbFileDelMonitor(int32_t fd)
 ** which always has the same well-defined interface.
 */
 static int posixOpen(const char *zFile, int flags, int mode){
+#ifdef SQLITE_ENABLE_IO_GUARD
+  int bGuard;
+  int fd;
+  /* Mark this open as in flight BEFORE sampling the guard decision, so that
+  ** sqlite3_config(SQLITE_CONFIG_IO_GUARD,...) either sees the counter and
+  ** refuses to activate, or activates before this sample is taken (INV-2).
+  ** Every return path below must drop the counter again. */
+  IO_GUARD_OPENING_ADD(&g_ioGuardOpening, +1);
+  bGuard = ioGuardEnabled();
+  fd = open(zFile, flags, mode);
+  if( bGuard && fd >= 0 && io_guard_exchange_token!=0 ){
+    /* Register the fixed process token on the newly opened descriptor.  The
+    ** new libc scheme has no ohos_io_guard_open, so open stays a plain
+    ** syscall and only the token registration is guarded (INV-1). */
+    int rc = io_guard_exchange_token(fd, 0, IOGUARD_TOKEN_FIXED);
+    if( rc!=0 ){
+      sqlite3_log(SQLITE_WARNING, "io_guard: failed to set token on fd %d\n", fd);
+      close(fd);
+      /* The caller contract of this wrapper is "descriptor or -1"; errno
+      ** carries the libc error code.  Set errno only after close() so the
+      ** close itself cannot clobber it. */
+      IO_GUARD_OPENING_ADD(&g_ioGuardOpening, -1);
+      errno = rc>0 ? rc : EIO;
+      return -1;
+    }
+  }
+#ifdef FDSAN_ENABLE
+  /* fdsan and io_guard are independent: fdsan checks user-space descriptor
+  ** ownership, io_guard validates a kernel token.  Every descriptor opened
+  ** here is tagged, so posixClose always closes it with
+  ** fdsan_close_with_tag, whether or not io_guard is enabled. */
+  if( fd >= 0 ){
+    fdsan_exchange_owner_tag(fd, 0, fdsan_create_owner_tag(FDSAN_OWNER_TYPE_FILE, SQLITE_FDSAN_TAG));
+  }
+#endif /* FDSAN_ENABLE */
+#ifdef OS_FEATURE
+  if( fd >= 0 ){
+    enableDbFileDelMonitor(fd);
+  }
+#endif /* OS_FEATURE */
+  /* Latch the process switch on the first successful open (INV-2).  A guarded
+  ** open is latched only after it has returned a valid descriptor so that an
+  ** open failure does not latch the switch. */
+  if( fd >= 0 ){
+    g_ioGuardLatched = 1;
+  }
+  IO_GUARD_OPENING_ADD(&g_ioGuardOpening, -1);
+  return fd;
+#else
   int fd = open(zFile, flags, mode);
 #ifdef FDSAN_ENABLE
   if( fd >= 0 ){
@@ -42539,17 +42684,26 @@ static int posixOpen(const char *zFile, int flags, int mode){
   }
 #endif /* OS_FEATURE */
   return fd;
+#endif
 }
 
 /*
 ** Change close to posixClose, use fdsan_close_with_tag when fdsan enable.
+** Releasing the io_guard token and closing through fdsan are independent:
+** the token is released first (io_guard state), then the descriptor is
+** closed through fdsan regardless of whether io_guard is enabled.
 */
 static int posixClose(int fd) {
+#ifdef SQLITE_ENABLE_IO_GUARD
+  if( ioGuardEnabled() && io_guard_exchange_token!=0 ){
+    (void)io_guard_exchange_token(fd, IOGUARD_TOKEN_FIXED, 0);
+  }
+#endif /* SQLITE_ENABLE_IO_GUARD */
 #ifdef FDSAN_ENABLE
   return fdsan_close_with_tag(fd, fdsan_create_owner_tag(FDSAN_OWNER_TYPE_FILE, SQLITE_FDSAN_TAG));
 #else
   return close(fd);
-#endif /* FDSAN_ENABLE */
+#endif
 }
 
 /* Forward reference */
@@ -42567,7 +42721,7 @@ static struct unix_syscall {
   sqlite3_syscall_ptr pCurrent; /* Current value of the system call */
   sqlite3_syscall_ptr pDefault; /* Default value */
 } aSyscall[] = {
-  { "open",         (sqlite3_syscall_ptr)posixOpen,  0  },
+  { "open",         (sqlite3_syscall_ptr)posixOpen, 0  },
 #define osOpen      ((int(*)(const char*,int,int))aSyscall[0].pCurrent)
 
   { "close",        (sqlite3_syscall_ptr)posixClose,      0  },
@@ -42736,6 +42890,67 @@ static struct unix_syscall {
 
 }; /* End of the overrideable system calls */
 
+#if defined(USE_PREAD) || defined(USE_PREAD64)
+/* Positional write (only compiled when a positional write primitive is in use). */
+static ssize_t sqlitePwrite(int fd, const void *pBuf, size_t nBuf, off_t iOff){
+#ifdef SQLITE_ENABLE_IO_GUARD
+  if( ioGuardEnabled() && io_guard_pwrite!=0 ){
+    return io_guard_pwrite(fd, pBuf, nBuf, iOff, IOGUARD_TOKEN_FIXED);
+  }
+#endif
+#if defined(USE_PREAD)
+  return osPwrite(fd, pBuf, nBuf, iOff);
+#else
+  return osPwrite64(fd, pBuf, nBuf, iOff);
+#endif
+}
+#endif /* USE_PREAD || USE_PREAD64 */
+
+#if !defined(USE_PREAD) && !defined(USE_PREAD64)
+/* Non-positional write (lseek+write fallback path). */
+static ssize_t sqliteWrite(int fd, const void *pBuf, size_t nBuf){
+#if defined(SQLITE_ENABLE_IO_GUARD)
+  if( ioGuardEnabled() && io_guard_write!=0 ){
+    return io_guard_write(fd, pBuf, nBuf, IOGUARD_TOKEN_FIXED);
+  }
+#endif
+  return osWrite(fd, pBuf, nBuf);
+}
+#endif /* !USE_PREAD && !USE_PREAD64 */
+
+/* Memory map with token (shared writable mappings must be tagged). */
+static void *sqliteMmap(void *addr, size_t nMap, int prot, int flags, int fd, off_t off){
+#ifdef SQLITE_ENABLE_IO_GUARD
+  if( ioGuardEnabled() && io_guard_mmap!=0 ){
+    return io_guard_mmap(addr, nMap, prot, flags, fd, off, IOGUARD_TOKEN_FIXED);
+  }
+#endif
+  return osMmap(addr, nMap, prot, flags, fd, off);
+}
+
+/*
+** Truncate wrapper. libc deliberately rejects ftruncate() on guarded
+** descriptors and provides no token-carrying variant, so deliberate
+** truncation from within SQLite issues the raw syscall directly. Raw
+** syscalls are an explicit non-goal of the io_guard interception.
+*/
+static int sqliteFtruncate(int fd, sqlite3_int64 nByte){
+#ifdef SQLITE_ENABLE_IO_GUARD
+  if( ioGuardEnabled() ){
+#if defined(__LP64__)
+    return (int)syscall(SYS_ftruncate, fd, (off_t)nByte);
+#elif defined(__arm__)
+    /* 32-bit ARM EABI: the 64-bit length is passed as (pad, lo, hi). */
+    return (int)syscall(SYS_ftruncate64, fd, (long)0,
+                        (long)(((sqlite3_uint64)nByte)&0xffffffffu),
+                        (long)(((sqlite3_uint64)nByte)>>32));
+#else
+#error "io_guard: ftruncate bypass is supported only on LP64 and 32-bit ARM"
+#endif
+  }
+#endif
+  return osFtruncate(fd, (off_t)nByte);
+}
 
 /*
 ** On some systems, calls to fchown() will trigger a message in a security
@@ -43036,7 +43251,7 @@ static int robust_ftruncate(int h, sqlite3_int64 sz){
     rc = SQLITE_OK;
   }else
 #endif
-  do{ rc = osFtruncate(h,sz); }while( rc<0 && errno==EINTR );
+  do{ rc = sqliteFtruncate(h,sz); }while( rc<0 && errno==EINTR );
   return rc;
 }
 
@@ -45630,9 +45845,7 @@ static int seekAndWriteFd(
   TIMER_START;
 
 #if defined(USE_PREAD)
-  do{ rc = (int)osPwrite(fd, pBuf, nBuf, iOff); }while( rc<0 && errno==EINTR );
-#elif defined(USE_PREAD64)
-  do{ rc = (int)osPwrite64(fd, pBuf, nBuf, iOff);}while( rc<0 && errno==EINTR);
+  do{ rc = (int)sqlitePwrite(fd, pBuf, nBuf, iOff); }while( rc<0 && errno==EINTR );
 #else
   do{
     i64 iSeek = lseek(fd, iOff, SEEK_SET);
@@ -45641,7 +45854,7 @@ static int seekAndWriteFd(
       rc = -1;
       break;
     }
-    rc = osWrite(fd, pBuf, nBuf);
+    rc = sqliteWrite(fd, pBuf, nBuf);
   }while( rc<0 && errno==EINTR );
 #endif
 
@@ -47213,7 +47426,7 @@ static int unixShmMap(
       int i;
       void *pMem;
       if( pShmNode->hShm>=0 ){
-        pMem = osMmap(0, nMap,
+        pMem = sqliteMmap(0, nMap,
             pShmNode->isReadonly ? PROT_READ : PROT_READ|PROT_WRITE,
             MAP_SHARED, pShmNode->hShm, szRegion*(i64)pShmNode->nRegion
         );
@@ -47615,7 +47828,7 @@ static void unixRemapfile(
     pNew = osMremap(pOrig, nReuse, nNew, MREMAP_MAYMOVE);
     zErr = "mremap";
 #else
-    pNew = osMmap(pReq, nNew-nReuse, flags, MAP_SHARED, h, nReuse);
+    pNew = sqliteMmap(pReq, nNew-nReuse, flags, MAP_SHARED, h, nReuse);
     if( pNew!=MAP_FAILED ){
       if( pNew!=pReq ){
         osMunmap(pNew, nNew - nReuse);
@@ -47634,7 +47847,7 @@ static void unixRemapfile(
 
   /* If pNew is still NULL, try to create an entirely new mapping. */
   if( pNew==0 ){
-    pNew = osMmap(0, nNew, flags, MAP_SHARED, h, 0);
+    pNew = sqliteMmap(0, nNew, flags, MAP_SHARED, h, 0);
   }
 
   if( pNew==MAP_FAILED ){
@@ -49843,7 +50056,7 @@ static int proxyBreakConchLock(unixFile *pFile, uuid_t myHostID){
     sqlite3_snprintf(sizeof(errmsg), errmsg, "create failed (%d)", errno);
     goto end_breaklock;
   }
-  if( osPwrite(fd, buf, readLen, 0) != (ssize_t)readLen ){
+  if( sqlitePwrite(fd, buf, readLen, 0) != (ssize_t)readLen ){
     sqlite3_snprintf(sizeof(errmsg), errmsg, "write failed (%d)", errno);
     goto end_breaklock;
   }
@@ -185381,6 +185594,63 @@ SQLITE_API int sqlite3_config(int op, ...){
   }
 #endif /* SQLITE_ENABLE_ICU */
 
+#ifdef SQLITE_ENABLE_IO_GUARD
+  if( op==SQLITE_CONFIG_IO_GUARD ){
+    int iVal = va_arg(ap, int);
+    /* This opcode must be invoked during single-threaded initialization,
+    ** before any database connection is created.  The latch below enforces
+    ** that: once any descriptor has been opened successfully, the setting
+    ** can no longer be changed.  It is also refused while an open is still
+    ** in flight, because that open may have sampled the old decision. */
+    if( g_ioGuardLatched ) return SQLITE_ERROR;        /* latched (INV-2) */
+    if( iVal!=0 && iVal!=1 ) return SQLITE_ERROR;      /* boolean only (INV-3) */
+    if( iVal && AtomicLoad(&g_ioGuardOpening)!=0 ) return SQLITE_ERROR;
+    /* Combined decision: switch enabled AND libc provides the FULL inner API
+    ** set.  io_guard is one coherent module: enabling with a partially
+    ** available symbol set (e.g. exchange_token present but write/pwrite/mmap
+    ** missing) would register a token on open yet silently fall back to
+    ** untagged writes - an inconsistent, half-protected state that can cause
+    ** unexpected io_guard behaviour.  Therefore all inner APIs that this build
+    ** actually uses must be non-NULL, otherwise io_guard stays inactive and
+    ** SQLite degrades to plain IO (AC-4 / INV-4).  The per-compile-variant
+    ** check set reflects which write primitive is compiled in: with a
+    ** positional write (USE_PREAD/USE_PREAD64) io_guard_write is not
+    ** referenced, and without one io_guard_pwrite is not referenced. */
+    g_ioGuardActive = (iVal
+        && io_guard_exchange_token!=0
+        && io_guard_set_error_level!=0
+        && io_guard_mmap!=0
+#if defined(USE_PREAD) || defined(USE_PREAD64)
+        && io_guard_pwrite!=0
+#else
+        && io_guard_write!=0
+#endif
+        ) ? 1 : 0;
+    if( iVal && !g_ioGuardActive ){
+      /* Requested but unavailable: degrade to plain IO, observably.  The
+      ** return code stays SQLITE_OK so callers keep their existing contract;
+      ** the WARNING is the only trace that the protection is not in effect. */
+      sqlite3_log(SQLITE_WARNING,
+          "io_guard: libc does not provide the full io_guard API set; "
+          "plain IO remains in effect");
+    }
+    if( g_ioGuardActive ){
+      if( io_guard_set_error_level(IO_GUARD_BLOCK) != 0 ){
+        g_ioGuardActive = 0;
+        return SQLITE_ERROR;
+      }
+    }
+    return rc;
+  }
+#else
+  /* Without SQLITE_ENABLE_IO_GUARD the opcode is a no-op that always
+  ** succeeds, so upper layers may call it unconditionally (spec 5.3). */
+  if( op==SQLITE_CONFIG_IO_GUARD ){
+    (void)va_arg(ap, int);
+    return SQLITE_OK;
+  }
+#endif /* SQLITE_ENABLE_IO_GUARD */
+
   /* sqlite3_config() normally returns SQLITE_MISUSE if it is invoked while
   ** the SQLite library is in use.  Except, a few selected opcodes
   ** are allowed.
@@ -263166,7 +263436,7 @@ static int MetaDwrOpenFile(Pager *pPager, u8 openCreate) {
     sqlite3_int64 sz = META_DWR_HEADER_PAGE_SIZE;
     sqlite3OsFileControlHint(metaFd, SQLITE_FCNTL_CHUNK_SIZE, &sz);
     if (sqlite3OsFileControl(metaFd, SQLITE_FCNTL_SIZE_HINT, &sz) == SQLITE_OK) {
-      void *page = osMmap(0, META_DWR_HEADER_PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED,
+      void *page = sqliteMmap(0, META_DWR_HEADER_PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED,
                           ((unixFile *)metaFd)->h, 0);
       if (page != MAP_FAILED) {
         pPager->metaMapPage = page;

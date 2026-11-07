@@ -19,7 +19,8 @@
             "sqlite_feature_enable_pgo",
             "sqlite_feature_pgo_path",
             "sqlite_feature_query_cache",
-            "sqlite_enable_fdsan"
+            "sqlite_enable_fdsan",
+            "sqlite_feature_io_guard"
         ],
         "adapted_system_type": [ "standard" ],
         "rom": "2200KB",

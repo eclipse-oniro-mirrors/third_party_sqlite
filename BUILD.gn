@@ -183,6 +183,9 @@ ohos_shared_library("sqlite") {
   } else {
     defines += [ "OPENSSL_SUPPRESS_DEPRECATED" ]
   }
+  if (sqlite_feature_io_guard) {
+    defines += [ "SQLITE_ENABLE_IO_GUARD" ]
+  }
   if (sqlite_enable_fdsan) {
     defines += [ "FDSAN_ENABLE" ]
   }
