@@ -40,6 +40,7 @@ ohos_unittest("libsqlittest") {
     "./sqlite_codec_migration_test.cpp",
     "./sqlite_codec_rekey_test.cpp",
     "./sqlite_compress_test.cpp",
+    "./sqlite_io_guard_test.cpp",
     "./sqlite_metadwr_test.cpp",
     "./sqlite_test.cpp",
   ]
@@ -68,8 +69,31 @@ ohos_unittest("libsqlittest") {
 }
 
 ###############################################################################
+ohos_unittest("libsqliteioguardenabletest") {
+  module_out_path = module_output_path
+
+  sources = [
+    "./sqlite_io_guard_enable_test.cpp",
+  ]
+
+  configs = [ ":module_private_config" ]
+
+  external_deps = [
+    "c_utils:utils",
+    "googletest:gtest_main",
+  ]
+
+  deps = [
+    "//third_party/sqlite:sqlite",
+  ]
+}
+
+###############################################################################
 group("unittest") {
   testonly = true
 
-  deps = [ ":libsqlittest" ]
+  deps = [
+    ":libsqlittest",
+    ":libsqliteioguardenabletest",
+  ]
 }

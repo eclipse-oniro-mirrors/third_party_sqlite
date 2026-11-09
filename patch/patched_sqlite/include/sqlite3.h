@@ -2192,6 +2192,22 @@ struct sqlite3_mem_methods {
 #define SQLITE_CONFIG_ROWID_IN_VIEW       30  /* int* */
 #define SQLITE_CONFIG_CORRUPTION          40  /* xCorruption */
 #define SQLITE_CONFIG_ENABLE_ICU          41  /* boolean */
+/*
+** SQLITE_CONFIG_IO_GUARD (opcode 42, int 0 or 1)
+**
+** Enables or disables io_guard token checking for the process.  This opcode
+** must be invoked during single-threaded initialization, before any database
+** connection is created: it is not threadsafe, and once a descriptor has been
+** opened successfully the setting is latched and later calls return
+** SQLITE_ERROR.  Activation is likewise refused with SQLITE_ERROR while an
+** open is in flight, and when the value is not a boolean.
+**
+** If the libc in use does not provide the full io_guard inner API, the
+** request degrades to plain IO and a SQLITE_WARNING is written through the
+** error log; the call still returns SQLITE_OK.  Without SQLITE_ENABLE_IO_GUARD
+** the opcode is a no-op returning SQLITE_OK.
+*/
+#define SQLITE_CONFIG_IO_GUARD            42  /* int */
 
 /*
 ** CAPI3REF: Database Connection Configuration Options
