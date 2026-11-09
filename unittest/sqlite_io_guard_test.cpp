@@ -82,6 +82,80 @@ void SQLiteIoGuardTest::TearDown(void)
     unlink(TEST_DB_JOURNAL);
 }
 
+/*
+ * Locate the descriptor that currently refers to the given file by scanning
+ * /proc/self/fd.  Returns the fd number, or -1 when it cannot be resolved.
+ * This is the black-box way to obtain the target fd that io_guard manages
+ * (the descriptor SQLite opened through its VFS).
+ */
+static int FindDbFd(const char *dbPath)
+{
+    char linkPath[64];
+    char linkTarget[512];
+    for (int fd = 3; fd < 1024; fd++) {
+        snprintf(linkPath, sizeof(linkPath), "/proc/self/fd/%d", fd);
+        ssize_t n = readlink(linkPath, linkTarget, sizeof(linkTarget) - 1);
+        if (n <= 0) {
+            continue;
+        }
+        linkTarget[n] = '\0';
+        printf("readlink %s, %s \n", linkTarget, dbPath);
+        if (strstr(linkTarget, dbPath) != NULL) {
+            return fd;
+        }
+    }
+    return -1;
+}
+
+/*
+ * Probe whether the running libc actually intercepts a given plain
+ * (token-less) file interface on io_guard-managed descriptors.  Opens a
+ * throwaway database through SQLite, locates its fd and attempts the plain
+ * call against it.  Returns true when the call was rejected (io_guard
+ * interception active), false when it succeeded or the fd could not be
+ * located (plain-IO degradation on a libc without the io_guard inner API,
+ * AC-4).
+ *
+ * The probe is per-interface so each test only assumes interception for the
+ * exact interface it exercises; the libc may block some interfaces and leave
+ * others passable.  which selects the interface:
+ *   0 = write(), 1 = pwrite(), 2 = close().
+ */
+static bool IsIoGuardIfaceBlocked(const char *probeDb, int which)
+{
+    unlink(probeDb);
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(probeDb, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) != SQLITE_OK) {
+        return false;
+    }
+    if (db == nullptr) {
+        return false;
+    }
+    /* Force a real file on disk so /proc/self/fd resolves to the path. */
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS t(a);", NULL, NULL, NULL);
+    int fd = FindDbFd("probe.db");
+    if (fd < 0) {
+        sqlite3_close(db);
+        return false;
+    }
+    char buf[8] = "probe!";
+    if (which == 1) {
+        ssize_t n = pwrite(fd, buf, sizeof(buf), 0);
+        sqlite3_close(db);
+        return n < 0;
+    } else if (which == 2) {
+        errno = 0;
+        int rc = close(fd);
+        /* The fd was not released when close() was rejected; SQLite's own
+         * close below still owns it.  Ignore its rc on the probe db. */
+        sqlite3_close(db);
+        return rc < 0;
+    }
+    ssize_t n = write(fd, buf, sizeof(buf));
+    sqlite3_close(db);
+    return n < 0;
+}
+
 /**
  * @tc.name: Lib_SQLite_Io_Guard_Test_001
  * @tc.desc: With io_guard enabled, normal open/create/write/close stays intact.
@@ -192,3 +266,103 @@ HWTEST_F(SQLiteIoGuardTest, Lib_SQLite_Io_Guard_Test_004, TestSize.Level1)
 
     EXPECT_EQ(sqlite3_close(db), SQLITE_OK);
 }
+
+/**
+ * @tc.name: Lib_SQLite_Io_Guard_Test_005
+ * @tc.desc: With io_guard enabled, a plain (token-less) write() through the
+ *           ordinary file interface against the guarded DB fd must be
+ *           rejected (AC-1).  Skipped when the running libc does not provide
+ *           io_guard interception (weak-symbol degradation, AC-4).
+ * @tc.type: FUNC
+ */
+HWTEST_F(SQLiteIoGuardTest, Lib_SQLite_Io_Guard_Test_005, TestSize.Level1)
+{
+    const char *probeDb = TEST_DIR "/probe.db";
+    if (!IsIoGuardIfaceBlocked(probeDb, 0)) {
+        GTEST_SKIP() << "io_guard interception unavailable in this environment "
+                        "(plain-IO degradation, AC-4); plain write is not blocked";
+    }
+
+    sqlite3 *db = NULL;
+    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL), SQLITE_OK);
+    ASSERT_NE(db, nullptr);
+    EXPECT_EQ(sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS t(a INTEGER, b TEXT);", NULL, NULL, NULL), SQLITE_OK);
+
+    int fd = FindDbFd("test.db");
+    ASSERT_GE(fd, 0);
+
+    /* The DB fd is guarded by io_guard: a plain token-less write() must fail. */
+    char buf[16] = "corrupt";
+    errno = 0;
+    EXPECT_LT(write(fd, buf, sizeof(buf)), 0);
+    EXPECT_EQ(errno, EPERM); /* BLOCK policy rejects the token-less write */
+
+    EXPECT_EQ(sqlite3_close(db), SQLITE_OK);
+}
+
+/**
+ * @tc.name: Lib_SQLite_Io_Guard_Test_006
+ * @tc.desc: With io_guard enabled, a plain (token-less) pwrite() through the
+ *           ordinary file interface against the guarded DB fd must be
+ *           rejected (AC-1).  Skipped when io_guard interception is not
+ *           available in the running environment (AC-4).
+ * @tc.type: FUNC
+ */
+HWTEST_F(SQLiteIoGuardTest, Lib_SQLite_Io_Guard_Test_006, TestSize.Level1)
+{
+    const char *probeDb = TEST_DIR "/probe.db";
+    if (!IsIoGuardIfaceBlocked(probeDb, 1)) {
+        GTEST_SKIP() << "io_guard interception unavailable in this environment "
+                        "(plain-IO degradation, AC-4); plain pwrite is not blocked";
+    }
+
+    sqlite3 *db = NULL;
+    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL), SQLITE_OK);
+    ASSERT_NE(db, nullptr);
+    EXPECT_EQ(sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS t(a INTEGER, b TEXT);", NULL, NULL, NULL), SQLITE_OK);
+
+    int fd = FindDbFd("test.db");
+    ASSERT_GE(fd, 0);
+
+    /* Positional write without the io_guard token must be rejected. */
+    char buf[16] = "corrupt";
+    errno = 0;
+    EXPECT_LT(pwrite(fd, buf, sizeof(buf), 0), 0);
+    EXPECT_EQ(errno, EPERM);
+
+    EXPECT_EQ(sqlite3_close(db), SQLITE_OK);
+}
+
+/**
+ * @tc.name: Lib_SQLite_Io_Guard_Test_007
+ * @tc.desc: With io_guard enabled, a plain close() through the ordinary file
+ *           interface against the guarded DB fd must be rejected (AC-1); the
+ *           descriptor stays owned by SQLite and the connection remains
+ *           usable.  Skipped when io_guard interception is not available in
+ *           the running environment (AC-4).
+ * @tc.type: FUNC
+ */
+HWTEST_F(SQLiteIoGuardTest, Lib_SQLite_Io_Guard_Test_007, TestSize.Level1)
+{
+    const char *probeDb = TEST_DIR "/probe.db";
+    if (!IsIoGuardIfaceBlocked(probeDb, 2)) {
+        GTEST_SKIP() << "io_guard interception unavailable in this environment "
+                        "(plain-IO degradation, AC-4); plain close is not blocked";
+    }
+
+    sqlite3 *db = NULL;
+    EXPECT_EQ(sqlite3_open_v2(TEST_DB, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL), SQLITE_OK);
+    ASSERT_NE(db, nullptr);
+    EXPECT_EQ(sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS t(a INTEGER, b TEXT);", NULL, NULL, NULL), SQLITE_OK);
+
+    int fd = FindDbFd("test.db");
+    ASSERT_GE(fd, 0);
+
+    /* A token-less close() on the guarded fd must be rejected, and SQLite's
+     * own close below must still succeed (fd was not actually released). */
+    errno = 0;
+    EXPECT_LT(close(fd), 0);
+
+    EXPECT_EQ(sqlite3_close(db), SQLITE_OK);
+}
+
