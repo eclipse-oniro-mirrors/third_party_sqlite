@@ -17957,6 +17957,7 @@ SQLITE_PRIVATE int sqlite3IsRowBasedBinlog(Vdbe *p);
 SQLITE_PRIVATE Table *sqlite3BinlogFindTable(BtCursor *pC);
 SQLITE_PRIVATE void sqlite3StoreBinlogRowData(Vdbe *p, BtCursor *pCursor, const BinlogRow *pRow);
 SQLITE_PRIVATE void sqlite3FreeBinlogRowData(Vdbe *p);
+SQLITE_PRIVATE char *sqlite3BinlogRealToLiteral(double r);
 SQLITE_PRIVATE char *sqlite3BinlogGetNthCol(sqlite3 *db, const Table *pTab, const BinlogRow *pRow, int iCol);
 SQLITE_PRIVATE char *sqlite3BinlogGetNthColWithBuffer(sqlite3 *db, const Table *pTab, const BinlogRow *pRow, int iCol,
   char *pSharedBuffer, sqlite3_uint64 nSharedBuffer);
@@ -98664,7 +98665,23 @@ SQLITE_PRIVATE char *sqlite3VdbeExpandSql(
       }else if( pVar->flags & (MEM_Int|MEM_IntReal) ){
         sqlite3_str_appendf(&out, "%lld", pVar->u.i);
       }else if( pVar->flags & MEM_Real ){
+#ifdef SQLITE_ENABLE_BINLOG
+        /* binlog statement mode replays the expanded SQL text, so the
+        ** bound REAL must render losslessly.  Keep this in sync with
+        ** sqlite3BinlogRealToLiteral(): Infinity needs an overflowing
+        ** exponent because "Inf" is not a SQL literal, and
+        ** sqlite3IsOverflow() is also true for NaN, so the NaN test
+        ** must come first. */
+        if( sqlite3IsNaN(pVar->u.r) ){
+          sqlite3_str_appendall(&out, "NULL");
+        }else if( sqlite3IsOverflow(pVar->u.r) ){
+          sqlite3_str_appendall(&out, pVar->u.r>0 ? "9e999" : "-9e999");
+        }else{
+          sqlite3_str_appendf(&out, "%!.17g", pVar->u.r);
+        }
+#else
         sqlite3_str_appendf(&out, "%!.15g", pVar->u.r);
+#endif
       }else if( pVar->flags & MEM_Str ){
         int nOut;  /* Number of bytes of the string text to include in output */
 #ifndef SQLITE_OMIT_UTF16
@@ -265466,6 +265483,16 @@ SQLITE_PRIVATE char *sqlite3BinlogGetEscapedText(sqlite3 *db, const char *origin
   return sqlite3_str_finish(pStr);
 }
 
+SQLITE_PRIVATE char *sqlite3BinlogRealToLiteral(double r){
+  if( sqlite3IsNaN(r) ){
+    return sqlite3_mprintf("NULL");
+  }
+  if( sqlite3IsOverflow(r) ){
+    return sqlite3_mprintf(r>0 ? "9e999" : "-9e999");
+  }
+  return sqlite3_mprintf("%!.17g", r);
+}
+
 SQLITE_PRIVATE char *sqlite3BinlogGetNthCol(sqlite3 *db, const Table *pTab, const BinlogRow *pRow, int iCol) {
   assert( db != NULL && pTab != NULL && pRow != NULL );
   assert( iCol >= 0 );  
@@ -265508,6 +265535,8 @@ SQLITE_PRIVATE char *sqlite3BinlogGetNthCol(sqlite3 *db, const Table *pTab, cons
     res = sqlite3BinlogGetEscapedText(db, (const char *)temp);
   } else if (type == SQLITE_NULL) { 
     res = sqlite3_mprintf("NULL");
+  } else if (type == SQLITE_FLOAT) {
+    res = sqlite3BinlogRealToLiteral(sqlite3_value_double(tempVal));
   } else {
     res = sqlite3_mprintf("%s", temp);
   }
@@ -265550,6 +265579,8 @@ SQLITE_PRIVATE char *sqlite3BinlogGetNthColWithBuffer(sqlite3 *db, const Table *
     res = sqlite3BinlogGetEscapedText(db, (const char *)temp);
   } else if (type == SQLITE_NULL) {
     res = sqlite3_mprintf("NULL");
+  } else if (type == SQLITE_FLOAT) {
+    res = sqlite3BinlogRealToLiteral(sqlite3_value_double(tempVal));
   } else {
     res = sqlite3_mprintf("%s", temp);
   }
@@ -265589,6 +265620,8 @@ SQLITE_PRIVATE char *sqlite3BinlogGetNthColForSearchWithBuffer(sqlite3 *db, cons
     res = sqlite3_mprintf("%s", temp);
   } else if (type == SQLITE_NULL) {
     res = sqlite3_mprintf("NULL");
+  } else if (type == SQLITE_FLOAT) {
+    res = sqlite3BinlogRealToLiteral(sqlite3_value_double(tempVal));
   } else {
     res = sqlite3_mprintf("%s", temp);
   }
