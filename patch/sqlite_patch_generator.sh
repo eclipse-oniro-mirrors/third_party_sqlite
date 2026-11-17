@@ -75,6 +75,20 @@ else
     git init -q
     git config user.name "tmp"
     git config user.email "tmp@tmp.com"
+    # Keep the generated patch reproducible no matter how the developer's git
+    # is configured globally:
+    #  * normalise CRLF to LF, so the emitted patch is always LF-only (the
+    #    OHOS build applies it to LF checkouts);
+    #  * ignore any global format.signoff setting, so no Signed-off-by trailer
+    #    is injected into the generated patch;
+    #  * use the "minimal" diff algorithm.  The default Myers heuristic turns
+    #    the 250k-line amalgamation into huge "whole block replacement" hunks,
+    #    which inflates all_sqlite.patch from ~0.8MB to ~16MB and makes the
+    #    file exceed the 10MB per-file limit enforced by GitCode for PRs.
+    git config core.autocrlf input
+    git config core.eol lf
+    git config format.signoff false
+    git config diff.algorithm minimal
     git add -A
     git commit -q -m "old"
     # Remove old content and copy in new (reference) content
