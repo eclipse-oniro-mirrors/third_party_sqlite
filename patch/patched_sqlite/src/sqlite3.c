@@ -42080,6 +42080,22 @@ static void TryClearTid(int *tidBuf, int ofs, int lockLen);
 static void MarkLockBusy(u32 lockIdx, u32 lockLen, u8 lockType, u8 lockByProcess);
 static void MarkLockStatus(u32 lockIdx, u32 lockLen, u8 lockType);
 static void MarkLockStatusByRc(int rc, u32 lockIdx, u32 lockLen, u8 lockType, u8 lockByProcess);
+/* Defined further down: OsGetTid() at the very end of the amalgamation, the
+** lock-name and dump helpers next to DumpLocksInfo(). Declared here so that
+** the backup_step() diagnostics can report exactly the same fields (busyLine,
+** lock index/type, process-or-thread scope, length) as the generic BUSY dump,
+** plus the pid/tid of the thread that hit the BUSY - which the generic dump
+** does not print. Comparing that pid/tid with the holder pid/tid printed by
+** DumpLocksByPager() tells whether we are blocked by ourselves (another
+** connection of this process) or by another thread/process. */
+static inline int OsGetTid(void);
+static inline const char *IdxToLockName(u32 idx);
+/* Monotonic id shared by the backup_step() diagnostics and the generic BUSY
+** dump (DumpBusyScene()), so that all BUSY events of a process can be
+** ordered and counted - the rate follows from the log timestamps. */
+static u32 g_busySceneSeq;
+# define BACKUP_OS_PID() ((int)osGetpid(0))
+# define BACKUP_OS_TID() OsGetTid()
 #else
 #define MARK_LAST_BUSY_LINE(rc)
 #define ResetLockStatus(void)
@@ -78028,6 +78044,7 @@ static void pageReinit(DbPage *pData){
 }
 
 static void DumpLocksByPager(Pager *pPager);
+static void BusyLogScene(BtShared *pBt);
 /*
 ** Invoke the busy handler for a btree.
 */
@@ -78038,6 +78055,10 @@ static int btreeInvokeBusyHandler(void *pArg){
   int rc = sqlite3InvokeBusyHandler(&pBt->db->busyHandler);
 #if SQLITE_OS_UNIX
   if (rc == 0) {
+    /* New diagnostics only. The pre-existing lock dump below is left
+    ** completely unchanged; the scene line is rate limited internally so that
+    ** a BUSY storm cannot flood the log (see BusyLogScene()). */
+    BusyLogScene(pBt);
     DumpLocksByPager(pBt->pPager);
   }
 #endif /* SQLITE_OS_UNIX */
@@ -87146,6 +87167,22 @@ SQLITE_PRIVATE int sqlite3BtreeConnectionCount(Btree *p){
 /* #include "sqliteInt.h" */
 /* #include "btreeInt.h" */
 
+/* Bits for sqlite3_backup.busyLoggedMask */
+#define BACKUP_BUSY_LOG_TRANSWRITE  0x01  /* source is in TRANS_WRITE */
+#define BACKUP_BUSY_LOG_SRC_READ    0x02  /* begin read txn on source failed */
+#define BACKUP_BUSY_LOG_DEST_WRITE  0x04  /* begin write txn on dest failed */
+#define BACKUP_BUSY_LOG_FALLBACK    0x08  /* BUSY/LOCKED from a later phase */
+
+/*
+** busyLine of the last SQLITE_BUSY/SQLITE_LOCKED seen on this thread. It is
+** only maintained on unix builds, so it is reported as 0 everywhere else.
+*/
+#if SQLITE_OS_UNIX
+# define BACKUP_BUSY_LINE ((int)g_lockStatus.busyLine)
+#else
+# define BACKUP_BUSY_LINE 0
+#endif
+
 /*
 ** Structure allocated for each backup operation.
 */
@@ -87169,6 +87206,8 @@ struct sqlite3_backup {
 
   int isAttached;          /* True once backup has been registered with pager */
   sqlite3_backup *pNext;   /* Next backup associated with source pager */
+  u8 busyLoggedMask;       /* BACKUP_BUSY_LOG_* bits already emitted */
+  u32 nBusyCnt;            /* Number of step calls that returned BUSY/LOCKED */
 };
 
 /*
@@ -87349,6 +87388,95 @@ static int isFatalError(int rc){
   return (rc!=SQLITE_OK && rc!=SQLITE_BUSY && ALWAYS(rc!=SQLITE_LOCKED));
 }
 
+#if SQLITE_OS_UNIX
+/*
+** Log the context of one sqlite3_backup_step() BUSY diagnostic point.
+**
+** Line 1 mirrors the fields of the generic BUSY dump (DumpHandleLock()
+** reports "BusyLine/idx/type/fileLock/len/handleLocks") and adds:
+**   - callLine: the exact sqlite3_backup_step() source line whose call hit the
+**     BUSY. g_lockStatus.busyLine is the *inner* line recorded by the last
+**     MARK_LAST_BUSY_LINE() and may be from an unrelated earlier attempt.
+**   - pid/tid: the thread that hit the BUSY. Point 1 is the connection's own
+**     write transaction, so pid/tid is ourselves; for points 2/3/4 compare it
+**     with the holder pid/tid printed by DumpTrxProcessLocks()/DumpWalLocks().
+**
+** Line 2 prints the state of the backup handle itself, so it is possible to
+** tell which phase was running and how many BUSY/LOCKED results this session
+** has already produced (i.e. how often the caller has retried).
+*/
+static void LogBackupBusyContext(
+  sqlite3_backup *p,
+  int iPoint,      /* Diagnostic point, 1..4 */
+  int iLine,       /* __LINE__ of the failing call site */
+  int nPage,       /* nPage argument of this sqlite3_backup_step() call */
+  int rc           /* Current error code (BUSY or LOCKED) */
+){
+  u32 seq = ++g_busySceneSeq;
+  sqlite3_log(SQLITE_WARNING_DUMP,
+    "backup_step: point=%d, seq=%u, callLine=%d, pid=%d, tid=%d, busyLine=%d, "
+    "lockIdx=%d(%s), lockType=%d, fileLock=%d, lockLen=%d",
+    iPoint, seq, iLine, BACKUP_OS_PID(), BACKUP_OS_TID(),
+    (int)g_lockStatus.busyLine,
+    (int)g_lockStatus.busyLockIdx, IdxToLockName((u32)g_lockStatus.busyLockIdx),
+    (int)g_lockStatus.busyLockType, (int)g_lockStatus.lockByProcess,
+    (int)g_lockStatus.lockLen);
+  sqlite3_log(SQLITE_WARNING_DUMP,
+    "backup_step: point=%d, seq=%u, state: rc=%d, lastRc=%d, nPage=%d, "
+    "iNext=%u, nRemain=%u, nPagecount=%u, destLocked=%d, busyCnt=%u, handle=%p",
+    iPoint, seq, rc, p->rc, nPage, (unsigned)p->iNext, (unsigned)p->nRemaining,
+    (unsigned)p->nPagecount, p->bDestLocked, (unsigned)p->nBusyCnt,
+    (void*)p);
+}
+
+/*
+** Log the pager/btree state of one side of a backup. This answers "which
+** database file is stuck, and in what state was it": the btree transaction
+** state and flags, the pager state machine and lock level, the journal mode,
+** whether a busy handler is installed (i.e. whether retries can happen at
+** all), and, when in WAL mode, the WAL locks and frame counter.
+*/
+static void LogBackupSide(const char *zSide, Btree *pBt){
+  Pager *pPager = sqlite3BtreePager(pBt);
+  BtShared *pShared = pBt->pBt;   /* Btree has no txn/flags; BtShared does */
+  const char *zDb = pPager->zFilename ? pPager->zFilename : "-";
+  int nDb = (int)strlen(zDb);
+  if( nDb>48 ) zDb += nDb-48;   /* keep the tail, that is the file name */
+  sqlite3_log(SQLITE_WARNING_DUMP,
+    "[SQLite]backup %s: txn=%d, flags=0x%x, nPage=%u, pgsz=%u, state=%d, "
+    "lock=%d, jmode=%d, ro=%d, tmp=%d, busyHdr=%d, db=%s",
+    zSide, (int)pShared->inTransaction, (unsigned)pShared->btsFlags,
+    (unsigned)pShared->nPage, (unsigned)pShared->pageSize, (int)pPager->eState,
+    (int)pPager->eLock, (int)pPager->journalMode, (int)pPager->readOnly,
+    (int)pPager->tempFile, pPager->xBusyHandler!=0, zDb);
+#ifndef SQLITE_OMIT_WAL
+  if( pPager->pWal ){
+    sqlite3_log(SQLITE_WARNING_DUMP,
+      "[SQLite]backup %s wal: mxFrame=%u, readLock=%d, writeLock=%d, "
+      "excl=%d, ro=%d",
+      zSide, (unsigned)pPager->pWal->hdr.mxFrame, (int)pPager->pWal->readLock,
+      (int)pPager->pWal->writeLock, (int)pPager->pWal->exclusiveMode,
+      (int)pPager->pWal->readOnly);
+  }
+#endif
+}
+
+/*
+** One-line header printed right before the (unchanged) lock dump at a backup
+** diagnostic point. It only adds a log line: the dump that follows is the
+** pre-existing, untouched DumpLocksByPager() output, and this header tells the
+** reader which point it belongs to and how to read the holder fields
+** ("<lock, pid:N, type>" is a file-lock holder process, "<lock, n, tid:N>" is
+** an in-process WAL lock holder thread).
+*/
+static void LogBackupDumpHeader(const char *zPoint){
+  sqlite3_log(SQLITE_WARNING_DUMP,
+    "[SQLite]backup %s: lock dump follows "
+    "(file lock holder => pid, wal lock holder => tid)",
+    zPoint);
+}
+#endif /* SQLITE_OS_UNIX */
+
 /*
 ** Parameter zSrcData points to a buffer containing the data for
 ** page iSrcPg from the source database. Copy this data into the
@@ -87491,12 +87619,27 @@ SQLITE_API int sqlite3_backup_step(sqlite3_backup *p, int nPage){
     int ii;                            /* Iterator variable */
     int nSrcPage = -1;                 /* Size of source db in pages */
     int bCloseTrans = 0;               /* True if src db requires unlocking */
+    int bBusyLogged = 0;               /* True once a phase diagnostic covered this BUSY */
 
     /* If the source pager is currently in a write-transaction, return
     ** SQLITE_BUSY immediately.
     */
     if( p->pDestDb && p->pSrc->pBt->inTransaction==TRANS_WRITE ){
       rc = SQLITE_BUSY;
+      bBusyLogged = 1;
+      if( (p->busyLoggedMask & BACKUP_BUSY_LOG_TRANSWRITE)==0 ){
+        p->busyLoggedMask |= BACKUP_BUSY_LOG_TRANSWRITE;
+        sqlite3_log(rc, "backup_step: source db in TRANS_WRITE, cannot backup. "
+          "srcInTrans=%d, destLocked=%d",
+          p->pSrc->pBt->inTransaction,
+          p->bDestLocked);
+#if SQLITE_OS_UNIX
+        LogBackupBusyContext(p, 1, __LINE__, nPage, rc);
+        LogBackupSide("src", p->pSrc);
+        LogBackupDumpHeader("pt1");
+        DumpLocksByPager(sqlite3BtreePager(p->pSrc));
+#endif
+      }
     }else{
       rc = SQLITE_OK;
     }
@@ -87508,6 +87651,21 @@ SQLITE_API int sqlite3_backup_step(sqlite3_backup *p, int nPage){
     if( rc==SQLITE_OK && SQLITE_TXN_NONE==sqlite3BtreeTxnState(p->pSrc) ){
       rc = sqlite3BtreeBeginTrans(p->pSrc, 0, 0);
       bCloseTrans = 1;
+      if( rc==SQLITE_BUSY || rc==SQLITE_LOCKED ){
+        bBusyLogged = 1;
+        if( (p->busyLoggedMask & BACKUP_BUSY_LOG_SRC_READ)==0 ){
+          p->busyLoggedMask |= BACKUP_BUSY_LOG_SRC_READ;
+          sqlite3_log(rc, "backup_step: failed to begin read txn on source, "
+            "rc=%d, srcInTrans=%d, busyLine=%d",
+            rc, p->pSrc->pBt->inTransaction, BACKUP_BUSY_LINE);
+#if SQLITE_OS_UNIX
+          LogBackupBusyContext(p, 2, __LINE__, nPage, rc);
+          LogBackupSide("src", p->pSrc);
+          LogBackupDumpHeader("pt2");
+          DumpLocksByPager(sqlite3BtreePager(p->pSrc));
+#endif
+        }
+      }
     }
 
     /* If the destination database has not yet been locked (i.e. if this
@@ -87521,11 +87679,25 @@ SQLITE_API int sqlite3_backup_step(sqlite3_backup *p, int nPage){
     }
 
     /* Lock the destination database, if it is not locked already. */
-    if( SQLITE_OK==rc && p->bDestLocked==0
-     && SQLITE_OK==(rc = sqlite3BtreeBeginTrans(p->pDest, 2,
-                                                (int*)&p->iDestSchema))
-    ){
-      p->bDestLocked = 1;
+    if( SQLITE_OK==rc && p->bDestLocked==0 ){
+      rc = sqlite3BtreeBeginTrans(p->pDest, 2, (int*)&p->iDestSchema);
+      if( rc==SQLITE_BUSY || rc==SQLITE_LOCKED ){
+        bBusyLogged = 1;
+        if( (p->busyLoggedMask & BACKUP_BUSY_LOG_DEST_WRITE)==0 ){
+          p->busyLoggedMask |= BACKUP_BUSY_LOG_DEST_WRITE;
+          sqlite3_log(rc, "backup_step: failed to begin write txn on "
+            "destination, rc=%d, destInTrans=%d, busyLine=%d",
+            rc, p->pDest->pBt->inTransaction, BACKUP_BUSY_LINE);
+#if SQLITE_OS_UNIX
+          LogBackupBusyContext(p, 3, __LINE__, nPage, rc);
+          LogBackupSide("dst", p->pDest);
+          LogBackupDumpHeader("pt3");
+          DumpLocksByPager(sqlite3BtreePager(p->pDest));
+#endif
+        }
+      }else if( rc==SQLITE_OK ){
+        p->bDestLocked = 1;
+      }
     }
 
     /* Do not allow backup if the destination database is in WAL mode
@@ -87717,6 +87889,27 @@ SQLITE_API int sqlite3_backup_step(sqlite3_backup *p, int nPage){
 
     if( rc==SQLITE_IOERR_NOMEM ){
       rc = SQLITE_NOMEM_BKPT;
+    }
+    if( (rc==SQLITE_BUSY || rc==SQLITE_LOCKED) && !bBusyLogged
+       && (p->busyLoggedMask & BACKUP_BUSY_LOG_FALLBACK)==0
+    ){
+      p->busyLoggedMask |= BACKUP_BUSY_LOG_FALLBACK;
+      sqlite3_log(rc, "backup_step: BUSY/LOCKED in later phase "
+        "(page-copy/commit/setversion), rc=%d, busyLine=%d, srcInTrans=%d, "
+        "destInTrans=%d, destLocked=%d",
+        rc, BACKUP_BUSY_LINE, p->pSrc->pBt->inTransaction,
+        p->pDest->pBt->inTransaction, p->bDestLocked);
+#if SQLITE_OS_UNIX
+      LogBackupBusyContext(p, 4, __LINE__, nPage, rc);
+      LogBackupSide("src", p->pSrc);
+      LogBackupSide("dst", p->pDest);
+      LogBackupDumpHeader("pt4");
+      DumpLocksByPager(sqlite3BtreePager(p->pDest));
+      DumpLocksByPager(sqlite3BtreePager(p->pSrc));
+#endif
+    }
+    if( rc==SQLITE_BUSY || rc==SQLITE_LOCKED ){
+      p->nBusyCnt++;
     }
     p->rc = rc;
   }
@@ -264185,6 +264378,201 @@ static void DumpLocksByWal(Wal *pWal)
   DumpLocksInfo(Sqlite3GetUnixFile(pWal->pDbFd, checkFileId), 1);
 }
 #endif /* #ifndef SQLITE_OMIT_WAL */
+
+/*
+** Rate limiting for the generic (non-backup) BUSY diagnostics.
+**
+** A BUSY storm can produce thousands of events per second. Printing the full
+** scene plus the lock dump for each of them would flood the log and perturb
+** the timing of the very problem being debugged. So:
+**
+**   - every BUSY event still consumes a sequence number (g_busySceneSeq) and
+**     is counted, so no event silently disappears from the statistics;
+**   - the detailed scene and the lock dump are printed at most once per
+**     BUSY_LOG_DETAIL_MS milliseconds (the first event is always printed);
+**   - everything suppressed in between is reported by a compact summary -
+**     exact count plus a breakdown by busyLine / lock index / lock type -
+**     flushed right before the next detailed print and, during a pure storm,
+**     at least once per BUSY_LOG_SUMMARY_MS.
+**
+** Both intervals can be overridden at build time; BUSY_LOG_DETAIL_MS<=0
+** disables throttling and restores the fully verbose behaviour.
+*/
+#ifndef BUSY_LOG_DETAIL_MS
+# define BUSY_LOG_DETAIL_MS 1000
+#endif
+#ifndef BUSY_LOG_SUMMARY_MS
+# define BUSY_LOG_SUMMARY_MS 60000
+#endif
+#ifndef BUSY_LOG_SIG_MAX
+# define BUSY_LOG_SIG_MAX 6
+#endif
+
+typedef struct BusyLogSig BusyLogSig;
+struct BusyLogSig {
+  int iLine;                    /* g_lockStatus.busyLine of the events */
+  int iIdx;                     /* lock index; -1 = aggregated overflow */
+  int iType;                    /* lock type */
+  u32 n;                        /* number of events */
+};
+
+typedef struct BusyLogCtl BusyLogCtl;
+struct BusyLogCtl {
+  sqlite3_int64 lastDetailMs;   /* time of the last detailed print */
+  sqlite3_int64 lastSummaryMs;  /* time of the last summary print */
+  u32 nSuppressed;              /* events suppressed since the last flush */
+  int nSig;                     /* entries used in aSig[] */
+  BusyLogSig aSig[BUSY_LOG_SIG_MAX];
+};
+
+static BusyLogCtl g_busyLog;
+
+/* Current time in milliseconds; 0 when the VFS cannot provide one. */
+static sqlite3_int64 BusyLogNow(Pager *pPager){
+  sqlite3_int64 t = 0;
+  if( pPager->pVfs ){
+    (void)sqlite3OsCurrentTimeInt64(pPager->pVfs, &t);
+  }
+  return t;
+}
+
+/* Remember one suppressed event, keeping per-signature counters exact. */
+static void BusyLogNote(int iLine, int iIdx, int iType){
+  int i;
+  BusyLogSig *pSig;
+  g_busyLog.nSuppressed++;
+  for(i=0; i<g_busyLog.nSig; i++){
+    pSig = &g_busyLog.aSig[i];
+    if( pSig->iLine==iLine && pSig->iIdx==iIdx && pSig->iType==iType ){
+      pSig->n++;
+      return;
+    }
+  }
+  if( g_busyLog.nSig<(BUSY_LOG_SIG_MAX-1) ){
+    pSig = &g_busyLog.aSig[g_busyLog.nSig++];
+    pSig->iLine = iLine;
+    pSig->iIdx = iIdx;
+    pSig->iType = iType;
+    pSig->n = 1;
+    return;
+  }
+  /* Out of slots: aggregate into the last one, marked with iIdx==-1. */
+  pSig = &g_busyLog.aSig[BUSY_LOG_SIG_MAX-1];
+  if( pSig->iIdx!=-1 ){
+    pSig->iLine = 0;
+    pSig->iIdx = -1;
+    pSig->iType = 0;
+    pSig->n = 0;
+    g_busyLog.nSig = BUSY_LOG_SIG_MAX-1;
+  }
+  pSig->n++;
+}
+
+/* Flush the counts of the events suppressed since the last flush. */
+static void BusyLogSummary(u32 seq){
+  char zBuf[110];
+  char *z = zBuf;
+  int avail = (int)sizeof(zBuf) - 1;
+  int i;
+  if( g_busyLog.nSuppressed==0 ) return;
+  zBuf[0] = 0;
+  for(i=0; i<g_busyLog.nSig && avail>16; i++){
+    BusyLogSig *pSig = &g_busyLog.aSig[i];
+    int n;
+    if( pSig->n==0 ) continue;
+    z[0] = 0;
+    if( pSig->iIdx<0 ){
+      sqlite3_snprintf(avail, z, " other:%u", pSig->n);
+    }else{
+      sqlite3_snprintf(avail, z, " L%d/i%d/t%d:%u",
+          pSig->iLine, pSig->iIdx, pSig->iType, pSig->n);
+    }
+    n = (int)strlen(z);
+    z += n;
+    avail -= n;
+  }
+  sqlite3_log(SQLITE_WARNING_DUMP,
+    "[SQLite]busy: suppressed %u event(s) before #%u (detail<=1/%dms):%s",
+    g_busyLog.nSuppressed, seq, (int)BUSY_LOG_DETAIL_MS, zBuf);
+  g_busyLog.nSuppressed = 0;
+  g_busyLog.nSig = 0;
+}
+
+/*
+** Log the scene of one generic BUSY, i.e. the moment the btree busy handler
+** gave up. This is the counterpart of the backup_step() diagnostics: the same
+** fields (busyLine, lock index/type/scope/length, pager state, WAL state) plus
+** the process-wide sequence number, so that BUSY events of the whole process
+** can be ordered and their rate derived from the log timestamps.
+*/
+static void DumpBusyScene(BtShared *pBt, u32 seq){
+  Pager *pPager = pBt->pPager;
+  const char *zDb = pPager->zFilename ? pPager->zFilename : "-";
+  int nDb = (int)strlen(zDb);
+  if( nDb>32 ) zDb += nDb-32;    /* keep the file name part */
+  sqlite3_log(SQLITE_WARNING_DUMP,
+    "[SQLite]busy#%u: pid=%d, tid=%d, busyLine=%d, lock=%d(%s), type=%d, "
+    "byProc=%d, len=%d, state=%d, jmode=%d, db=%s",
+    seq, (int)osGetpid(0), OsGetTid(), (int)g_lockStatus.busyLine,
+    (int)g_lockStatus.busyLockIdx, IdxToLockName((u32)g_lockStatus.busyLockIdx),
+    (int)g_lockStatus.busyLockType, (int)g_lockStatus.lockByProcess,
+    (int)g_lockStatus.lockLen, (int)pPager->eState, (int)pPager->journalMode,
+    zDb);
+  sqlite3_log(SQLITE_WARNING_DUMP,
+    "[SQLite]busy#%u: txn=%d, flags=0x%x, nPage=%u, pgsz=%u, ro=%d, tmp=%d, hdr=%d",
+    seq, (int)pBt->inTransaction, (unsigned)pBt->btsFlags,
+    (unsigned)pBt->nPage, (unsigned)pBt->pageSize, (int)pPager->readOnly,
+    (int)pPager->tempFile, pPager->xBusyHandler!=0);
+#ifndef SQLITE_OMIT_WAL
+  if( pPager->pWal ){
+    sqlite3_log(SQLITE_WARNING_DUMP,
+      "[SQLite]busy#%u: wal mxFrame=%u, readLock=%d, writeLock=%d, excl=%d, ro=%d",
+      seq, (unsigned)pPager->pWal->hdr.mxFrame, (int)pPager->pWal->readLock,
+      (int)pPager->pWal->writeLock, (int)pPager->pWal->exclusiveMode,
+      (int)pPager->pWal->readOnly);
+  }
+#endif
+}
+
+/*
+** Generic BUSY scene logging, called from btreeInvokeBusyHandler() right
+** before the pre-existing DumpLocksByPager() call, which is left untouched.
+**
+** This function only adds output: it never changes the return value or the
+** control flow of the caller. To keep a BUSY storm from flooding the log the
+** scene is emitted at most once per BUSY_LOG_DETAIL_MS; every suppressed
+** event is still counted (and consumes a sequence number), and the counts are
+** flushed as a compact summary either before the next scene or at least once
+** per BUSY_LOG_SUMMARY_MS. With BUSY_LOG_DETAIL_MS<=0 it prints every event.
+**
+** Note that the lock dump itself keeps its original, unthrottled behaviour:
+** this change does not alter any pre-existing diagnostic.
+*/
+static void BusyLogScene(BtShared *pBt){
+  sqlite3_int64 t = 0;
+  u32 seq = ++g_busySceneSeq;
+#if BUSY_LOG_DETAIL_MS>0
+  t = BusyLogNow(pBt->pPager);
+  if( t==0 ) t = (sqlite3_int64)seq;   /* no clock: throttle by event count */
+  if( g_busyLog.lastDetailMs==0
+   || t - g_busyLog.lastDetailMs >= (sqlite3_int64)BUSY_LOG_DETAIL_MS ){
+    BusyLogSummary(seq);
+    g_busyLog.lastDetailMs = t;
+    g_busyLog.lastSummaryMs = t;
+    DumpBusyScene(pBt, seq);
+  }else{
+    BusyLogNote((int)g_lockStatus.busyLine, (int)g_lockStatus.busyLockIdx,
+                (int)g_lockStatus.busyLockType);
+    if( t - g_busyLog.lastSummaryMs >= (sqlite3_int64)BUSY_LOG_SUMMARY_MS ){
+      BusyLogSummary(seq);
+      g_busyLog.lastSummaryMs = t;
+    }
+  }
+#else
+  (void)t;
+  DumpBusyScene(pBt, seq);
+#endif
+}
 
 static void DumpLocksByPager(Pager *pPager)
 {
